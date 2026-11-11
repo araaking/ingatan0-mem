@@ -68,7 +68,7 @@ Nama bisnis dan nama agen dikunci saat server menyala, jadi tidak ada pemanggila
 
 ## Bahasa Indonesia
 
-**Daftar isi:** [Ringkasan](#id-ringkasan) · [Fitur utama](#id-fitur) · [Persyaratan](#id-persyaratan) · [Instalasi](#id-instalasi) · [Mulai cepat](#id-mulai-cepat) · [Konfigurasi](#id-konfigurasi) · [Tujuh tool](#id-tool) · [Tier dan antrean proposal](#id-tier) · [Status fakta](#id-status-fakta) · [Forget dan batasannya](#id-forget) · [CLI](#id-cli) · [Data dan privasi](#id-data) · [Angka terukur](#id-angka) · [Status](#id-status) · [Struktur proyek](#id-struktur) · [Pengembangan](#id-pengembangan) · [Peta jalan](#id-peta-jalan) · [Masalah umum](#id-masalah) · [Lisensi dan kredit](#id-lisensi)
+**Daftar isi:** [Ringkasan](#id-ringkasan) · [Fitur utama](#id-fitur) · [Persyaratan](#id-persyaratan) · [Instalasi](#id-instalasi) · [Mulai cepat](#id-mulai-cepat) · [Mode HTTP](#id-http) · [Konfigurasi](#id-konfigurasi) · [Tujuh tool](#id-tool) · [Tier dan antrean proposal](#id-tier) · [Status fakta](#id-status-fakta) · [Forget dan batasannya](#id-forget) · [CLI](#id-cli) · [Data dan privasi](#id-data) · [Angka terukur](#id-angka) · [Status](#id-status) · [Struktur proyek](#id-struktur) · [Pengembangan](#id-pengembangan) · [Peta jalan](#id-peta-jalan) · [Masalah umum](#id-masalah) · [Lisensi dan kredit](#id-lisensi)
 
 <a id="id-ringkasan"></a>
 
@@ -155,6 +155,19 @@ remember(
 )
 recall(query="harga kopi susu")
 ```
+
+<a id="id-http"></a>
+
+### Mode HTTP (opsional)
+
+Satu server Ingatan di mesin yang kamu kuasai (VPS atau server rumah) bisa melayani memori yang sama ke semua perangkat. Klien cukup memakai URL dan token; paket `ingatan` tidak perlu terpasang di sana.
+
+```bash
+ingatan token add --business kopi --agent claude-mac    # token tampil sekali
+ingatan serve --http                                    # 127.0.0.1:8765, jalur /mcp
+```
+
+Setiap token terikat ke satu bisnis dan satu agen. Tidak ada enkripsi di dalam Ingatan: pasang reverse proxy atau jaringan privat (Tailscale, WireGuard) di depannya. Hook dan plugin Hermes belum bisa lewat HTTP. Panduan lengkap: [docs/setup-http.md](docs/setup-http.md).
 
 <a id="id-konfigurasi"></a>
 
@@ -243,6 +256,8 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Entri 
 | Perintah | Fungsi |
 |---|---|
 | `ingatan` / `ingatan serve` | Menjalankan server MCP lewat stdio |
+| `ingatan serve --http [--host H] [--port P]` | Menjalankan server MCP lewat HTTP (bearer token) |
+| `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Mengelola token mode HTTP |
 | `ingatan init [--business NAMA] [--agent NAMA]` | Membuat `.ingatan.toml` dan database |
 | `ingatan doctor` | Memeriksa Python, fitur SQLite, konfigurasi, database, dan folder data |
 | `ingatan log [--limit N] [--fact ID] [--agent NAMA]` | Daftar entri log, terbaru dulu |
@@ -306,6 +321,7 @@ src/ingatan/
   db/            koneksi, WAL, migrasi bernomor
   redact/        penyamaran rahasia
   scope/         konfigurasi, tier, visibilitas
+  tokens/        token bearer untuk mode HTTP
   audit/         log append-only, diff, undo
   search/        BM25, trigram, entitas, kebaruan, pelepas imbuhan
   facts/         remember, supersede, confirm, forget, history
@@ -313,7 +329,7 @@ src/ingatan/
   episodes/      tangkapan percakapan dan tawaran digest
   brief/         penyusun brief
   ingest/        ingest Markdown
-  mcp/           server MCP stdio
+  mcp/           server MCP (stdio, dan HTTP di http.py)
   cli/           perintah untuk manusia
   integrations/  hook Claude Code dan plugin Hermes
 evals/           harness dan 40 skenario
@@ -340,7 +356,7 @@ Peta modul, aturan lapisan, cara menambah skenario eval, dan cara menambah migra
 
 ### Peta jalan
 
-Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin, integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key.
+Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin (versi pertama sudah ada, lihat [docs/setup-http.md](docs/setup-http.md)), integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key.
 
 <a id="id-masalah"></a>
 
@@ -370,7 +386,7 @@ Pemetaan tangkap dan suntik ke hook tiap agen (hook Claude Code, antarmuka memor
 
 ## English
 
-**Contents:** [Overview](#en-overview) · [Key features](#en-features) · [Requirements](#en-requirements) · [Installation](#en-installation) · [Quick start](#en-quick-start) · [Configuration](#en-configuration) · [The seven tools](#en-tools) · [Tiers and the proposal queue](#en-tiers) · [Fact status](#en-fact-status) · [Forget and its limits](#en-forget) · [CLI](#en-cli) · [Data and privacy](#en-data) · [Measured numbers](#en-numbers) · [Status](#en-status) · [Project structure](#en-structure) · [Development](#en-development) · [Roadmap](#en-roadmap) · [Troubleshooting](#en-troubleshooting) · [License and credits](#en-license)
+**Contents:** [Overview](#en-overview) · [Key features](#en-features) · [Requirements](#en-requirements) · [Installation](#en-installation) · [Quick start](#en-quick-start) · [HTTP mode](#en-http) · [Configuration](#en-configuration) · [The seven tools](#en-tools) · [Tiers and the proposal queue](#en-tiers) · [Fact status](#en-fact-status) · [Forget and its limits](#en-forget) · [CLI](#en-cli) · [Data and privacy](#en-data) · [Measured numbers](#en-numbers) · [Status](#en-status) · [Project structure](#en-structure) · [Development](#en-development) · [Roadmap](#en-roadmap) · [Troubleshooting](#en-troubleshooting) · [License and credits](#en-license)
 
 <a id="en-overview"></a>
 
@@ -457,6 +473,19 @@ remember(
 )
 recall(query="harga kopi susu")
 ```
+
+<a id="en-http"></a>
+
+### HTTP mode (optional)
+
+One Ingatan server on a machine you control (a VPS or a home server) can serve the same memory to every device. A client needs only a URL and a token; the `ingatan` package does not have to be installed there.
+
+```bash
+ingatan token add --business kopi --agent claude-mac    # the token is shown once
+ingatan serve --http                                    # 127.0.0.1:8765, path /mcp
+```
+
+Each token is tied to one business and one agent. Ingatan does not encrypt traffic itself: put a reverse proxy or a private network (Tailscale, WireGuard) in front. The hooks and the Hermes plugin do not work over HTTP yet. Full guide: [docs/setup-http.md](docs/setup-http.md).
 
 <a id="en-configuration"></a>
 
@@ -545,6 +574,8 @@ Commands act as you for the configured business and agent. Another agent's priva
 | Command | Purpose |
 |---|---|
 | `ingatan` / `ingatan serve` | Start the MCP server on stdio |
+| `ingatan serve --http [--host H] [--port P]` | Start the MCP server over HTTP (bearer tokens) |
+| `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Manage the HTTP-mode tokens |
 | `ingatan init [--business NAME] [--agent NAME]` | Create `.ingatan.toml` and the databases |
 | `ingatan doctor` | Check Python, SQLite features, config, databases and the data folder |
 | `ingatan log [--limit N] [--fact ID] [--agent NAME]` | List log entries, newest first |
@@ -608,6 +639,7 @@ src/ingatan/
   db/            connections, WAL, numbered migrations
   redact/        secret redaction
   scope/         config, tiers, visibility
+  tokens/        bearer tokens for HTTP mode
   audit/         append-only log, diff, undo
   search/        BM25, trigram, entity, recency, affix stripper
   facts/         remember, supersede, confirm, forget, history
@@ -615,7 +647,7 @@ src/ingatan/
   episodes/      captured turns and the digest offer
   brief/         brief builder
   ingest/        Markdown ingest
-  mcp/           MCP stdio server
+  mcp/           MCP server (stdio, and HTTP in http.py)
   cli/           commands for humans
   integrations/  Claude Code hooks and the Hermes plugin
 evals/           harness and 40 scenarios
@@ -642,7 +674,7 @@ The module map, the layering rule, how to add an eval scenario and how to add a 
 
 ### Roadmap
 
-After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines, code-graph integration, and a UI. All optional; every feature must keep working with no API key.
+After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines (a first version exists, see [docs/setup-http.md](docs/setup-http.md)), code-graph integration, and a UI. All optional; every feature must keep working with no API key.
 
 <a id="en-troubleshooting"></a>
 

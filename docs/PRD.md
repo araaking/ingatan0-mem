@@ -212,7 +212,9 @@ The remaining CLI commands (`log`, `diff`, `undo`, proposal review) are FR-24 to
 |---|---|---|
 | FR-56 | With the `ingatan[vector]` extra installed, `recall` adds a vector rank (sqlite-vec) to the fusion. Without it, `recall` behaves as in FR-27 to FR-29. | Post |
 | FR-57 | With the `ingatan[llm]` extra and an API key, a cheap model digests pending episodes in batches. Without a key FR-49 still applies. | Post |
-| FR-58 | An HTTP mode lets several machines share one memory. | Post |
+| FR-58 | An HTTP mode lets several machines share one memory. A first version is implemented: `ingatan serve --http`, bearer tokens that each map to one business and agent, specified in [HTTP_MODE.md](HTTP_MODE.md). | Post (first version done) |
+
+FR-58 in its first version has these non-goals: no sync between two databases, no offline cache and no conflict merging; no TLS inside Ingatan (use a reverse proxy or a private network); no remote mode for the Claude Code hooks or the Hermes plugin; no remote CLI (`proposals`, `log`, `undo`, `forget` run on the server machine); no user accounts and no OAuth, only static bearer tokens.
 
 ## 8. Non-functional requirements
 

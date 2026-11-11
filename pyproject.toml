@@ -21,6 +21,7 @@ dependencies = [
   "mcp>=2.3,<3",
   "pydantic>=2",
   "typer",
+  "uvicorn",
   "tomli>=2; python_version < '3.11'",
 ]
 

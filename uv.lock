@@ -370,6 +370,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -385,6 +386,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
     { name = "typer" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata.requires-dev]

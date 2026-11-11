@@ -20,6 +20,7 @@ from typing import Annotated, Any, TypeVar
 import typer
 
 from ingatan import __version__, audit, facts, proposals
+from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
 from ingatan.cli.conflicts import compute_report, render_report
 from ingatan.cli.render import log_line, render_diff, shorten
@@ -27,6 +28,7 @@ from ingatan.errors import ConfigError, IngatanError, NotFoundError
 from ingatan.scope import (
     CONFIG_NAME,
     Context,
+    data_home,
     db_path,
     find_fact,
     open_context,
@@ -52,6 +54,13 @@ proposals_app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 app.add_typer(proposals_app, name="proposals")
+token_app = typer.Typer(
+    help="Manage the access tokens of HTTP mode. Each token is tied to one business and agent.",
+    no_args_is_help=True,
+    add_completion=False,
+    pretty_exceptions_enable=False,
+)
+app.add_typer(token_app, name="token")
 
 AgentOption = Annotated[
     str | None,
@@ -123,9 +132,32 @@ def _serve() -> None:
 
 @app.command()
 @cli_command
-def serve() -> None:
-    """Start the MCP server on stdio."""
-    _serve()
+def serve(
+    http: Annotated[
+        bool,
+        typer.Option("--http", help="Serve MCP over HTTP (bearer tokens) instead of stdio."),
+    ] = False,
+    host: Annotated[
+        str | None, typer.Option(help="Bind address with --http. Default 127.0.0.1.")
+    ] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(min=1, max=65535, help="Port with --http. Default 8765."),
+    ] = None,
+) -> None:
+    """Start the MCP server: on stdio, or with --http on a port (see docs/setup-http.md)."""
+    if not http:
+        if host is not None or port is not None:
+            raise ConfigError("--host and --port only apply together with --http.")
+        _serve()
+        return
+    run_http = _import("ingatan.mcp.http", "run_http")
+    kwargs: dict[str, Any] = {}
+    if host is not None:
+        kwargs["host"] = host
+    if port is not None:
+        kwargs["port"] = port
+    run_http(**kwargs)
 
 
 # ---- init ----------------------------------------------------------------------------
@@ -185,6 +217,44 @@ def doctor() -> None:
     typer.echo(doctor_checks.render(checks))
     if any(check.failed for check in checks):
         raise typer.Exit(1)
+
+
+# ---- token ---------------------------------------------------------------------------
+
+
+@token_app.command("add")
+@cli_command
+def token_add(
+    business: Annotated[str, typer.Option(help="Business the token gives access to.")],
+    agent: Annotated[str, typer.Option(help="Agent name the token acts as.")],
+    label: Annotated[str, typer.Option(help="Free text to tell tokens apart.")] = "",
+) -> None:
+    """Create a token. It is shown once and only its hash is stored."""
+    raw, record = token_store.add(data_home(), business, agent, label)
+    typer.echo(f"Created token {record.id} for business {record.business}, agent {record.agent}.")
+    typer.echo("Copy it now. It cannot be shown again:")
+    typer.echo(raw)
+
+
+@token_app.command("list")
+@cli_command
+def token_list() -> None:
+    """List tokens: id, business, agent, created, label. Never the token itself."""
+    records = token_store.list_tokens(data_home())
+    if not records:
+        typer.echo("No tokens. Create one with `ingatan token add`.")
+    for r in records:
+        typer.echo(f"{r.id}  {r.business}  {r.agent}  {r.created}  {r.label}".rstrip())
+
+
+@token_app.command("revoke")
+@cli_command
+def token_revoke(
+    token_id: Annotated[str, typer.Argument(help="Token id, from `token list`.")],
+) -> None:
+    """Remove a token. A running server stops accepting it on its next request."""
+    record = token_store.revoke(data_home(), token_id)
+    typer.echo(f"Revoked {record.id} (business {record.business}, agent {record.agent}).")
 
 
 # ---- log, diff, undo -----------------------------------------------------------------

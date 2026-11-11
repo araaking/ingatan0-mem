@@ -10,7 +10,7 @@ This is the shared contract for everyone implementing `PLAN.md`. `PRD.md` wins o
 - Tests live in `tests/<module>/test_*.py`. Every test gets an isolated data folder through the `INGATAN_HOME` env var (shared fixture in `tests/conftest.py`). Never touch the real `~/.ingatan`.
 - All text files UTF-8. JSON is written with `ensure_ascii=False`. CLI output must not crash on Windows consoles (reconfigure stdout/stderr to UTF-8).
 - Code, comments, tool descriptions and messages in English. Comments only where the reason is not obvious.
-- A module imports only from modules above it in this order: `timeutil`, `errors`, `db`, `redact`, `scope`, `audit`, `search`, `facts`, `proposals`, `episodes`, `brief`, `ingest`, `mcp`, `cli`, `integrations`. (`proposals` needs `facts` to create the approved fact; `facts.remember` must therefore create proposal rows through a small helper that lives in `facts` or lower. Keep it free of import cycles.)
+- A module imports only from modules above it in this order: `timeutil`, `errors`, `db`, `redact`, `scope`, `tokens`, `audit`, `search`, `facts`, `proposals`, `episodes`, `brief`, `ingest`, `mcp`, `cli`, `integrations`. (`proposals` needs `facts` to create the approved fact; `facts.remember` must therefore create proposal rows through a small helper that lives in `facts` or lower. Keep it free of import cycles.)
 
 ## Small shared modules
 
@@ -128,6 +128,13 @@ VISIBLE_SQL                                           # helper(s) producing the 
 ```
 
 Visibility, applied to facts and to log rows alike: in the business file `tier = 'business' OR (tier = 'agent' AND agent/owner = :agent)`, in the global file `tier = 'global'`. No function takes a business name from a caller. `find_fact(ctx, fact_id) -> (conn, row) | None` looks in both files and applies visibility, so an invisible fact behaves exactly like a missing one.
+
+## `ingatan.tokens`
+
+HTTP-mode access tokens (FR-58, see `HTTP_MODE.md`). Pure standard library: it must not import `mcp`, `starlette` or `pydantic`. A token is `igt_` plus 32 random bytes (URL-safe base64, no padding) and maps to one `(business, agent)`. Only its SHA-256 hash is stored, in `<INGATAN_HOME>/tokens.json` (`{"tokens": [{id, hash, business, agent, label, created}]}`, id `t_` + 8 hex), rewritten atomically (temp file, `os.replace`, mode 0600 where supported).
+
+- `Token` (frozen dataclass), `add(home, business, agent, label="") -> (raw, Token)`, `list_tokens(home)`, `revoke(home, token_id) -> Token`, `hash_token(raw)`, `tokens_path(home)`. Names pass `validate_business` / `validate_agent`.
+- `TokenStore(home)`: `lookup(raw) -> Scope | None` (hash compared with `hmac.compare_digest`) and `count()`. It re-reads the file when its `(mtime_ns, size, inode)` changes, so a revoke takes effect on the next request. An unreadable file lets nobody in.
 
 ## `ingatan.redact`
 
@@ -262,9 +269,11 @@ Facts in each section are ordered by `use_count` desc, then `last_used` desc. A 
 
 `keywords` is optional in the JSON schema so that a call without it reaches our code and gets the helpful error (FR-10). Tools return readable text. An `IngatanError` becomes an MCP tool error with its message. Nothing but protocol goes to stdout.
 
+`ingatan/mcp/http.py`: `build_app(home) -> HTTPApp` (an ASGI app) and `run_http(host="127.0.0.1", port=8765)`. `/healthz` answers without auth. Every request to `/mcp` needs `Authorization: Bearer <token>`; `TokenStore.lookup` turns it into a `Scope`, and the request goes to the MCP server of that scope: `build_server(open_context(scope))`, built on first use and cached per `(business, agent)`. Each one uses the SDK's `streamable_http_app(stateless_http=True, json_response=True, max_request_body_size=1 MiB, transport_security=<DNS-rebinding check off>)`; the app uses that call's `session_manager` and routes `/mcp` itself. One dedicated asyncio task per scope holds `session_manager.run()` open (anyio task groups must be entered and left in one task); `HTTPApp.lifespan()` (also driven by the ASGI `lifespan` scope under uvicorn) stops those tasks and closes the contexts. Missing, malformed or unknown tokens all get the same `401` body. `run_http` refuses to start without a token and warns on stderr when the bind host is not loopback. Everything runs on the event-loop thread, so the tools stay `async def`.
+
 ## `ingatan.cli`
 
-`ingatan` with no subcommand starts the MCP server (OQ-20, `uvx ingatan`). Commands: `serve`, `init [--business --agent]`, `doctor`, `log [--limit N] [--fact ID]`, `diff <log_id>`, `undo <log_id>`, `proposals list|approve <id>|reject <id>`, `forget <fact_id>` (the user's forget, any tier, asks for confirmation unless `--yes`), `ingest <path>`, `conflicts` (the NFR-9 report), `hook <event>` (Claude Code hook entry, see `integrations`). Exit code 1 with a one-line message on `IngatanError`.
+`ingatan` with no subcommand starts the MCP server (OQ-20, `uvx ingatan`). Commands: `serve [--http [--host H] [--port P]]` (stdio by default), `init [--business --agent]`, `doctor`, `log [--limit N] [--fact ID]`, `diff <log_id>`, `undo <log_id>`, `proposals list|approve <id>|reject <id>`, `forget <fact_id>` (the user's forget, any tier, asks for confirmation unless `--yes`), `ingest <path>`, `conflicts` (the NFR-9 report), `token add --business --agent [--label]|list|revoke <id>` (HTTP-mode tokens), `hook <event>` (Claude Code hook entry, see `integrations`). Exit code 1 with a one-line message on `IngatanError`.
 
 - Human commands open the context of the configured business and agent: they see `business` and `global` facts and that agent's private entries only. `log`, `diff`, `undo`, `forget` and `conflicts` take `--agent NAME` to open the context as another agent, to audit that agent's private entries. The visibility filter itself is never weakened.
 - `hook <event>` always exits 0 and prints nothing of its own. When the hook module is missing or `run` raises, it writes one line to `<data home>/capture-errors.log` if it can (NFR-14). It never exits 2, which would block the agent.

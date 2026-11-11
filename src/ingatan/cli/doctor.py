@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ingatan import db
+from ingatan import db, tokens
 from ingatan.errors import ConfigError
 from ingatan.scope import (
     GLOBAL_NAME,
@@ -169,6 +169,15 @@ def _check_writable(home: Path) -> Check:
     return Check("data folder", "pass", f"{home} is writable{suffix}")
 
 
+def _check_tokens(home: Path) -> Check:
+    """How many HTTP tokens exist. None is fine: HTTP mode is optional."""
+    try:
+        count = len(tokens.list_tokens(home))
+    except ConfigError as exc:
+        return Check("tokens", "FAIL", exc.message)
+    return Check("tokens", "pass", f"{count} HTTP access token(s) in {tokens.tokens_path(home)}")
+
+
 def run_checks() -> list[Check]:
     checks = [
         _check_python(),
@@ -203,6 +212,7 @@ def run_checks() -> list[Check]:
         checks.append(Check("database business", "skip", "no valid business name (see config)"))
     checks.append(_check_database(GLOBAL_NAME, db_path(home, GLOBAL_NAME)))
     checks.append(_check_writable(home))
+    checks.append(_check_tokens(home))
     return checks
 
 

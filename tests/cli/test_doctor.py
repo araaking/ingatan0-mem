@@ -43,7 +43,9 @@ def test_a_healthy_setup_passes_every_check_and_exits_zero(invoke: Invoke, healt
         "database tokoku",
         "database global",
         "data folder",
+        "tokens",
     }
+    assert "0 HTTP access token(s)" in result.stdout
     assert "All checks passed." in result.stdout
 
 
