@@ -1,0 +1,58 @@
+{
+  "id": "supersede-01-harga-lama-tidak-muncul",
+  "title": "Harga kaos yang sudah diganti tidak lagi dikembalikan",
+  "category": "supersede",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "lama",
+      "text": "Harga kaos polos cotton combed 30s adalah Rp 65.000 per pcs.",
+      "keywords": [
+        "tarif",
+        "harga jual",
+        "kaos polos"
+      ],
+      "entities": [
+        "kaos polos"
+      ]
+    },
+    {
+      "op": "remember",
+      "key": "baru",
+      "text": "Harga kaos polos cotton combed 30s naik menjadi Rp 72.000 per pcs mulai bulan ini.",
+      "keywords": [
+        "tarif",
+        "harga jual",
+        "kenaikan harga"
+      ],
+      "entities": [
+        "kaos polos"
+      ]
+    },
+    {
+      "op": "supersede",
+      "old": "lama",
+      "new": "baru"
+    },
+    {
+      "op": "recall",
+      "query": "harga kaos polos",
+      "expect_top5": [
+        "baru"
+      ],
+      "expect_absent": [
+        "lama"
+      ],
+      "expect_status": {
+        "baru": "valid"
+      }
+    }
+  ]
+}

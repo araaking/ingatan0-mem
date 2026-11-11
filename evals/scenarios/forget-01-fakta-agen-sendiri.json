@@ -1,0 +1,55 @@
+{
+  "id": "forget-01-fakta-agen-sendiri",
+  "title": "Agen menghapus fakta pribadinya sendiri dan hilang dari recall dan brief",
+  "category": "forget",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "rekening",
+      "text": "Rekening BCA pribadi pemilik untuk transfer darurat berakhiran 4421, jangan dibagikan ke siapa pun.",
+      "keywords": [
+        "bank",
+        "dana darurat",
+        "nomor rekening"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "rekening pribadi transfer darurat",
+      "expect_top5": [
+        "rekening"
+      ]
+    },
+    {
+      "op": "forget",
+      "key": "rekening"
+    },
+    {
+      "op": "recall",
+      "query": "rekening pribadi transfer darurat",
+      "expect_absent": [
+        "rekening"
+      ]
+    },
+    {
+      "op": "recall",
+      "query_text_of": "rekening",
+      "expect_absent": [
+        "rekening"
+      ]
+    },
+    {
+      "op": "brief",
+      "expect_not_in": [
+        "rekening"
+      ]
+    }
+  ]
+}

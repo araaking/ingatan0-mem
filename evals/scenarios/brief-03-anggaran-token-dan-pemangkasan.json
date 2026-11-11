@@ -1,0 +1,388 @@
+{
+  "id": "brief-03-anggaran-token-dan-pemangkasan",
+  "title": "Brief 300 token memangkas fakta jarang dipakai, menyimpan 'check first' dan fakta yang sering di-recall",
+  "category": "brief",
+  "source": "pattern",
+  "token_budget": 300,
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "usang",
+      "text": "Harga paket seragam sekolah Rp 135.000 per set dari vendor Bu Tuti.",
+      "keywords": [
+        "tarif",
+        "vendor konveksi",
+        "pemasok seragam"
+      ],
+      "entities": [
+        "Bu Tuti"
+      ],
+      "review_in_days": 5
+    },
+    {
+      "op": "remember",
+      "key": "b00",
+      "text": "Supplier kancing Bu Lina menjual kancing baju Rp 150 per biji untuk pesanan seribu biji.",
+      "keywords": [
+        "aksesori",
+        "bahan",
+        "pemasok"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b01",
+      "text": "Pelanggan toko di Medan paling sering membeli kaos ukuran XL warna hitam.",
+      "keywords": [
+        "pembeli",
+        "tren penjualan",
+        "ukuran"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b02",
+      "text": "Jadwal posting Instagram toko adalah Senin, Rabu, dan Jumat pukul 19.00.",
+      "keywords": [
+        "konten",
+        "media sosial",
+        "kalender"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b03",
+      "text": "Tagihan listrik gudang dibayar lewat aplikasi bank setiap tanggal 20.",
+      "keywords": [
+        "biaya operasional",
+        "pembayaran"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b04",
+      "text": "Akun iklan Meta utama memakai kartu kredit bisnis dengan limit harian Rp 500.000.",
+      "keywords": [
+        "ads",
+        "anggaran",
+        "kartu"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b05",
+      "text": "Brief desain katalog musim hujan diserahkan ke desainer Mas Bayu setiap awal bulan.",
+      "keywords": [
+        "katalog",
+        "desain",
+        "brief"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b06",
+      "text": "Artikel blog tentang cara merawat kaos sablon sudah terbit di situs toko.",
+      "keywords": [
+        "konten SEO",
+        "tulisan",
+        "perawatan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b07",
+      "text": "Klien Ibu Wulan memesan seragam kantor 80 pcs dengan tenggat akhir bulan.",
+      "keywords": [
+        "order",
+        "seragam",
+        "jatuh tempo"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b08",
+      "text": "Kurir lokal Pak Jaya mengantar pesanan dalam kota Bandung setiap sore.",
+      "keywords": [
+        "antar",
+        "same day",
+        "kurir"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b09",
+      "text": "Retur barang dari marketplace Shopee dicek ulang oleh tim gudang sebelum refund.",
+      "keywords": [
+        "pengembalian",
+        "komplain",
+        "pembeli"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b10",
+      "text": "Nama toko di marketplace Tokopedia adalah Tokoku Official dengan rating 4,9.",
+      "keywords": [
+        "lapak",
+        "reputasi",
+        "ulasan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b11",
+      "text": "Stok benang jahit warna hitam dan putih dipesan ulang bila tersisa kurang dari 20 kone.",
+      "keywords": [
+        "persediaan",
+        "restock",
+        "bahan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b12",
+      "text": "Tim penjahit borongan dibayar setiap hari Sabtu berdasarkan jumlah potong.",
+      "keywords": [
+        "upah",
+        "gaji",
+        "produksi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b13",
+      "text": "Template balasan chat pelanggan disimpan di folder bersama Google Drive.",
+      "keywords": [
+        "customer service",
+        "dokumen",
+        "balas pesan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b14",
+      "text": "Voucher ulang tahun toko berlaku 15 persen dan hanya sekali pakai per akun.",
+      "keywords": [
+        "kupon",
+        "promo",
+        "diskon"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b15",
+      "text": "Foto produk diambil setiap Kamis pagi dengan latar putih di studio kecil.",
+      "keywords": [
+        "fotografi",
+        "katalog",
+        "gambar produk"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b16",
+      "text": "Biaya admin marketplace Tokopedia sebesar 4 persen dari nilai transaksi.",
+      "keywords": [
+        "komisi",
+        "potongan platform",
+        "biaya"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b17",
+      "text": "Paket reseller baru mulai dari 10 pcs dan mendapat kartu nama toko gratis.",
+      "keywords": [
+        "grosir",
+        "mitra",
+        "bundel"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b18",
+      "text": "Laporan stok opname dilakukan setiap akhir kuartal bersama dua orang staf.",
+      "keywords": [
+        "audit gudang",
+        "inventaris",
+        "hitung barang"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b19",
+      "text": "Rekening operasional toko memakai bank BCA dan rekening pajak terpisah di Mandiri.",
+      "keywords": [
+        "bank",
+        "keuangan",
+        "pembukuan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b20",
+      "text": "Domain situs toko memakai ekstensi .id dan diarahkan lewat Cloudflare.",
+      "keywords": [
+        "DNS",
+        "alamat web",
+        "hosting"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b21",
+      "text": "Plugin pembayaran Midtrans aktif untuk transfer bank, QRIS, dan kartu kredit.",
+      "keywords": [
+        "payment gateway",
+        "checkout",
+        "metode bayar"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b22",
+      "text": "Pengumuman libur Lebaran dikirim ke pelanggan dua minggu sebelumnya lewat email.",
+      "keywords": [
+        "cuti",
+        "broadcast",
+        "komunikasi pelanggan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b23",
+      "text": "Target omzet bulan depan adalah Rp 120.000.000 dengan fokus kaos oversize.",
+      "keywords": [
+        "sasaran penjualan",
+        "rencana",
+        "pendapatan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b24",
+      "text": "Garansi jahitan berlaku 30 hari sejak barang diterima pembeli.",
+      "keywords": [
+        "jaminan",
+        "klaim",
+        "kualitas"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b25",
+      "text": "Supplier plastik packing Pak Ferry mengirim setiap dua minggu sekali.",
+      "keywords": [
+        "kemasan",
+        "bahan habis pakai",
+        "pemasok"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b26",
+      "text": "Ukuran kaos anak mengikuti size chart khusus yang dipasang di deskripsi produk.",
+      "keywords": [
+        "size guide",
+        "ukuran badan",
+        "katalog"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b27",
+      "text": "Admin media sosial membalas komentar pelanggan maksimal dalam dua jam kerja.",
+      "keywords": [
+        "respons",
+        "komunitas",
+        "layanan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b28",
+      "text": "Kata kunci utama halaman beranda adalah kaos polos murah berkualitas.",
+      "keywords": [
+        "SEO",
+        "peringkat Google",
+        "optimasi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "b29",
+      "text": "Semua faktur klien perusahaan diberi nomor urut dengan awalan INV dan tahun.",
+      "keywords": [
+        "invoice",
+        "penomoran",
+        "administrasi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "advance_days",
+      "days": 6
+    },
+    {
+      "op": "recall",
+      "query": "jadwal posting Instagram",
+      "expect_top5": [
+        "b02"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "jadwal posting Instagram",
+      "expect_top5": [
+        "b02"
+      ]
+    },
+    {
+      "op": "brief",
+      "expect_in_section": {
+        "check first": [
+          "usang"
+        ],
+        "agent": [
+          "b02"
+        ]
+      },
+      "max_tokens": 300
+    }
+  ]
+}

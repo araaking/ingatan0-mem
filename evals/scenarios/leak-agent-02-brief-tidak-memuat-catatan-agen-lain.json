@@ -1,0 +1,96 @@
+{
+  "id": "leak-agent-02-brief-tidak-memuat-catatan-agen-lain",
+  "title": "Brief seo-agent tidak memuat tiga catatan pribadi asisten",
+  "category": "leak-agent",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "a1",
+      "text": "Pak Wahyu biasa terlambat membayar tagihan, ingatkan tiga hari sebelum jatuh tempo.",
+      "keywords": [
+        "pembayaran",
+        "pengingat",
+        "klien"
+      ],
+      "entities": [
+        "Pak Wahyu"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "remember",
+      "key": "a2",
+      "text": "Password panel hosting disimpan di brankas kantor, jangan ditulis di chat.",
+      "keywords": [
+        "akses",
+        "keamanan",
+        "panel"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "remember",
+      "key": "a3",
+      "text": "Bu Ratna lebih suka dihubungi lewat telepon sebelum jam sepuluh pagi.",
+      "keywords": [
+        "kontak klien",
+        "preferensi",
+        "komunikasi"
+      ],
+      "entities": [
+        "Bu Ratna"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "remember",
+      "key": "s1",
+      "text": "Target keyword utama toko adalah kaos polos murah dengan volume pencarian tertinggi.",
+      "keywords": [
+        "kata kunci",
+        "riset SEO",
+        "peringkat"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "brief",
+      "actor": "seo",
+      "expect_in_section": {
+        "agent": [
+          "s1"
+        ]
+      },
+      "expect_not_in": [
+        "a1",
+        "a2",
+        "a3"
+      ]
+    },
+    {
+      "op": "brief",
+      "actor": "asisten",
+      "expect_in_section": {
+        "agent": [
+          "a1",
+          "a2",
+          "a3"
+        ]
+      },
+      "expect_not_in": [
+        "s1"
+      ]
+    }
+  ]
+}

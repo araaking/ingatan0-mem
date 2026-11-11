@@ -1,0 +1,42 @@
+{
+  "id": "inflection-07-bentuk-turunan-beda-dari-akar-di-keywords",
+  "title": "Query bentuk turunan 'menukar' tidak menemukan fakta yang menulis 'penukaran' dengan akar 'tukar' di keywords",
+  "category": "inflection",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "tukar",
+      "text": "Penukaran produk cacat gratis dan pelanggan tidak menanggung ongkos kirim.",
+      "keywords": [
+        "tukar",
+        "retur",
+        "garansi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "lain",
+      "text": "Stok kaos hitam ukuran L tinggal sepuluh pcs.",
+      "keywords": [
+        "persediaan",
+        "sisa barang"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "bisa menukar pesanan",
+      "expect_top5": [
+        "tukar"
+      ]
+    }
+  ]
+}

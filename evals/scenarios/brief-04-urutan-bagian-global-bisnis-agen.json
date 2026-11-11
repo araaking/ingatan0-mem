@@ -1,0 +1,94 @@
+{
+  "id": "brief-04-urutan-bagian-global-bisnis-agen",
+  "title": "Brief memuat bagian global, business dan agent dengan fakta di bagian yang benar",
+  "category": "brief",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "global",
+      "text": "Pemilik usaha berbahasa Indonesia santai dan tidak suka laporan terlalu panjang.",
+      "keywords": [
+        "gaya komunikasi",
+        "preferensi",
+        "pemilik"
+      ],
+      "tier": "global",
+      "kind": "stable",
+      "actor": "asisten"
+    },
+    {
+      "op": "approve",
+      "key": "global"
+    },
+    {
+      "op": "remember",
+      "key": "bisnis",
+      "text": "Semua konten toko memakai nada ramah dan sapaan kak untuk pelanggan.",
+      "keywords": [
+        "gaya bahasa",
+        "tone of voice",
+        "brand"
+      ],
+      "tier": "business",
+      "kind": "stable",
+      "actor": "asisten"
+    },
+    {
+      "op": "approve",
+      "key": "bisnis"
+    },
+    {
+      "op": "remember",
+      "key": "agen",
+      "text": "Riset keyword minggu ini difokuskan pada kategori kaos oversize dan hoodie.",
+      "keywords": [
+        "SEO",
+        "kata kunci",
+        "rencana konten"
+      ],
+      "kind": "stable",
+      "actor": "seo"
+    },
+    {
+      "op": "brief",
+      "actor": "seo",
+      "expect_in_section": {
+        "global": [
+          "global"
+        ],
+        "business": [
+          "bisnis"
+        ],
+        "agent": [
+          "agen"
+        ]
+      },
+      "expect_not_in": {
+        "global": [
+          "bisnis",
+          "agen"
+        ],
+        "business": [
+          "global",
+          "agen"
+        ],
+        "agent": [
+          "global",
+          "bisnis"
+        ]
+      },
+      "max_tokens": 1000
+    }
+  ]
+}

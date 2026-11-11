@@ -1,0 +1,63 @@
+{
+  "id": "brief-02-confirm-keluar-dari-check-first",
+  "title": "Setelah confirm, fakta pindah dari 'check first' ke bagian biasa",
+  "category": "brief",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "sewa",
+      "text": "Biaya sewa gudang Cipadu Rp 2.000.000 per bulan, dibayar setiap tanggal 5.",
+      "keywords": [
+        "kontrak gudang",
+        "tagihan sewa",
+        "biaya tetap"
+      ],
+      "entities": [
+        "gudang Cipadu"
+      ],
+      "review_in_days": 10
+    },
+    {
+      "op": "advance_days",
+      "days": 11
+    },
+    {
+      "op": "brief",
+      "expect_in_section": {
+        "check first": [
+          "sewa"
+        ]
+      },
+      "expect_not_in": {
+        "agent": [
+          "sewa"
+        ]
+      }
+    },
+    {
+      "op": "confirm",
+      "key": "sewa",
+      "reason": "Pemilik gudang mengirim kuitansi bulan ini dengan nominal yang sama."
+    },
+    {
+      "op": "brief",
+      "expect_in_section": {
+        "agent": [
+          "sewa"
+        ]
+      },
+      "expect_not_in": {
+        "check first": [
+          "sewa"
+        ]
+      }
+    }
+  ]
+}

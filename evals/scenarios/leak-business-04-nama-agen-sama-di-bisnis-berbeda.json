@@ -1,0 +1,74 @@
+{
+  "id": "leak-business-04-nama-agen-sama-di-bisnis-berbeda",
+  "title": "Agen bernama sama di bisnis lain tidak membaca catatan pribadi agen ini",
+  "category": "leak-business",
+  "source": "pattern",
+  "actors": {
+    "x": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "y": {
+      "business": "kopisenja",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "x_priv",
+      "text": "Catatan pribadi asisten: Pak Wahyu minta diskon 15 persen tetapi jangan ditawarkan ke klien lain.",
+      "keywords": [
+        "negosiasi",
+        "potongan harga",
+        "catatan internal"
+      ],
+      "entities": [
+        "Pak Wahyu"
+      ],
+      "actor": "x"
+    },
+    {
+      "op": "remember",
+      "key": "y_own",
+      "text": "Biji kopi Gayo dibeli dari petani Pak Saleh seharga Rp 110.000 per kilo.",
+      "keywords": [
+        "harga bahan",
+        "pemasok",
+        "arabika"
+      ],
+      "entities": [
+        "Pak Saleh"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "x_priv",
+      "expect_absent": [
+        "x_priv"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query": "Pak Wahyu diskon",
+      "expect_absent": [
+        "x_priv"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "brief",
+      "actor": "y",
+      "expect_in_section": {
+        "agent": [
+          "y_own"
+        ]
+      },
+      "expect_not_in": [
+        "x_priv"
+      ]
+    }
+  ]
+}

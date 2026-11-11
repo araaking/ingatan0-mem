@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --python ${{ matrix.python-version }}
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Pyright
+        run: uv run python -m pyright
+      - name: Tests
+        run: uv run python -m pytest -q
+      - name: Evals
+        run: uv run python -m evals
+
+  # T-30: the built wheel installs and runs in an empty folder, with no Docker and no
+  # database service, using only what is inside the wheel.
+  clean-install:
+    name: clean install / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+      - name: Run init and doctor from the wheel in an empty folder
+        shell: bash
+        run: |
+          WHEEL="$(uv run --no-project python -c 'import glob, os; print(os.path.abspath(glob.glob("dist/*.whl")[0]))')"
+          echo "wheel: $WHEEL"
+          WORK="$(mktemp -d)"
+          export INGATAN_HOME="$(mktemp -d)"
+          cd "$WORK"
+          uvx --from "$WHEEL" ingatan --version
+          uvx --from "$WHEEL" ingatan init --business demo --agent ci
+          uvx --from "$WHEEL" ingatan doctor
+          uvx --from "$WHEEL" ingatan log
+          uvx --from "$WHEEL" ingatan proposals list

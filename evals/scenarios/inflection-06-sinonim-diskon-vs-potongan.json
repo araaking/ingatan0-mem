@@ -1,0 +1,43 @@
+{
+  "id": "inflection-06-sinonim-diskon-vs-potongan",
+  "title": "Sinonim 'diskon' di keywords menemukan fakta yang menulis 'potongan harga'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "potongan",
+      "text": "Pemotongan harga 10 persen berlaku bila pembelian di atas Rp 500.000.",
+      "keywords": [
+        "diskon",
+        "promo",
+        "pengurangan harga"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "resi",
+      "text": "Nomor resi dikirim ke pembeli maksimal satu hari setelah paket diserahkan ke kurir.",
+      "keywords": [
+        "lacak paket",
+        "kurir"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "diskon minimal belanja",
+      "expect_top5": [
+        "potongan"
+      ]
+    }
+  ]
+}

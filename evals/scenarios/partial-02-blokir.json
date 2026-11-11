@@ -1,0 +1,43 @@
+{
+  "id": "partial-02-blokir",
+  "title": "Potongan kata 'blokir' menemukan 'diblokir' lewat trigram",
+  "category": "partial-word",
+  "source": "pattern",
+  "needs": "trigram",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "akun",
+      "text": "Kampanye iklan Facebook dihentikan sementara karena akun iklan diblokir.",
+      "keywords": [
+        "suspend",
+        "akun ads",
+        "banding"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "budget",
+      "text": "Anggaran iklan bulanan ditetapkan Rp 3.000.000 dan dibagi rata per minggu.",
+      "keywords": [
+        "biaya promosi",
+        "ads"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "blokir",
+      "expect_top5": [
+        "akun"
+      ]
+    }
+  ]
+}

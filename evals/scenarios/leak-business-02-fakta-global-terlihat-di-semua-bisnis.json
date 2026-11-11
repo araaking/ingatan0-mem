@@ -1,0 +1,70 @@
+{
+  "id": "leak-business-02-fakta-global-terlihat-di-semua-bisnis",
+  "title": "Fakta global yang disetujui pemilik terbaca dari bisnis lain",
+  "category": "leak-business",
+  "source": "pattern",
+  "actors": {
+    "x": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "y": {
+      "business": "kopisenja",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "global",
+      "text": "Pemilik usaha lebih suka dihubungi lewat WhatsApp pada jam kerja, bukan lewat telepon.",
+      "keywords": [
+        "kontak",
+        "preferensi komunikasi",
+        "pemilik"
+      ],
+      "tier": "global",
+      "actor": "x"
+    },
+    {
+      "op": "recall",
+      "query": "pemilik dihubungi lewat WhatsApp",
+      "expect_absent": [
+        "global"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "approve",
+      "key": "global"
+    },
+    {
+      "op": "recall",
+      "query": "pemilik dihubungi lewat WhatsApp",
+      "expect_top5": [
+        "global"
+      ],
+      "expect_status": {
+        "global": "valid"
+      },
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query": "pemilik dihubungi lewat WhatsApp",
+      "expect_top5": [
+        "global"
+      ],
+      "actor": "x"
+    },
+    {
+      "op": "brief",
+      "actor": "y",
+      "expect_in_section": {
+        "global": [
+          "global"
+        ]
+      }
+    }
+  ]
+}

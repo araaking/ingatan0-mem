@@ -1,0 +1,45 @@
+{
+  "id": "inflection-08-dikirim-vs-akar-kirim",
+  "title": "Query 'dikirim' tidak menemukan fakta berkeyword akar 'kirim' yang menulis 'pengiriman'",
+  "category": "inflection",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "kirim",
+      "text": "Pengiriman luar pulau memakai JNE Reguler dengan tarif Rp 35.000 per kilo.",
+      "keywords": [
+        "kirim",
+        "ekspedisi",
+        "ongkos"
+      ],
+      "entities": [
+        "JNE"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "gudang",
+      "text": "Gudang tutup pukul 17.00 dan paket yang belum dikemas dikerjakan esok hari.",
+      "keywords": [
+        "jam operasional",
+        "packing"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "kapan dikirim",
+      "expect_top5": [
+        "kirim"
+      ]
+    }
+  ]
+}

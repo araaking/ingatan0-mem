@@ -1,0 +1,51 @@
+{
+  "id": "stale-01-ongkir-lewat-31-hari",
+  "title": "Tarif ongkir yang berumur 31 hari muncul sebagai 'check first'",
+  "category": "stale",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "ongkir",
+      "text": "Ongkir JNE Reguler ke Surabaya Rp 18.000 per kilo, berlaku sampai ada pemberitahuan dari JNE.",
+      "keywords": [
+        "tarif pengiriman",
+        "ongkos kirim",
+        "ekspedisi"
+      ],
+      "entities": [
+        "JNE"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "ongkir JNE Surabaya",
+      "expect_top5": [
+        "ongkir"
+      ],
+      "expect_status": {
+        "ongkir": "valid"
+      }
+    },
+    {
+      "op": "advance_days",
+      "days": 31
+    },
+    {
+      "op": "recall",
+      "query": "ongkir JNE Surabaya",
+      "expect_top5": [
+        "ongkir"
+      ],
+      "expect_status": {
+        "ongkir": "check first"
+      }
+    }
+  ]
+}

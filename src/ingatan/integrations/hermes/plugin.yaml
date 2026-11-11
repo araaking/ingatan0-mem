@@ -1,0 +1,14 @@
+# Ingatan memory provider for Hermes Agent.
+# Copy this folder to $HERMES_HOME/plugins/ingatan/ and set `memory.provider: ingatan`.
+# `kind: exclusive` is copied from other memory-provider plugins; what Hermes does with the
+# value is not verified (the one-provider rule is enforced in code). `requires_hermes` is
+# left out on purpose: the Hermes version of the owner is unknown.
+name: ingatan
+version: 0.1.0
+description: Local-first shared memory. Captures each turn as an episode and puts the brief in the system prompt. The seven memory tools come from the Ingatan MCP server.
+author: Ingatan contributors
+manifest_version: 1
+kind: exclusive
+hooks:
+  - system_prompt_block
+  - sync_turn

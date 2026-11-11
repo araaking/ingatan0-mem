@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="112" viewBox="0 0 112 112" role="img" aria-labelledby="t d">
+  <title id="t">Ingatan</title>
+  <desc id="d">Three stacked bars for the global, business and agent tiers. The last bar is dashed: a fact that should be checked first.</desc>
+  <rect width="112" height="112" rx="26" fill="#0F766E"/>
+  <rect x="26" y="30" width="60" height="12" rx="6" fill="#F0FDFA"/>
+  <rect x="26" y="50" width="44" height="12" rx="6" fill="#99F6E4"/>
+  <path d="M32 76h36" fill="none" stroke="#FDE68A" stroke-width="12" stroke-linecap="round" stroke-dasharray="1 17"/>
+</svg>

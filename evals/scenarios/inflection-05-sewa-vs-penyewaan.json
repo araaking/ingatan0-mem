@@ -1,0 +1,43 @@
+{
+  "id": "inflection-05-sewa-vs-penyewaan",
+  "title": "Kata dasar 'sewa' di keywords menemukan fakta yang menulis 'penyewaan'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "studio",
+      "text": "Penyewaan studio foto produk Rp 150.000 per jam dengan minimal dua jam.",
+      "keywords": [
+        "sewa",
+        "booking",
+        "fotografi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "lampu",
+      "text": "Lampu softbox dibeli bulan lalu dan disimpan di rak dekat meja packing.",
+      "keywords": [
+        "peralatan",
+        "pencahayaan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "sewa tempat",
+      "expect_top5": [
+        "studio"
+      ]
+    }
+  ]
+}

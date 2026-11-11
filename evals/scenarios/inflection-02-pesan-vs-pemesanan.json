@@ -1,0 +1,46 @@
+{
+  "id": "inflection-02-pesan-vs-pemesanan",
+  "title": "Kata dasar 'pesan' di keywords menemukan fakta yang menulis 'pemesanan'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "grosir",
+      "text": "Pemesanan grosir minimal 12 pcs dengan uang muka 50 persen.",
+      "keywords": [
+        "pesan",
+        "order partai",
+        "DP"
+      ],
+      "entities": [
+        "grosir"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "retail",
+      "text": "Pembelian eceran tidak memerlukan uang muka dan langsung dikemas.",
+      "keywords": [
+        "ritel",
+        "satuan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "pesan kaos satu lusin",
+      "expect_top5": [
+        "grosir"
+      ]
+    }
+  ]
+}

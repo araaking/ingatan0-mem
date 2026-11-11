@@ -1,0 +1,68 @@
+{
+  "id": "supersede-03-riwayat-dengan-include-closed",
+  "title": "Fakta yang diganti hanya muncul bila diminta, dengan status 'superseded'",
+  "category": "supersede",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "niaga",
+      "text": "Kontrak hosting toko memakai Niagahoster paket Bisnis Rp 1.200.000 per tahun.",
+      "keywords": [
+        "server",
+        "paket hosting",
+        "biaya tahunan"
+      ],
+      "entities": [
+        "hosting"
+      ]
+    },
+    {
+      "op": "remember",
+      "key": "hostinger",
+      "text": "Hosting toko dipindah ke Hostinger paket Bisnis Rp 980.000 per tahun.",
+      "keywords": [
+        "server",
+        "paket hosting",
+        "biaya tahunan"
+      ],
+      "entities": [
+        "hosting"
+      ]
+    },
+    {
+      "op": "supersede",
+      "old": "niaga",
+      "new": "hostinger"
+    },
+    {
+      "op": "recall",
+      "query": "hosting toko paket Bisnis",
+      "expect_top5": [
+        "hostinger"
+      ],
+      "expect_absent": [
+        "niaga"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "hosting toko paket Bisnis",
+      "expect_top5": [
+        "hostinger",
+        "niaga"
+      ],
+      "expect_status": {
+        "niaga": "superseded",
+        "hostinger": "valid"
+      },
+      "include_closed": true
+    }
+  ]
+}

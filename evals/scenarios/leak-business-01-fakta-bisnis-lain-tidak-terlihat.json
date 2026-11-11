@@ -1,0 +1,112 @@
+{
+  "id": "leak-business-01-fakta-bisnis-lain-tidak-terlihat",
+  "title": "Bisnis Y mencari dengan teks persis fakta bisnis X (tier agent dan tier business)",
+  "category": "leak-business",
+  "source": "pattern",
+  "actors": {
+    "x": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "y": {
+      "business": "kopisenja",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "x_agen",
+      "text": "Harga reseller kaos polos Rp 48.000 per pcs untuk order minimal 24 pcs.",
+      "keywords": [
+        "grosir",
+        "harga partai",
+        "mitra"
+      ],
+      "entities": [
+        "reseller"
+      ],
+      "actor": "x"
+    },
+    {
+      "op": "remember",
+      "key": "x_bisnis",
+      "text": "Semua pesanan reseller dikirim setiap hari Selasa dan Jumat sore.",
+      "keywords": [
+        "jadwal kirim",
+        "mitra",
+        "pengiriman rutin"
+      ],
+      "entities": [
+        "reseller"
+      ],
+      "tier": "business",
+      "actor": "x"
+    },
+    {
+      "op": "approve",
+      "key": "x_bisnis"
+    },
+    {
+      "op": "remember",
+      "key": "y_own",
+      "text": "Biji kopi Gayo dibeli dari petani Pak Saleh seharga Rp 110.000 per kilo.",
+      "keywords": [
+        "harga bahan",
+        "pemasok",
+        "arabika"
+      ],
+      "entities": [
+        "Pak Saleh"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "x_agen",
+      "expect_absent": [
+        "x_agen",
+        "x_bisnis"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "x_bisnis",
+      "expect_absent": [
+        "x_agen",
+        "x_bisnis"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query": "harga reseller kaos polos",
+      "expect_absent": [
+        "x_agen",
+        "x_bisnis"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query": "harga biji kopi Pak Saleh",
+      "expect_top5": [
+        "y_own"
+      ],
+      "expect_absent": [
+        "x_agen",
+        "x_bisnis"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "x_bisnis",
+      "expect_top5": [
+        "x_bisnis"
+      ],
+      "actor": "x"
+    }
+  ]
+}

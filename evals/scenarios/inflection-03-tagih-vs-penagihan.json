@@ -1,0 +1,43 @@
+{
+  "id": "inflection-03-tagih-vs-penagihan",
+  "title": "Kata dasar 'tagih' di keywords menemukan fakta yang menulis 'penagihan'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "invoice",
+      "text": "Penagihan invoice klien dilakukan setiap tanggal 25 lewat email.",
+      "keywords": [
+        "tagih",
+        "tagihan",
+        "pembayaran klien"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "laporan",
+      "text": "Laporan penjualan bulanan dikirim ke pemilik pada hari pertama.",
+      "keywords": [
+        "rekap",
+        "omzet"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "kapan harus tagih",
+      "expect_top5": [
+        "invoice"
+      ]
+    }
+  ]
+}

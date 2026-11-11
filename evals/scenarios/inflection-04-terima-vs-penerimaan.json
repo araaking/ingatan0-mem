@@ -1,0 +1,43 @@
+{
+  "id": "inflection-04-terima-vs-penerimaan",
+  "title": "Kata dasar 'terima' di keywords menemukan fakta yang menulis 'penerimaan'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "qc",
+      "text": "Penerimaan barang dari supplier dicek manual oleh Rini sebelum masuk stok.",
+      "keywords": [
+        "terima",
+        "pemeriksaan",
+        "kontrol kualitas"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "retur",
+      "text": "Barang cacat dikembalikan ke supplier maksimal tiga hari setelah ketahuan.",
+      "keywords": [
+        "pengembalian",
+        "komplain"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "terima kiriman",
+      "expect_top5": [
+        "qc"
+      ]
+    }
+  ]
+}

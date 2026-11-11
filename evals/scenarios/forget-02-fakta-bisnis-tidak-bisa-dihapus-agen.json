@@ -1,0 +1,58 @@
+{
+  "id": "forget-02-fakta-bisnis-tidak-bisa-dihapus-agen",
+  "title": "Agen tidak boleh menghapus fakta bisnis; fakta tetap ada",
+  "category": "forget",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "retur",
+      "text": "Kebijakan retur: barang boleh dikembalikan paling lambat tujuh hari setelah diterima pembeli.",
+      "keywords": [
+        "pengembalian barang",
+        "garansi",
+        "komplain"
+      ],
+      "tier": "business",
+      "kind": "stable",
+      "actor": "asisten"
+    },
+    {
+      "op": "approve",
+      "key": "retur"
+    },
+    {
+      "op": "forget",
+      "key": "retur",
+      "actor": "seo",
+      "expect_error": "ScopeError"
+    },
+    {
+      "op": "forget",
+      "key": "retur",
+      "actor": "asisten",
+      "expect_error": "ScopeError"
+    },
+    {
+      "op": "recall",
+      "query": "kebijakan retur barang",
+      "expect_top5": [
+        "retur"
+      ],
+      "expect_status": {
+        "retur": "valid"
+      },
+      "actor": "seo"
+    }
+  ]
+}

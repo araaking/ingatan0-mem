@@ -1,0 +1,71 @@
+{
+  "id": "proposal-01-pengusul-tidak-melihat-usulannya",
+  "title": "Agen yang mengusulkan tidak menemukan usulan yang masih menunggu",
+  "category": "proposal",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "jam",
+      "text": "Jam operasional toko resmi adalah Senin sampai Sabtu pukul 09.00 sampai 17.00.",
+      "keywords": [
+        "jam buka",
+        "jadwal layanan",
+        "operasional"
+      ],
+      "tier": "business",
+      "kind": "stable",
+      "actor": "asisten"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "jam",
+      "expect_absent": [
+        "jam"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "recall",
+      "query": "jam buka toko",
+      "expect_absent": [
+        "jam"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "recall",
+      "query": "jam buka toko",
+      "expect_absent": [
+        "jam"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "brief",
+      "actor": "asisten",
+      "expect_not_in": [
+        "jam"
+      ],
+      "expect_pending": 1
+    },
+    {
+      "op": "brief",
+      "actor": "seo",
+      "expect_not_in": [
+        "jam"
+      ],
+      "expect_pending": 1
+    }
+  ]
+}

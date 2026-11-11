@@ -1,0 +1,43 @@
+{
+  "id": "partial-01-langgan",
+  "title": "Potongan kata 'langgan' menemukan 'langganan' lewat trigram",
+  "category": "partial-word",
+  "source": "pattern",
+  "needs": "trigram",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "domain",
+      "text": "Langganan domain tokoku.id jatuh tempo bulan Maret dan diperpanjang otomatis.",
+      "keywords": [
+        "hosting",
+        "perpanjangan",
+        "situs"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "email",
+      "text": "Email bisnis memakai paket Google Workspace untuk lima akun.",
+      "keywords": [
+        "surel",
+        "kantor"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "langgan",
+      "expect_top5": [
+        "domain"
+      ]
+    }
+  ]
+}

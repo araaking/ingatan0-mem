@@ -1,0 +1,71 @@
+{
+  "id": "proposal-05-supersede-ditolak-fakta-kembali-valid",
+  "title": "Bila usulan pengganti ditolak, fakta bisnis lama keluar dari 'check first'",
+  "category": "proposal",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "jam",
+      "text": "Jam operasional toko resmi adalah Senin sampai Sabtu pukul 09.00 sampai 17.00.",
+      "keywords": [
+        "jam buka",
+        "jadwal layanan",
+        "operasional"
+      ],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "approve",
+      "key": "jam"
+    },
+    {
+      "op": "remember",
+      "key": "jam_baru",
+      "text": "Jam operasional toko kini Senin sampai Minggu pukul 08.00 sampai 20.00.",
+      "keywords": [
+        "jam buka",
+        "jadwal layanan",
+        "operasional"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "supersede",
+      "old": "jam",
+      "new": "jam_baru",
+      "as": "usul_jam"
+    },
+    {
+      "op": "recall",
+      "query": "jam operasional toko",
+      "expect_top5": [
+        "jam"
+      ],
+      "expect_status": {
+        "jam": "check first"
+      }
+    },
+    {
+      "op": "reject",
+      "key": "usul_jam"
+    },
+    {
+      "op": "recall",
+      "query": "jam operasional toko",
+      "expect_top5": [
+        "jam"
+      ],
+      "expect_status": {
+        "jam": "valid"
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "id": "partial-03-ekspedi",
+  "title": "Potongan kata 'ekspedi' menemukan 'ekspedisi' lewat trigram",
+  "category": "partial-word",
+  "source": "pattern",
+  "needs": "trigram",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "sicepat",
+      "text": "Ekspedisi favorit pelanggan luar kota adalah SiCepat karena paling cepat sampai.",
+      "keywords": [
+        "kurir",
+        "jasa antar"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "packing",
+      "text": "Setiap paket diberi bubble wrap dan selotip tebal sebelum diserahkan.",
+      "keywords": [
+        "bungkus",
+        "kemasan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "ekspedi",
+      "expect_top5": [
+        "sicepat"
+      ]
+    }
+  ]
+}

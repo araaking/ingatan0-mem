@@ -1,0 +1,52 @@
+{
+  "id": "conflict-01-fakta-mirip-ditandai",
+  "title": "Dua fakta mirip dengan entitas sama ditandai 'possible conflict'",
+  "category": "conflict",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "rini",
+      "text": "Admin gudang toko adalah Rini dan bekerja pada shift pagi.",
+      "keywords": [
+        "petugas gudang",
+        "staf stok",
+        "shift"
+      ],
+      "entities": [
+        "admin gudang"
+      ]
+    },
+    {
+      "op": "remember",
+      "key": "sari",
+      "text": "Admin gudang toko adalah Sari dan bekerja pada shift pagi.",
+      "keywords": [
+        "petugas gudang",
+        "staf stok",
+        "shift"
+      ],
+      "entities": [
+        "admin gudang"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "siapa admin gudang",
+      "expect_top5": [
+        "rini",
+        "sari"
+      ],
+      "expect_status": {
+        "rini": "possible conflict",
+        "sari": "possible conflict"
+      }
+    }
+  ]
+}

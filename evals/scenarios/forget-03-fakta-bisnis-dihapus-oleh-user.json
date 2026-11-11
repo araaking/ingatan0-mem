@@ -1,0 +1,72 @@
+{
+  "id": "forget-03-fakta-bisnis-dihapus-oleh-user",
+  "title": "Pemilik dapat menghapus fakta bisnis lewat CLI dan fakta itu benar-benar hilang",
+  "category": "forget",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "retur",
+      "text": "Kebijakan retur: barang boleh dikembalikan paling lambat tujuh hari setelah diterima pembeli.",
+      "keywords": [
+        "pengembalian barang",
+        "garansi",
+        "komplain"
+      ],
+      "tier": "business",
+      "kind": "stable",
+      "actor": "asisten"
+    },
+    {
+      "op": "approve",
+      "key": "retur"
+    },
+    {
+      "op": "recall",
+      "query": "kebijakan retur barang",
+      "expect_top5": [
+        "retur"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "forget",
+      "key": "retur",
+      "by_user": true,
+      "actor": "asisten"
+    },
+    {
+      "op": "recall",
+      "query": "kebijakan retur barang",
+      "expect_absent": [
+        "retur"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "recall",
+      "query": "kebijakan retur barang",
+      "expect_absent": [
+        "retur"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "brief",
+      "actor": "seo",
+      "expect_not_in": [
+        "retur"
+      ]
+    }
+  ]
+}

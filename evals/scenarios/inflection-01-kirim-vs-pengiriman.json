@@ -1,0 +1,46 @@
+{
+  "id": "inflection-01-kirim-vs-pengiriman",
+  "title": "Kata dasar 'kirim' di keywords menemukan fakta yang menulis 'pengiriman'",
+  "category": "inflection",
+  "source": "pattern",
+  "needs": "keywords",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "kirim",
+      "text": "Pengiriman luar pulau memakai JNE Reguler dengan tarif Rp 35.000 per kilo.",
+      "keywords": [
+        "kirim",
+        "ekspedisi",
+        "ongkos"
+      ],
+      "entities": [
+        "JNE"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "gudang",
+      "text": "Gudang tutup pukul 17.00 dan paket yang belum dikemas dikerjakan esok hari.",
+      "keywords": [
+        "jam operasional",
+        "packing"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "kirim barang Bali",
+      "expect_top5": [
+        "kirim"
+      ]
+    }
+  ]
+}

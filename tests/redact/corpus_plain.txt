@@ -1,0 +1,30 @@
+# Ordinary text that redact() must leave exactly as it is. One line each.
+Jangan simpan password di dalam catatan bersama.
+Token API disimpan oleh Pak Budi, jangan ditulis di chat.
+Kata sandi wifi kantor sudah diganti minggu lalu.
+Tolong ingatkan saya untuk mengganti kata sandi akun email toko.
+Pelanggan lupa password dan minta dikirim ulang lewat WhatsApp.
+Harga kopi susu naik jadi Rp 18.000 — kata Bu Sári ‘mulai Senin’ ✓
+Token listrik habis jam sembilan malam, beli lagi besok pagi.
+Password manager yang dipakai tim adalah yang open source.
+Rahasia dapur: resep kopi susu aren dibuat oleh Bu Sári sendiri.
+Kami membahas secret santa untuk acara akhir tahun toko.
+Pemilik toko bertanggung jawab atas pertanggungjawabannya sendiri.
+Bearer of bad news: pemasok gula menaikkan harga lagi.
+The bearer authentication scheme is described in the vendor docs.
+Use an API key from the dashboard, but never paste the key in chat.
+Risk-assessment-for-the-new-warehouse-location was approved on Monday.
+The desk-lamp-with-usb-charger costs Rp 85.000 at the market stall.
+Disk-backup-partition-nightly-job runs at 02:00 every night.
+Ask-Ana-about-the-supplier-contract-before-signing-anything.
+Commit 9fceb02d0ae598e95dc970b74767f19372d61af8 fixed the stock report.
+Order id 123e4567-e89b-12d3-a456-426614174000 was shipped on 2026-11-10.
+Lihat https://example.com/docs/getting-started untuk panduan singkat.
+File ada di C:\Users\toko\Documents\laporan-penjualan-oktober.xlsx sekarang.
+Config ada di ~/.ingatan/tokoku.db dan global.db.
+Rapat dengan Pak Dedi dimulai pukul 09.30, bawa laporan stok.
+Pelanggan tetap: Bu Ani, Pak Rudi, dan Mbak Tika dari Bandung.
+Email supplier: sales@gulaaren.example, balas sebelum Jumat.
+Jumlah pesanan 1.250 gelas per minggu, naik 12% dari bulan lalu.
+Tokenizer di SQLite memecah kata menjadi potongan tiga huruf.
+Kata kunci pencarian: kopi, susu, aren, gula.

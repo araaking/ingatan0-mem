@@ -1,0 +1,105 @@
+{
+  "id": "leak-business-03-brief-dan-hitungan-proposal-bisnis-lain",
+  "title": "Brief bisnis Y tidak memuat fakta bisnis X dan tidak menghitung proposal X",
+  "category": "leak-business",
+  "source": "pattern",
+  "actors": {
+    "x": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "y": {
+      "business": "kopisenja",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "x1",
+      "text": "Harga reseller kaos polos Rp 48.000 per pcs untuk order minimal 24 pcs.",
+      "keywords": [
+        "grosir",
+        "harga partai",
+        "mitra"
+      ],
+      "entities": [
+        "reseller"
+      ],
+      "actor": "x"
+    },
+    {
+      "op": "remember",
+      "key": "x2",
+      "text": "Gudang toko berada di Cipadu dan buka setiap hari kerja pukul 08.00.",
+      "keywords": [
+        "lokasi",
+        "penyimpanan",
+        "stok barang"
+      ],
+      "tier": "business",
+      "actor": "x"
+    },
+    {
+      "op": "approve",
+      "key": "x2"
+    },
+    {
+      "op": "remember",
+      "key": "x3",
+      "text": "Rencana perluasan toko ke marketplace baru masih menunggu persetujuan pemilik.",
+      "keywords": [
+        "ekspansi",
+        "rencana",
+        "penjualan online"
+      ],
+      "tier": "business",
+      "actor": "x"
+    },
+    {
+      "op": "remember",
+      "key": "y1",
+      "text": "Biji kopi Gayo dibeli dari petani Pak Saleh seharga Rp 110.000 per kilo.",
+      "keywords": [
+        "harga bahan",
+        "pemasok",
+        "arabika"
+      ],
+      "entities": [
+        "Pak Saleh"
+      ],
+      "actor": "y"
+    },
+    {
+      "op": "brief",
+      "actor": "y",
+      "expect_in_section": {
+        "agent": [
+          "y1"
+        ]
+      },
+      "expect_not_in": [
+        "x1",
+        "x2",
+        "x3"
+      ],
+      "expect_pending": 0
+    },
+    {
+      "op": "brief",
+      "actor": "x",
+      "expect_in_section": {
+        "agent": [
+          "x1"
+        ],
+        "business": [
+          "x2"
+        ]
+      },
+      "expect_not_in": [
+        "x3"
+      ],
+      "expect_pending": 1
+    }
+  ]
+}

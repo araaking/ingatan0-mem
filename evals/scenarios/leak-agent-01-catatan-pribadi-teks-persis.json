@@ -1,0 +1,78 @@
+{
+  "id": "leak-agent-01-catatan-pribadi-teks-persis",
+  "title": "Agen lain mencari dengan teks persis catatan pribadi dan tidak menemukannya",
+  "category": "leak-agent",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "priv",
+      "text": "Catatan pribadi asisten: Pak Wahyu minta diskon 15 persen tetapi jangan ditawarkan ke klien lain.",
+      "keywords": [
+        "negosiasi",
+        "potongan harga",
+        "catatan internal"
+      ],
+      "entities": [
+        "Pak Wahyu"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "remember",
+      "key": "seo_own",
+      "text": "Target keyword utama toko adalah kaos polos murah dengan volume pencarian tertinggi.",
+      "keywords": [
+        "kata kunci",
+        "riset SEO",
+        "peringkat"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "priv",
+      "expect_absent": [
+        "priv"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "recall",
+      "query": "negosiasi diskon Pak Wahyu",
+      "expect_absent": [
+        "priv"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "recall",
+      "query": "kata kunci kaos polos murah",
+      "expect_top5": [
+        "seo_own"
+      ],
+      "expect_absent": [
+        "priv"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "recall",
+      "query_text_of": "priv",
+      "expect_top5": [
+        "priv"
+      ],
+      "actor": "asisten"
+    }
+  ]
+}

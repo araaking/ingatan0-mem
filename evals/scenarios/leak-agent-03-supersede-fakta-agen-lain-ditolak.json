@@ -1,0 +1,61 @@
+{
+  "id": "leak-agent-03-supersede-fakta-agen-lain-ditolak",
+  "title": "Agen lain tidak bisa menutup fakta pribadi yang bukan miliknya",
+  "category": "leak-agent",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "priv",
+      "text": "Catatan pribadi asisten: Pak Wahyu minta diskon 15 persen tetapi jangan ditawarkan ke klien lain.",
+      "keywords": [
+        "negosiasi",
+        "potongan harga",
+        "catatan internal"
+      ],
+      "entities": [
+        "Pak Wahyu"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "remember",
+      "key": "seo_own",
+      "text": "Target keyword utama toko adalah kaos polos murah dengan volume pencarian tertinggi.",
+      "keywords": [
+        "kata kunci",
+        "riset SEO",
+        "peringkat"
+      ],
+      "actor": "seo"
+    },
+    {
+      "op": "supersede",
+      "old": "priv",
+      "new": "seo_own",
+      "actor": "seo",
+      "expect_error": "NotFoundError"
+    },
+    {
+      "op": "recall",
+      "query": "diskon Pak Wahyu negosiasi",
+      "expect_top5": [
+        "priv"
+      ],
+      "expect_status": {
+        "priv": "valid"
+      },
+      "actor": "asisten"
+    }
+  ]
+}

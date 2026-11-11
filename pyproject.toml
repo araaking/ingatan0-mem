@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ingatan"
+version = "0.1.0"
+description = "Local-first shared memory for AI agents, served over MCP."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "mcp>=2.3,<3",
+  "pydantic>=2",
+  "typer",
+  "tomli>=2; python_version < '3.11'",
+]
+
+[project.urls]
+Repository = "https://github.com/araaking/ingatan0-mem"
+Issues = "https://github.com/araaking/ingatan0-mem/issues"
+
+[project.scripts]
+ingatan = "ingatan.cli:main"
+
+[dependency-groups]
+dev = [
+  "ruff",
+  "pyright",
+  "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ingatan"]
+# The SQL migrations live inside the package and are shipped with it.
+artifacts = ["src/ingatan/db/migrations/*.sql"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md", "/LICENSE", "/pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "evals"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PT", "RUF"]
+# Indonesian test data legitimately contains typographic quotes and dashes.
+ignore = ["RUF001", "RUF002", "RUF003", "PT012", "PT018"]
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+
+[tool.pyright]
+include = ["src", "tests", "evals"]
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --import-mode=importlib"

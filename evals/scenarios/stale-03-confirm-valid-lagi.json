@@ -1,0 +1,84 @@
+{
+  "id": "stale-03-confirm-valid-lagi",
+  "title": "Setelah dikonfirmasi, fakta valid lagi dan baru basi setelah satu interval baru",
+  "category": "stale",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "kain",
+      "text": "Supplier kain katun Pak Hendra menjual Rp 42.000 per meter untuk order di atas 50 meter.",
+      "keywords": [
+        "harga bahan",
+        "pemasok",
+        "bahan baku"
+      ],
+      "entities": [
+        "Pak Hendra"
+      ]
+    },
+    {
+      "op": "advance_days",
+      "days": 31
+    },
+    {
+      "op": "recall",
+      "query": "harga kain katun Pak Hendra",
+      "expect_top5": [
+        "kain"
+      ],
+      "expect_status": {
+        "kain": "check first"
+      }
+    },
+    {
+      "op": "confirm",
+      "key": "kain",
+      "reason": "Pak Hendra mengonfirmasi lewat WhatsApp hari ini bahwa harganya masih sama."
+    },
+    {
+      "op": "recall",
+      "query": "harga kain katun Pak Hendra",
+      "expect_top5": [
+        "kain"
+      ],
+      "expect_status": {
+        "kain": "valid"
+      }
+    },
+    {
+      "op": "advance_days",
+      "days": 29
+    },
+    {
+      "op": "recall",
+      "query": "harga kain katun Pak Hendra",
+      "expect_top5": [
+        "kain"
+      ],
+      "expect_status": {
+        "kain": "valid"
+      }
+    },
+    {
+      "op": "advance_days",
+      "days": 2
+    },
+    {
+      "op": "recall",
+      "query": "harga kain katun Pak Hendra",
+      "expect_top5": [
+        "kain"
+      ],
+      "expect_status": {
+        "kain": "check first"
+      }
+    }
+  ]
+}

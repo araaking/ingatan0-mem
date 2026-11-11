@@ -1,0 +1,46 @@
+{
+  "id": "leak-agent-04-forget-fakta-agen-lain-ditolak",
+  "title": "Agen lain tidak bisa menghapus fakta pribadi yang bukan miliknya",
+  "category": "leak-agent",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    },
+    "seo": {
+      "business": "tokoku",
+      "agent": "seo-agent"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "priv",
+      "text": "Catatan pribadi asisten: Pak Wahyu minta diskon 15 persen tetapi jangan ditawarkan ke klien lain.",
+      "keywords": [
+        "negosiasi",
+        "potongan harga",
+        "catatan internal"
+      ],
+      "entities": [
+        "Pak Wahyu"
+      ],
+      "actor": "asisten"
+    },
+    {
+      "op": "forget",
+      "key": "priv",
+      "actor": "seo",
+      "expect_error": "NotFoundError"
+    },
+    {
+      "op": "recall",
+      "query": "diskon Pak Wahyu negosiasi",
+      "expect_top5": [
+        "priv"
+      ],
+      "actor": "asisten"
+    }
+  ]
+}

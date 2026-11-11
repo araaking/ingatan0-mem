@@ -1,0 +1,57 @@
+{
+  "id": "conflict-02-confirm-dengan-id-menyelesaikan",
+  "title": "Confirm yang menyebut id fakta lain menyelesaikan pasangan konflik",
+  "category": "conflict",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "rini",
+      "text": "Admin gudang toko adalah Rini dan bekerja pada shift pagi.",
+      "keywords": [
+        "petugas gudang",
+        "staf stok",
+        "shift"
+      ],
+      "entities": [
+        "admin gudang"
+      ]
+    },
+    {
+      "op": "remember",
+      "key": "sari",
+      "text": "Admin gudang toko adalah Sari dan bekerja pada shift pagi.",
+      "keywords": [
+        "petugas gudang",
+        "staf stok",
+        "shift"
+      ],
+      "entities": [
+        "admin gudang"
+      ]
+    },
+    {
+      "op": "confirm",
+      "key": "rini",
+      "reason": "Rini dan Sari memang sama-sama admin gudang, keduanya benar. Lihat juga {sari}."
+    },
+    {
+      "op": "recall",
+      "query": "siapa admin gudang",
+      "expect_top5": [
+        "rini",
+        "sari"
+      ],
+      "expect_status": {
+        "rini": "valid",
+        "sari": "valid"
+      }
+    }
+  ]
+}
