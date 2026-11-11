@@ -360,10 +360,8 @@ def test_stdout_carries_only_protocol(ingatan_home: Path, tmp_path: Path) -> Non
             "clientInfo": {"name": "probe", "version": "0"},
         },
     }
-    proc.stdin.write((json.dumps(request) + "\n").encode())
-    proc.stdin.flush()
-    proc.stdin.close()
-    out, _err = proc.communicate(timeout=60)
+    # communicate() writes and closes stdin itself; closing it first breaks Python 3.10 on POSIX.
+    out, _err = proc.communicate((json.dumps(request) + "\n").encode(), timeout=60)
     lines = [line for line in out.decode("utf-8").splitlines() if line.strip()]
     assert lines, "the server answered nothing"
     for line in lines:
