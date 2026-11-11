@@ -263,9 +263,7 @@ def test_a_pair_with_a_global_fact_lives_in_the_business_file(ctx: Context) -> N
     )
     assert prop.proposal_id
     glo = proposals.approve(ctx, prop.proposal_id)
-    mine = facts.remember(
-        ctx, "Budi tinggal di Bandung", keywords=["tinggal"], entities=["Budi"]
-    )
+    mine = facts.remember(ctx, "Budi tinggal di Bandung", keywords=["tinggal"], entities=["Budi"])
     assert [s["id"] for s in mine.similar] == [glo]
     assert count(ctx.glob, "conflicts") == 0
     assert count(ctx.business, "conflicts") == 1

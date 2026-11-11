@@ -150,7 +150,7 @@ Begitu tersambung, agen memakai tool seperti ini:
 ```python
 remember(
     text="Harga kopi susu naik jadi Rp 18.000 mulai Senin.",
-    keywords=["harga", "naik", "kopi", "menu"],   # sinonim dan kata dasar
+    keywords=["harga", "naik", "kopi", "menu"],  # sinonim dan kata dasar
     entities=["kopi susu"],
 )
 recall(query="harga kopi susu")
@@ -452,7 +452,7 @@ Once connected, an agent uses the tools like this:
 ```python
 remember(
     text="Harga kopi susu naik jadi Rp 18.000 mulai Senin.",
-    keywords=["harga", "naik", "kopi", "menu"],   # synonyms and root words
+    keywords=["harga", "naik", "kopi", "menu"],  # synonyms and root words
     entities=["kopi susu"],
 )
 recall(query="harga kopi susu")
