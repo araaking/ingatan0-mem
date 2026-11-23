@@ -1,12 +1,17 @@
 """Cases with a known answer, and the judging of what was extracted against them.
 
 A case is a few captured exchanges, the facts a careful reader would take from them, and
-things that must not come out. Judging uses no model: an extracted fact is correct when it
-contains every word and every value of one expected fact, and invented otherwise.
+things that must not come out. Judging uses no model, so it says only what a list can say:
 
-- correct share: extracted facts that match an expected fact, out of all extracted.
-- invented share: extracted facts that match none (or contain a forbidden word or value).
-- found share: expected facts that at least one extracted fact matches, out of all expected.
+- correct: an extracted fact that contains every word and every value of one expected fact.
+- wrong: one that holds a forbidden word or value, or names an expected fact by all its
+  words with other values, or anything at all in a case that expects nothing.
+- unlisted: one that matches no expected fact and holds nothing forbidden. It may be a true
+  fact the case does not list, or an invention. A list cannot tell the two apart, so it is
+  counted on its own and called neither.
+- found: an expected fact that at least one extracted fact matches.
+
+The first three are shares of all extracted facts, the last a share of all expected ones.
 
 "Extracted" is what reached the proposal queue, after Ingatan's own checks: that is what a
 user would be asked to approve.
@@ -51,6 +56,12 @@ class Expected:
     all_of: tuple[str, ...]
     values: tuple[str, ...]
 
+    def names(self, text: str) -> bool:
+        """Whether `text` is about this fact: it holds every word of `all_of` (and there
+        is one)."""
+        low = text.casefold()
+        return bool(self.all_of) and all(word.casefold() in low for word in self.all_of)
+
     def matches(self, text: str) -> bool:
         low = text.casefold()
         stated = numbers(text)
@@ -76,7 +87,8 @@ class CaseResult:
     case_id: str
     extracted: tuple[str, ...]
     correct: int
-    invented: int
+    wrong: int
+    unlisted: int
     found: int
     expected: int
     dropped: int = 0
@@ -87,7 +99,8 @@ class CaseResult:
 class Totals:
     extracted: int
     correct: int
-    invented: int
+    wrong: int
+    unlisted: int
     expected: int
     found: int
     dropped: int
@@ -98,8 +111,12 @@ class Totals:
         return self.correct / self.extracted if self.extracted else None
 
     @property
-    def invented_share(self) -> float | None:
-        return self.invented / self.extracted if self.extracted else None
+    def wrong_share(self) -> float | None:
+        return self.wrong / self.extracted if self.extracted else None
+
+    @property
+    def unlisted_share(self) -> float | None:
+        return self.unlisted / self.extracted if self.extracted else None
 
     @property
     def found_share(self) -> float | None:
@@ -172,8 +189,13 @@ def load_cases(directory: Path) -> list[Case]:
 def judge(
     case: Case, extracted: list[str] | tuple[str, ...], *, dropped: int = 0, errors: int = 0
 ) -> CaseResult:
-    """Count the correct and the invented among `extracted`, and the expected that were found."""
-    correct = invented = 0
+    """Sort `extracted` into correct, wrong and unlisted, and count the expected that were found.
+
+    Wrong is what the case itself can show to be wrong: something forbidden, an expected
+    fact with other values, or anything where nothing was expected. What is left over
+    matches nothing on the list, and the list is never the whole truth about a text.
+    """
+    correct = wrong = unlisted = 0
     found: set[str] = set()
     for text in extracted:
         low = text.casefold()
@@ -187,13 +209,16 @@ def judge(
         if matched:
             correct += 1
             found.update(matched)
+        elif barred or not case.expected or any(e.values and e.names(text) for e in case.expected):
+            wrong += 1
         else:
-            invented += 1
+            unlisted += 1
     return CaseResult(
         case_id=case.id,
         extracted=tuple(extracted),
         correct=correct,
-        invented=invented,
+        wrong=wrong,
+        unlisted=unlisted,
         found=len(found),
         expected=len(case.expected),
         dropped=dropped,
@@ -205,7 +230,8 @@ def totals(results: list[CaseResult]) -> Totals:
     return Totals(
         extracted=sum(len(r.extracted) for r in results),
         correct=sum(r.correct for r in results),
-        invented=sum(r.invented for r in results),
+        wrong=sum(r.wrong for r in results),
+        unlisted=sum(r.unlisted for r in results),
         expected=sum(r.expected for r in results),
         found=sum(r.found for r in results),
         dropped=sum(r.dropped for r in results),

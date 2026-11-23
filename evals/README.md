@@ -53,11 +53,12 @@ A case (`evals/extraction/cases/<id>.json`) is a few captured exchanges, the fac
 
 Each case runs in its own throwaway data folder: its episodes are recorded, extraction reads them, and what reached the proposal queue (after Ingatan's own checks, which is what a user would be asked to approve) is judged without a model:
 
-- **correct**: an extracted fact that contains every word of `all_of` and every value of `values` of one expected fact. Numbers are compared without their separators.
-- **invented**: an extracted fact that matches no expected fact, or contains a `forbidden` word or value. A case whose `expected` is empty says the right answer is nothing.
+- **correct**: an extracted fact that contains every word of `all_of` and every value of `values` of one expected fact. Numbers are compared by value, the way `ingatan extract` compares them: "15.000", "15,000" and "15000" are one number, and "1.5" is not "15".
+- **wrong**: an extracted fact the case itself shows to be wrong. It contains a `forbidden` word or value, or it holds every word of `all_of` of an expected fact with other values, or the case expects nothing (an empty `expected` says the right answer is nothing).
+- **unlisted**: an extracted fact that matches no expected fact and holds nothing forbidden. It may be a true fact the case does not list, or an invention. A list cannot tell those apart, so the count stands on its own and is called neither: read the facts of a case before you call them inventions, and add the true ones to `expected`.
 - **found**: an expected fact that at least one extracted fact matches.
 
-The report gives the three as shares, plus how many items Ingatan dropped before the queue (a number that is not in the episode, a malformed item, more than eight per episode) and how many episodes the model could not be read for. `tests/evals/test_extraction_metrics.py` covers the judging and one run with a stand-in model.
+The report gives the four as shares, plus how many items Ingatan dropped before the queue (a number that is not in the episode, a malformed item, more than eight per episode) and how many episodes the model could not be read for. `tests/evals/test_extraction_metrics.py` covers the judging and one run with a stand-in model.
 
 ## Scenario format
 

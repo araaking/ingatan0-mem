@@ -346,7 +346,7 @@ Eval berisi 49 skenario berbahasa Indonesia (46 berbasis pola + 3 skenario insid
 | Leak rate | 0,0% (0 dari 104 hasil) | 0,0% (0 dari 111 hasil) | 0 |
 | Token per brief | rata-rata 64, maksimum 256 dari 20 brief | rata-rata 65, maksimum 260 dari 20 brief | sekitar 1.000 |
 
-Ekstraksi fakta opsional (`ingatan extract`) **belum diukur**: `python -m evals.extraction` menghitung berapa bagian dari fakta hasil ekstraksi yang benar dan berapa yang dikarang, pada 7 kasus dengan jawaban yang sudah diketahui, tetapi butuh model yang kamu atur di `[llm]`. Sampai ada laporan di `evals/reports/latest-extraction.md`, README ini tidak menyebut angka apa pun untuknya.
+Ekstraksi fakta opsional (`ingatan extract`) **belum diukur**: `python -m evals.extraction` menghitung berapa bagian dari fakta hasil ekstraksi yang benar, berapa yang salah, dan berapa yang tidak ada di daftar jawaban (bisa benar, bisa karangan: penilainya tidak bisa membedakan), pada 7 kasus dengan jawaban yang sudah diketahui, tetapi butuh model yang kamu atur di `[llm]`. Sampai ada laporan di `evals/reports/latest-extraction.md`, README ini tidak menyebut angka apa pun untuknya.
 
 Semua skenario yang dijalankan lulus di kedua mode (kolom model lokal belum mencakup tiga skenario `usage` dan `graph` yang ditambahkan belakangan), jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
 
@@ -725,7 +725,7 @@ The eval contains 49 scenarios in Indonesian (46 pattern-based + 3 anonymized in
 | Leak rate | 0.0% (0 of 104 results) | 0.0% (0 of 111 results) | 0 |
 | Tokens per brief | mean 64, max 256 over 20 briefs | mean 65, max 260 over 20 briefs | about 1,000 |
 
-The optional fact extraction (`ingatan extract`) is **not measured yet**: `python -m evals.extraction` counts how much of what a model extracts is correct and how much is invented, on 7 cases with a known answer, but it needs the model you configure under `[llm]`. Until there is a report in `evals/reports/latest-extraction.md`, this README states no figure for it.
+The optional fact extraction (`ingatan extract`) is **not measured yet**: `python -m evals.extraction` counts how much of what a model extracts is correct, how much is wrong, and how much is not on the list of answers (true or invented: the judge cannot tell), on 7 cases with a known answer, but it needs the model you configure under `[llm]`. Until there is a report in `evals/reports/latest-extraction.md`, this README states no figure for it.
 
 Every scenario that was run passes in both modes (the local-model column does not yet include the three `usage` and `graph` scenarios added since), so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
 

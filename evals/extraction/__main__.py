@@ -111,19 +111,22 @@ def write_report(path: Path, label: str, results: list[metrics.CaseResult]) -> N
         "| Measure | Value |",
         "|---|---|",
         f"| correct (matches a fact the text states) | {_share(total.correct, total.extracted)} |",
-        f"| invented (matches none) | {_share(total.invented, total.extracted)} |",
+        f"| wrong (forbidden, another value, or nothing was expected) | "
+        f"{_share(total.wrong, total.extracted)} |",
+        f"| unlisted (matches nothing listed: true or invented, not judged) | "
+        f"{_share(total.unlisted, total.extracted)} |",
         f"| found (expected facts that were extracted) | {_share(total.found, total.expected)} |",
         f"| dropped by Ingatan before the queue | {total.dropped} |",
         f"| episodes the model could not be read for | {total.errors} |",
         "",
         "## Cases",
         "",
-        "| Case | Extracted | Correct | Invented | Found | Dropped | Errors |",
-        "|---|---|---|---|---|---|---|",
+        "| Case | Extracted | Correct | Wrong | Unlisted | Found | Dropped | Errors |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
-            f"| {r.case_id} | {len(r.extracted)} | {r.correct} | {r.invented} | "
+            f"| {r.case_id} | {len(r.extracted)} | {r.correct} | {r.wrong} | {r.unlisted} | "
             f"{r.found} of {r.expected} | {r.dropped} | {r.errors} |"
         )
     lines += ["", "Definitions are in `evals/README.md`.", ""]
@@ -172,13 +175,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             results.append(result)
             print(
                 f"{case.id:40s} extracted {len(result.extracted)}, correct {result.correct}, "
-                f"invented {result.invented}, found {result.found} of {result.expected}"
+                f"wrong {result.wrong}, unlisted {result.unlisted}, "
+                f"found {result.found} of {result.expected}"
             )
     total = metrics.totals(results)
     print()
     print(f"model     {label}")
     print(f"correct   {_share(total.correct, total.extracted)}")
-    print(f"invented  {_share(total.invented, total.extracted)}")
+    print(f"wrong     {_share(total.wrong, total.extracted)}")
+    print(f"unlisted  {_share(total.unlisted, total.extracted)}")
     print(f"found     {_share(total.found, total.expected)}")
     report = args.report
     if report is None and not args.case:

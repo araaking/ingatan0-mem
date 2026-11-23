@@ -51,38 +51,46 @@ def answer(*texts: str) -> str:
 
 def test_a_fact_with_the_words_and_the_value_is_correct() -> None:
     result = metrics.judge(case(), ["Ongkir ke Bandung Rp15,000 per kg."])
-    assert (result.correct, result.invented, result.found, result.expected) == (1, 0, 1, 2)
+    assert (result.correct, result.wrong, result.unlisted) == (1, 0, 0)
+    assert (result.found, result.expected) == (1, 2)
 
 
-def test_a_fact_with_another_value_is_invented() -> None:
+def test_a_listed_fact_with_another_value_is_wrong() -> None:
     result = metrics.judge(case(), ["Ongkir ke Bandung Rp 18.000 per kg."])
-    assert (result.correct, result.invented, result.found) == (0, 1, 0)
+    assert (result.correct, result.wrong, result.unlisted, result.found) == (0, 1, 0, 0)
 
 
-def test_a_fact_that_pairs_the_wrong_value_with_a_subject_is_invented() -> None:
+def test_a_fact_that_pairs_the_wrong_value_with_a_subject_is_wrong() -> None:
     result = metrics.judge(case(), ["Stok gula tinggal 15.000 karung."])
-    assert (result.correct, result.invented) == (0, 1)
+    assert (result.correct, result.wrong, result.unlisted) == (0, 1, 0)
 
 
-def test_a_fact_about_something_else_is_invented() -> None:
+def test_a_fact_the_case_does_not_list_is_not_called_wrong() -> None:
+    """It may be true: the judge has only the list, and the list is never complete."""
     result = metrics.judge(case(), ["Toko buka tiap hari."])
-    assert (result.correct, result.invented, result.found) == (0, 1, 0)
+    assert (result.correct, result.wrong, result.unlisted, result.found) == (0, 0, 1, 0)
 
 
-def test_a_forbidden_word_makes_a_fact_invented_whatever_else_it_says() -> None:
+def test_anything_extracted_where_nothing_was_expected_is_wrong() -> None:
+    result = metrics.judge(case(expected=[]), ["Toko buka tiap hari."])
+    assert (result.correct, result.wrong, result.unlisted) == (0, 1, 0)
+
+
+def test_a_forbidden_word_makes_a_fact_wrong_whatever_else_it_says() -> None:
     result = metrics.judge(case(), ["Ongkir ke Bandung Rp 15.000, kata sandi admin rahasia."])
-    assert (result.correct, result.invented, result.found) == (0, 1, 0)
+    assert (result.correct, result.wrong, result.unlisted, result.found) == (0, 1, 0, 0)
 
 
 def test_two_facts_for_one_expected_are_both_correct_and_found_once() -> None:
     texts = ["Ongkir ke Bandung Rp 15.000 per kg.", "Tarif ongkir Bandung: Rp 15.000."]
     result = metrics.judge(case(), texts)
-    assert (result.correct, result.invented, result.found) == (2, 0, 1)
+    assert (result.correct, result.wrong, result.unlisted, result.found) == (2, 0, 0, 1)
 
 
-def test_nothing_extracted_finds_nothing_and_invents_nothing() -> None:
+def test_nothing_extracted_finds_nothing_and_gets_nothing_wrong() -> None:
     result = metrics.judge(case(), [])
-    assert (result.correct, result.invented, result.found, result.expected) == (0, 0, 0, 2)
+    assert (result.correct, result.wrong, result.unlisted) == (0, 0, 0)
+    assert (result.found, result.expected) == (0, 2)
 
 
 def test_totals_and_shares() -> None:
@@ -91,10 +99,11 @@ def test_totals_and_shares() -> None:
         metrics.judge(case(id="ex-b"), ["Stok gula 20 karung."]),
     ]
     totals = metrics.totals(results)
-    assert (totals.extracted, totals.correct, totals.invented) == (3, 2, 1)
+    assert (totals.extracted, totals.correct, totals.wrong, totals.unlisted) == (3, 2, 0, 1)
     assert (totals.expected, totals.found) == (4, 2)
     assert totals.correct_share == pytest.approx(2 / 3)
-    assert totals.invented_share == pytest.approx(1 / 3)
+    assert totals.wrong_share == pytest.approx(0.0)
+    assert totals.unlisted_share == pytest.approx(1 / 3)
     assert totals.found_share == pytest.approx(0.5)
     empty = metrics.totals([metrics.judge(case(expected=[]), [])])
     assert empty.correct_share is None and empty.found_share is None
@@ -152,7 +161,8 @@ def test_run_case_counts_what_reaches_the_queue(
         "Ongkir ke Bandung Rp 15.000 per kg.",
         "Toko buka tiap hari.",
     ]
-    assert (result.correct, result.invented, result.found, result.expected) == (1, 1, 1, 2)
+    assert (result.correct, result.wrong + result.unlisted) == (1, 1)
+    assert (result.found, result.expected) == (1, 2)
     assert (result.dropped, result.errors) == (1, 0)
 
 
@@ -171,14 +181,16 @@ def test_main_writes_a_report_with_the_model_and_the_shares(
     monkeypatch.setenv("INGATAN_LLM_MODEL", "local-model")
 
     def chat(cfg: LlmConfig, system: str, user: str) -> str:
-        return answer()  # a model that finds nothing: nothing invented, nothing found
+        return answer()  # a model that finds nothing: nothing wrong, nothing found
 
     monkeypatch.setattr(llm, "chat", chat)
     report = tmp_path / "report.md"
     assert main(["--report", str(report), "--no-network-guard"]) == 0
     text = report.read_text(encoding="utf-8")
     assert "ollama/local-model" in text
-    assert "found" in text and "invented" in text
+    assert "found" in text and "wrong" in text and "unlisted" in text
+    # No row or column is called "invented": the judge cannot tell that from "unlisted".
+    assert "| invented" not in text and "Invented |" not in text
     assert "0 of" in text
     assert "report written to" in capsys.readouterr().out
 
