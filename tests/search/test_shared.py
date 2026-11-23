@@ -500,3 +500,92 @@ def test_a_slow_answer_is_not_asked_for_twice(monkeypatch: pytest.MonkeyPatch) -
     # behind the first, would only add to the queue.
     assert calls == [1]
     assert spawned == []
+
+
+# ---- deferred review findings: one deadline per call, short idle times, a busy state file ----
+
+
+def test_a_listener_that_trickles_bytes_cannot_hold_a_caller_past_its_timeout(
+    ingatan_home: Path,
+) -> None:
+    """`timeout` is for the whole exchange, not for each byte that arrives."""
+    rogue = socket.socket()
+    rogue.bind(("127.0.0.1", 0))
+    rogue.listen(1)
+
+    def trickle() -> None:
+        conn, _ = rogue.accept()
+        with conn:
+            try:
+                conn.recv(4096)
+                conn.sendall((64).to_bytes(4, "big"))
+                for _ in range(64):  # 3.2 seconds for one small frame
+                    conn.sendall(b"x")
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=trickle, daemon=True)
+    thread.start()
+    state_file(ingatan_home).parent.mkdir(parents=True)
+    state_file(ingatan_home).write_text(
+        json.dumps({"v": 1, "pid": 1, "port": rogue.getsockname()[1], "token": "cd" * 32}),
+        encoding="utf-8",
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(shared.Unavailable):
+            shared.request(["a"], **{**CALL, "timeout": 0.3})
+        elapsed = time.monotonic() - started
+    finally:
+        rogue.close()
+        thread.join(5)
+    assert elapsed < 1.5, f"the call was held for {elapsed:.1f}s"
+
+
+def test_the_process_is_started_again_right_after_an_idle_exit(
+    model: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that came up and left on idleness is not a process that cannot start."""
+    started: list[Process] = []
+
+    def start(idle_unload_seconds: int) -> None:
+        running = Process(idle_unload_seconds=1)
+        running.thread.start()
+        started.append(running)
+
+    monkeypatch.setattr(shared, "_spawn", start)
+    monkeypatch.setattr(shared, "_last_spawn", float("-inf"))
+    try:
+        assert shared.embed(["dua kata"], **EMBED_CALL) == [[8.0, 2.0]]
+        # Not `status()` in a loop: every answered ping counts as use and keeps it alive.
+        started[0].thread.join(5)
+        assert not started[0].thread.is_alive(), "it should leave after a second"
+        # Well inside SPAWN_INTERVAL_SECONDS of the first start.
+        assert shared.embed(["dua kata"], **EMBED_CALL) == [[8.0, 2.0]]
+        assert len(started) == 2
+    finally:
+        for running in started:
+            running.stop()
+
+
+def test_a_state_file_that_cannot_be_read_for_a_moment_does_not_end_the_process(
+    ingatan_home: Path, model: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows a file being replaced or scanned can refuse a read. That is not "gone"."""
+    running = Process().start()
+    real = shared._state_text  # pyright: ignore[reportPrivateUsage]
+    until = time.monotonic() + 1.6
+
+    def busy() -> str:
+        if time.monotonic() < until:
+            raise PermissionError("the file is in use by another process")
+        return real()
+
+    monkeypatch.setattr(shared, "_state_text", busy)
+    try:
+        time.sleep(1.9)  # the process looks at its state file once a second
+        assert running.thread.is_alive()
+        assert shared.request(["a"], **CALL) == [[1.0, 1.0]]
+    finally:
+        running.stop()

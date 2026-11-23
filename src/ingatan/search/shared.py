@@ -14,9 +14,9 @@ How they find and trust each other:
   (an HMAC over fresh random bytes from both sides), and proves the same in return. A port
   that another program took over after a crash therefore receives a few random bytes and
   nothing else. The token itself never travels.
-- Every wait has a time limit. Whatever goes wrong surfaces as `Unavailable`, an `OSError`,
-  which the embedding layer already turns into "no vector": the server then answers from
-  the word index, exactly as it does when the model is missing.
+- Every exchange has one deadline, not a limit per read. Whatever goes wrong surfaces as
+  `Unavailable`, an `OSError`, which the embedding layer already turns into "no vector":
+  the server then answers from the word index, exactly as it does when the model is missing.
 
 Frames are a 4-byte big-endian length and that many bytes. A request is one JSON frame; the
 answer is one JSON frame (`ok`, and `error` or `dims` and `count`) followed, for vectors, by
@@ -120,20 +120,31 @@ def _state_path() -> Path:
     return state_file()
 
 
-def _read_state() -> _State | None:
+def _state_text() -> str:
+    return _state_path().read_text(encoding="utf-8")
+
+
+def _parse_state(text: str) -> _State | None:
     try:
-        raw: Any = json.loads(_state_path().read_text(encoding="utf-8"))
+        raw: Any = json.loads(text)
         if not isinstance(raw, dict) or raw.get("v") != PROTOCOL:
             return None
         port, pid = raw.get("port"), raw.get("pid")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         token = bytes.fromhex(str(raw.get("token")))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-    except (OSError, ValueError):
+    except ValueError:
         return None
     if not isinstance(port, int) or not isinstance(pid, int) or isinstance(port, bool):
         return None
     if not 0 < port < 65536 or len(token) != _NONCE_BYTES:
         return None
     return _State(pid=pid, port=port, token=token)
+
+
+def _read_state() -> _State | None:
+    try:
+        return _parse_state(_state_text())
+    except OSError:
+        return None
 
 
 def _write_state(path: Path, state: _State) -> None:
@@ -150,22 +161,54 @@ def _write_state(path: Path, state: _State) -> None:
     os.replace(temporary, path)
 
 
-def _state_is_mine(token: bytes) -> bool:
-    current = _read_state()
+def _ownership(token: bytes) -> bool | None:
+    """Whether the state file names the process that holds `token`.
+
+    True or False when the file could be read (a missing file is False: it was taken away).
+    None when it could not be read just now: on Windows a file that is being replaced or
+    scanned refuses a read for a moment, and that is no reason for the process to leave.
+    """
+    try:
+        text = _state_text()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    current = _parse_state(text)
     return current is not None and hmac.compare_digest(current.token, token)
 
 
 # ---- frames and the handshake ---------------------------------------------------------------
 
 
-def _send(sock: socket.socket, payload: bytes) -> None:
+class _Deadline:
+    """A moment by which a whole exchange must be over.
+
+    A socket timeout alone bounds each read: a peer that sends one byte just in time, again
+    and again, keeps the other side waiting as long as it likes. Every send and every read
+    of an exchange takes what is left until its deadline instead.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self._at = time.monotonic() + seconds
+
+    def apply(self, sock: socket.socket) -> None:
+        left = self._at - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("the exchange took longer than its time limit")
+        sock.settimeout(left)
+
+
+def _send(sock: socket.socket, payload: bytes, deadline: _Deadline) -> None:
+    deadline.apply(sock)
     sock.sendall(struct.pack(">I", len(payload)) + payload)
 
 
-def _receive_exactly(sock: socket.socket, count: int) -> bytes:
+def _receive_exactly(sock: socket.socket, count: int, deadline: _Deadline) -> bytes:
     chunks: list[bytes] = []
     remaining = count
     while remaining:
+        deadline.apply(sock)
         chunk = sock.recv(min(remaining, 1024 * 1024))
         if not chunk:
             raise ConnectionError("the other side closed the connection")
@@ -174,11 +217,11 @@ def _receive_exactly(sock: socket.socket, count: int) -> bytes:
     return b"".join(chunks)
 
 
-def _receive(sock: socket.socket, limit: int) -> bytes:
-    (length,) = struct.unpack(">I", _receive_exactly(sock, 4))
+def _receive(sock: socket.socket, limit: int, deadline: _Deadline) -> bytes:
+    (length,) = struct.unpack(">I", _receive_exactly(sock, 4, deadline))
     if length > limit:
         raise ValueError(f"a frame of {length} bytes is over the limit of {limit}")
-    return _receive_exactly(sock, length)
+    return _receive_exactly(sock, length, deadline)
 
 
 def _proof(token: bytes, role: bytes, first: bytes, second: bytes) -> bytes:
@@ -187,18 +230,18 @@ def _proof(token: bytes, role: bytes, first: bytes, second: bytes) -> bytes:
 
 def _connect(state: _State, timeout: float) -> socket.socket:
     """A connection to a listener that has proved it holds the token. No text sent yet."""
+    deadline = _Deadline(timeout)  # the connection and the whole handshake together
     sock = socket.create_connection((HOST, state.port), timeout=timeout)
     try:
-        sock.settimeout(timeout)
         mine = secrets.token_bytes(_NONCE_BYTES)
-        _send(sock, mine)
-        answer = _receive(sock, _NONCE_BYTES + _PROOF_BYTES)
+        _send(sock, mine, deadline)
+        answer = _receive(sock, _NONCE_BYTES + _PROOF_BYTES, deadline)
         theirs, proof = answer[:_NONCE_BYTES], answer[_NONCE_BYTES:]
         if len(answer) != _NONCE_BYTES + _PROOF_BYTES or not hmac.compare_digest(
             proof, _proof(state.token, b"server", mine, theirs)
         ):
             raise Unavailable("the listener on the recorded port is not the shared process")
-        _send(sock, _proof(state.token, b"client", theirs, mine))
+        _send(sock, _proof(state.token, b"client", theirs, mine), deadline)
     except BaseException:
         sock.close()
         raise
@@ -215,19 +258,20 @@ def _call(
 ) -> tuple[dict[str, Any], bytes]:
     """One request and its answer. Every failure becomes `Unavailable`.
 
-    `timeout` bounds the connection and the handshake; `answer_timeout` (default: the same)
-    bounds each wait for the answer once the request has been sent.
+    `timeout` bounds the connection and the handshake together; `answer_timeout` (default:
+    the same) bounds sending the request and receiving the whole answer. Each is one
+    deadline, not a limit per read.
     """
     try:
         with _connect(state, timeout) as sock:
-            _send(sock, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            sock.settimeout(timeout if answer_timeout is None else answer_timeout)
-            header: Any = json.loads(_receive(sock, MAX_HEADER_BYTES))
+            deadline = _Deadline(timeout if answer_timeout is None else answer_timeout)
+            _send(sock, json.dumps(payload, ensure_ascii=False).encode("utf-8"), deadline)
+            header: Any = json.loads(_receive(sock, MAX_HEADER_BYTES, deadline))
             if not isinstance(header, dict):
                 raise ValueError("the answer is not a JSON object")
             if not header.get("ok"):  # pyright: ignore[reportUnknownMemberType]
                 raise Refused(str(header.get("error") or "the shared process refused"))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            blob = _receive(sock, MAX_VECTOR_BYTES) if vectors else b""
+            blob = _receive(sock, MAX_VECTOR_BYTES, deadline) if vectors else b""
     except Unavailable:
         raise
     except (OSError, ValueError) as exc:
@@ -321,6 +365,14 @@ def _spawn(idle_unload_seconds: int) -> None:
     threading.Thread(target=child.wait, name="ingatan-shared-reaper", daemon=True).start()
 
 
+def _process_answered() -> None:
+    """The process was there and answered. The spawn limit is for a process that cannot
+    start; one that came up and later left on idleness is started again without waiting."""
+    global _last_spawn
+    with _spawn_lock:
+        _last_spawn = float("-inf")
+
+
 def _start_process(idle_unload_seconds: int) -> bool:
     """Start the process unless this caller tried a moment ago. True if it was started."""
     global _last_spawn
@@ -352,9 +404,11 @@ def embed(
     when that is not enough; the model is never loaded into the calling process instead.
     """
     try:
-        return request(
+        vectors = request(
             texts, model_name=model_name, model_dir=model_dir, threads=threads, timeout=timeout
         )
+        _process_answered()
+        return vectors
     except Refused:
         raise
     except Unavailable:
@@ -368,9 +422,11 @@ def embed(
         if time.monotonic() >= deadline:
             raise Unavailable("the shared embedding process was started but did not answer")
         time.sleep(0.05)
-    return request(
+    vectors = request(
         texts, model_name=model_name, model_dir=model_dir, threads=threads, timeout=timeout
     )
+    _process_answered()
+    return vectors
 
 
 def status() -> SharedStatus | None:
@@ -429,15 +485,16 @@ class _Server:
     def handle(self, conn: socket.socket) -> None:
         with conn:
             try:
-                conn.settimeout(_HANDSHAKE_SECONDS)
-                theirs = _receive(conn, _NONCE_BYTES)
+                handshake = _Deadline(_HANDSHAKE_SECONDS)
+                theirs = _receive(conn, _NONCE_BYTES, handshake)
                 mine = secrets.token_bytes(_NONCE_BYTES)
-                _send(conn, mine + _proof(self.token, b"server", theirs, mine))
-                proof = _receive(conn, _PROOF_BYTES)
+                _send(conn, mine + _proof(self.token, b"server", theirs, mine), handshake)
+                proof = _receive(conn, _PROOF_BYTES, handshake)
                 if not hmac.compare_digest(proof, _proof(self.token, b"client", mine, theirs)):
                     return  # a caller without the token gets no answer
-                conn.settimeout(_REQUEST_SECONDS)
-                message: Any = json.loads(_receive(conn, MAX_REQUEST_BYTES))
+                message: Any = json.loads(
+                    _receive(conn, MAX_REQUEST_BYTES, _Deadline(_REQUEST_SECONDS))
+                )
                 if isinstance(message, dict):
                     self._answer(conn, message)  # pyright: ignore[reportUnknownArgumentType]
             except (OSError, ValueError):
@@ -445,7 +502,7 @@ class _Server:
 
     def _answer(self, conn: socket.socket, message: dict[str, Any]) -> None:
         def header(**fields: Any) -> None:
-            _send(conn, json.dumps(fields).encode("utf-8"))
+            _send(conn, json.dumps(fields).encode("utf-8"), _Deadline(_REQUEST_SECONDS))
 
         op = message.get("op")
         if op == "ping":
@@ -487,7 +544,7 @@ class _Server:
             if sys.byteorder == "big":
                 flat.byteswap()
             header(ok=True, dims=dims, count=len(vectors))
-            _send(conn, flat.tobytes())
+            _send(conn, flat.tobytes(), _Deadline(_REQUEST_SECONDS))
         else:
             header(ok=False, error=f"unknown request {op!r}")
 
@@ -519,7 +576,7 @@ def serve(*, idle_unload_seconds: int) -> None:
                     break
                 if now - checked >= _OWNERSHIP_CHECK_SECONDS:
                     checked = now
-                    if not _state_is_mine(token):
+                    if _ownership(token) is False:
                         break
                 continue
             except OSError:
@@ -527,7 +584,7 @@ def serve(*, idle_unload_seconds: int) -> None:
             threading.Thread(target=server.handle, args=(conn,), daemon=True).start()
     finally:
         listener.close()
-        if _state_is_mine(token):
+        if _ownership(token):
             with contextlib.suppress(OSError):
                 _state_path().unlink()
         local.unload()

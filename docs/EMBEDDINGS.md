@@ -251,7 +251,9 @@ loads the model itself.
   serve`, detached, nothing attached to its output). `ingatan embeddings serve` also runs it
   by hand in the foreground, and `ingatan embeddings stop` asks it to leave. It leaves on
   its own after `idle_unload_seconds` without a request (0 keeps it), and a server starts a
-  new one when it next needs a vector.
+  new one at once when it next needs a vector. Only a process that fails to start is tried
+  again no sooner than 30 seconds later. It also leaves when its state file is deleted or
+  names another process; a file that cannot be read for a moment does not count.
 - **Where it listens.** On 127.0.0.1 only, on a port the operating system picks. The port, the
   process id and a random token are written to `<data folder>/run/embed.json`, readable by
   the user alone. That file never holds fact text, and the process writes nothing else.
@@ -259,9 +261,9 @@ loads the model itself.
   before it sends any text the listener has to prove that it holds the token (an HMAC over
   random bytes from both sides; the token itself is never sent). A port that some other
   program took over after a crash gets a few random bytes and nothing more.
-- **When it cannot be reached.** The tool call does not fail and does not wait forever: every
-  step has a time limit, and the server answers from the word index, exactly as it does when
-  the model is missing. It does not load the model itself as a fallback, because that would
+- **When it cannot be reached.** The tool call does not fail and does not wait forever: the
+  handshake and the request each have one time limit for the whole of it, not for each read,
+  and the server answers from the word index, exactly as it does when the model is missing. It does not load the model itself as a fallback, because that would
   quietly bring back the memory this setting saves. `ingatan doctor` shows whether the
   process runs, and the reason for the last failure.
 - **What it never does.** It downloads nothing: `ingatan embeddings pull` (or `embeddings
