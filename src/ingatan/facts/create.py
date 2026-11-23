@@ -146,7 +146,9 @@ def _source(
     if isinstance(raw_date, str) and raw_date.strip():
         date_value = timeutil.iso(timeutil.parse(raw_date))[:10]
     out: dict[str, Any] = {"agent": ctx.scope.agent, "date": date_value}
-    for key in ("session", "document"):
+    # `extracted_by` names the model that proposed the fact (`ingatan extract`): a fact a
+    # model read out of a conversation keeps saying so, also after it was approved.
+    for key in ("session", "document", "extracted_by"):
         value = extra.get(key)
         if value:
             out[key] = redact(str(value))
@@ -296,10 +298,21 @@ def remember(
     check_conflicts: bool = True,
     related_to: Sequence[str] | None = None,
     dedup: bool = True,
+    as_proposal: bool = False,
 ) -> RememberResult:
-    """Save a fact immediately (write-then-undo), or queue a proposal if approval is required."""
+    """Save a fact immediately (write-then-undo), or queue a proposal if approval is required.
+
+    `as_proposal` queues a proposal for the business or global tier whatever
+    `require_approval` says. It is how something that is not yet known to be true (a fact a
+    model extracted) reaches the user instead of the store.
+    """
     if tier not in TIERS:
         raise ValidationError(f"Unknown tier '{tier}'. Use agent, business or global.")
+    if as_proposal and tier == "agent":
+        raise ValidationError(
+            "A proposal is for the business or global tier: nobody reviews an agent's own "
+            "notes. Pass tier='business' or tier='global' together with as_proposal."
+        )
     if kind is not None and kind not in KINDS:
         raise ValidationError(f"Unknown kind '{kind}'. Use stable or volatile.")
     if category not in CATEGORIES:
@@ -334,7 +347,7 @@ def remember(
             raise NotFoundError(f"No related fact {tid}.")
         link_targets.append(tid)
 
-    needs_approval = tier != "agent" and ctx.scope.require_approval
+    needs_approval = as_proposal or (tier != "agent" and ctx.scope.require_approval)
     conn = ctx.conn_for_tier(tier)
 
     if dedup and not needs_approval and resolved_valid_from is None:

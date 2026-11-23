@@ -501,3 +501,71 @@ def test_a_proposal_is_not_deferred(make_ctx: MakeContext, model_calls: list[str
     assert result.proposal_id is not None
     assert model_calls == ["Ongkir ke Bandung Rp 15.000 per kg."]
     assert queue_rows(ctx) == []
+
+
+# ---- proposals that say where they came from (the optional fact extraction) ---------------
+
+
+def test_as_proposal_queues_even_without_require_approval(ctx: Context) -> None:
+    result = facts.remember(
+        ctx,
+        "Supplier gula pasir adalah toko-a.",
+        entities=["gula pasir"],
+        tier="business",
+        as_proposal=True,
+    )
+    assert result.fact_id is None
+    assert result.proposal_id is not None
+    assert "waiting for the user's approval" in result.message
+    assert count(ctx.business, "facts") == 0
+    (pending,) = proposals.pending(ctx)
+    assert pending.id == result.proposal_id and pending.tier == "business"
+
+
+def test_as_proposal_on_agent_tier_is_a_validation_error(ctx: Context) -> None:
+    with pytest.raises(ValidationError, match="business or global"):
+        facts.remember(ctx, "Catatan pribadi.", entities=["catatan"], as_proposal=True)
+    assert count(ctx.business, "proposals") == 0
+
+
+def test_as_proposal_goes_to_the_global_file_for_the_global_tier(ctx: Context) -> None:
+    result = facts.remember(
+        ctx, "Budi suka kopi tanpa gula.", entities=["Budi"], tier="global", as_proposal=True
+    )
+    assert result.proposal_id is not None
+    assert count(ctx.glob, "proposals") == 1 and count(ctx.business, "proposals") == 0
+
+
+def test_extracted_by_survives_to_the_approved_fact(ctx: Context) -> None:
+    result = facts.remember(
+        ctx,
+        "Supplier gula pasir adalah toko-a.",
+        entities=["gula pasir"],
+        tier="business",
+        as_proposal=True,
+        source={"session": "sesi-1", "extracted_by": "ollama/local-model"},
+    )
+    assert result.proposal_id is not None
+    (pending,) = proposals.pending(ctx)
+    assert pending.payload["source"]["extracted_by"] == "ollama/local-model"
+    fact_id = proposals.approve(ctx, result.proposal_id)
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (fact_id,)).fetchone()
+    source = json.loads(row["source"])
+    assert source["extracted_by"] == "ollama/local-model"
+    assert source["session"] == "sesi-1"
+    hit = search.recall(ctx, "supplier gula pasir").facts[0]
+    assert hit.source["extracted_by"] == "ollama/local-model"
+
+
+def test_extracted_by_is_redacted_and_absent_unless_given(ctx: Context) -> None:
+    plain = facts.remember(ctx, "Stok gula 20 karung.", entities=["gula"])
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (plain.fact_id,))
+    assert "extracted_by" not in json.loads(row.fetchone()["source"])
+    secret = facts.remember(
+        ctx,
+        "Stok tepung 12 karung.",
+        entities=["tepung"],
+        source={"extracted_by": "openai/model api_key=sk-abcdefghijklmnopqrstuvwxyz123456"},
+    )
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (secret.fact_id,))
+    assert "sk-abcdefghijklmnop" not in row.fetchone()["source"]

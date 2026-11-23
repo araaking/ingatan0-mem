@@ -531,6 +531,10 @@ def proposals_list(business: BusinessOption = None, agent: AgentOption = None) -
         for p in pending:
             typer.echo(f"{p.id}  [{p.tier}]  {p.agent}  {p.created_at[:10]}")
             typer.echo(f"    {p.text}")
+            source = p.payload.get("source")
+            if isinstance(source, dict) and source.get("extracted_by"):  # pyright: ignore[reportUnknownMemberType]
+                by = source["extracted_by"]  # pyright: ignore[reportUnknownVariableType]
+                typer.echo(f"    extracted by {by}: a model read this out of a text, check it")
             if p.supersedes:
                 old = _replaced_text(ctx, p.supersedes)
                 shown = f': "{shorten(old, 80)}"' if old is not None else " (no longer exists)"
