@@ -63,8 +63,9 @@ The model is unloaded after `idle_unload_seconds` (default 300, 0 keeps it). On 
 process returned to 71 MB. On Linux the heap is trimmed with `malloc_trim` as well.
 
 Every agent session that uses stdio runs its own server process and therefore its own copy
-of the model. To share one copy between sessions, use HTTP mode (one process for all
-tokens) or the `ollama` provider.
+of the model. To share one copy between sessions, set `[embeddings] shared = true` (one
+model process for the data folder, see [EMBEDDINGS.md](EMBEDDINGS.md)), or use HTTP mode
+(one process for all tokens) or the `ollama` provider.
 
 ## How to run it
 

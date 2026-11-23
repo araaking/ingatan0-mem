@@ -17,6 +17,7 @@ from typing import Any
 from ingatan import timeutil
 from ingatan.audit import LogEntry
 from ingatan.facts._util import loads_list, record_conflicts
+from ingatan.facts.review import OpenConflict, open_pairs
 from ingatan.scope import Context
 from ingatan.search import is_valid_sql, similar_facts
 
@@ -121,14 +122,9 @@ def render_report(report: ConflictReport) -> str:
     return "\n".join(lines)
 
 
-@dataclass(frozen=True)
-class OpenConflict:
-    id: int
-    fact_a: str
-    text_a: str
-    fact_b: str
-    text_b: str
-    created_at: str
+# The open pairs are listed in `facts.review`, next to the code that resolves them. The
+# old name stays importable from here.
+open_conflicts = open_pairs
 
 
 @dataclass(frozen=True)
@@ -137,34 +133,6 @@ class ScanResult:
     pairs_found: int
     pairs_recorded: int
     pairs: list[tuple[str, str]]
-
-
-def _valid_fact_texts(ctx: Context) -> dict[str, str]:
-    now = timeutil.iso(timeutil.now())
-    texts: dict[str, str] = {}
-    for conn in ctx.connections():
-        rows = conn.execute(
-            f"SELECT id, text FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)}",
-            {"now": now, **ctx.params},
-        ).fetchall()
-        for r in rows:
-            texts[str(r["id"])] = str(r["text"])
-    return texts
-
-
-def open_conflicts(ctx: Context) -> list[OpenConflict]:
-    """Every unresolved conflict whose both facts are still valid and visible."""
-    texts = _valid_fact_texts(ctx)
-    rows = ctx.business.execute(
-        "SELECT id, fact_a, fact_b, created_at FROM conflicts "
-        "WHERE resolved_at IS NULL ORDER BY id ASC"
-    ).fetchall()
-    out: list[OpenConflict] = []
-    for r in rows:
-        a, b = str(r["fact_a"]), str(r["fact_b"])
-        if a in texts and b in texts:
-            out.append(OpenConflict(int(r["id"]), a, texts[a], b, texts[b], str(r["created_at"])))
-    return out
 
 
 def scan_conflicts(ctx: Context, *, dry_run: bool = False) -> ScanResult:
