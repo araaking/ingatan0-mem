@@ -23,6 +23,7 @@ import typer
 from ingatan import __version__, audit, facts, proposals, search
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
+from ingatan.cli import setup as setup_steps
 from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
 from ingatan.cli.render import log_line, render_diff, shorten
 from ingatan.errors import ConfigError, IngatanError, NotFoundError, ValidationError
@@ -740,12 +741,7 @@ def reindex(
             )
             return
         report = search.reindex(ctx, force=force)
-    typer.echo(
-        f"Reindex ({provider} / {report.model}): "
-        f"facts indexed={report.facts_indexed} skipped={report.facts_skipped}, "
-        f"notes indexed={report.notes_indexed} skipped={report.notes_skipped}"
-        + (f", errors={report.errors}" if report.errors else "")
-    )
+    typer.echo(setup_steps.reindex_summary(provider, report))
     if report.errors > 0:
         if report.last_error:
             typer.echo(f"ingatan: embedding error: {report.last_error}", err=True)
@@ -776,15 +772,7 @@ def embeddings_pull(
     typer.echo(f"Model:  {spec.name} ({spec.summary})")
     typer.echo(f"Folder: {folder}")
 
-    shown: dict[str, int] = {}
-
-    def progress(file: local_models.ModelFile, received: int) -> None:
-        tenth = received * 10 // max(1, file.size)
-        if shown.get(file.name) != tenth:
-            shown[file.name] = tenth
-            typer.echo(f"  {file.name}: {received / 1e6:.0f} of {file.size / 1e6:.0f} MB", err=True)
-
-    fetched = local_models.pull(spec.name, cfg.model_dir, progress=progress)
+    fetched = setup_steps.pull_model(spec, cfg.model_dir, lambda line: typer.echo(line, err=True))
     if fetched:
         size = sum(path.stat().st_size for path in fetched) / 1e6
         typer.echo(f"Downloaded {len(fetched)} file(s), {size:.0f} MB. Checksums verified.")
@@ -805,6 +793,44 @@ def embeddings_pull(
             f'  model = "{spec.name}"'
         )
     typer.echo("Then run `ingatan reindex` to embed the facts that already exist.")
+
+
+@embeddings_app.command("enable")
+@cli_command
+def embeddings_enable(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            metavar="NAME",
+            help="Local model to use. Default: the configured one, else the built-in default.",
+        ),
+    ] = None,
+    use_home_config: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Write the setting to config.toml of the data folder (every project) "
+            "instead of .ingatan.toml here.",
+        ),
+    ] = False,
+    reindex_facts: Annotated[
+        bool,
+        typer.Option(
+            "--reindex/--no-reindex",
+            help="Embed the facts that already exist once the model is switched on.",
+        ),
+    ] = True,
+) -> None:
+    """Switch semantic search on in one step: model, setting, vectors.
+
+    Downloads the local model if it is not on disk, sets `provider = "local"`, embeds the
+    facts that already exist and checks the result. It needs the packages of the `vector`
+    extra and stops before downloading anything when they are missing.
+    """
+    setup_steps.enable_semantic(
+        model=model, use_home_config=use_home_config, reindex=reindex_facts, echo=typer.echo
+    )
 
 
 @alias_app.command("add")
