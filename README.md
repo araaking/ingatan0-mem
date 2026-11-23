@@ -300,6 +300,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
+| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older --all]` | Menyelesaikan pasangan konflik terbuka satu per satu tanpa mengetik id: simpan keduanya (ditautkan), yang baru atau yang lama menggantikan yang lain, lupakan salah satu, atau lewati. Semuanya tercatat dan bisa di-undo, kecuali lupa |
 | `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
 | `ingatan embeddings enable [--model NAMA] [--global] [--no-reindex]` | Menyalakan pencarian semantik dalam satu langkah: unduh model bila belum ada, tulis `provider = "local"`, embed fakta yang sudah ada |
 | `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Menjalankan atau menghentikan proses model bersama (`[embeddings] shared`); server menyalakannya sendiri saat dibutuhkan |
@@ -666,6 +667,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
+| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older --all]` | Settle the open conflict pairs one by one without typing an id: keep both (they are linked), let the newer or the older replace the other, forget one, or skip. Everything but forget is logged and can be undone |
 | `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
 | `ingatan embeddings enable [--model NAME] [--global] [--no-reindex]` | Switch semantic search on in one step: download the model if it is missing, write `provider = "local"`, embed the facts that already exist |
 | `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Run or stop the shared model process (`[embeddings] shared`); a server starts it by itself when it needs it |

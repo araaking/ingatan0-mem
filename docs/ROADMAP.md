@@ -23,7 +23,6 @@ this roadmap most:
 | 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
-| 4 | [Review queue for similar facts](#4-review-queue-for-similar-facts) | Mostly a CLI over data that already exists |
 | 5 | [Usage and decay in `recall`](#3-usage-and-time-decay-in-recall) | Needs eval scenarios before any code |
 | 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | The largest item; needs design decisions first |
 | 7 | [Light knowledge graph](#8-light-knowledge-graph-optional) | Reuses the extraction pass |
@@ -82,25 +81,6 @@ recorded next to them.
 
 **Done when.** The new scenarios are in `evals/scenarios/` and the report shows them
 passing with the factor on.
-
-## 4. Review queue for similar facts
-
-**Problem.** A fact that resembles an earlier one is reported to the agent in the result of
-`remember`. If the agent does nothing, the pair stays `possible conflict` until someone
-notices.
-
-**Idea.** A CLI pass over the open pairs that shows both facts and asks what to do: keep
-both and link them, let one supersede the other, or forget one. With a way to apply one
-answer to several pairs. claude-mem sends near-duplicates to a review queue in the same
-spirit.
-
-**What exists already.** The `conflicts` table, `ingatan conflicts list` and
-`ingatan conflicts scan`, linking through `edges`, and `supersede`.
-
-**Constraints.** Every action goes through the existing functions, so it is logged and can
-be undone. Forgetting keeps its confirmation.
-
-**Done when.** Every open pair can be resolved from the CLI without typing a fact id.
 
 ## 5. Tombstones for wrong values
 

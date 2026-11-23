@@ -23,10 +23,12 @@ import typer
 from ingatan import __version__, audit, facts, proposals, search
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
+from ingatan.cli import review as review_ui
 from ingatan.cli import setup as setup_steps
 from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
 from ingatan.cli.render import log_line, render_diff, shorten
 from ingatan.errors import ConfigError, IngatanError, NotFoundError, ValidationError
+from ingatan.facts import review as review_logic
 from ingatan.facts._util import fact_dict
 from ingatan.scope import (
     CONFIG_NAME,
@@ -846,6 +848,122 @@ def conflicts_scan(
             )
         for a, b in res.pairs:
             typer.echo(f"  {a} <-> {b}")
+
+
+def _review_forget(ctx: Context, pair: review_logic.OpenConflict) -> None:
+    """Forget one fact of the pair, with the question and the confirmation `forget` has."""
+    side: str | None = None
+    while side is None:
+        side = review_ui.parse_side(str(typer.prompt("Forget which one? (newer/older)")))
+    fact_id = pair.newer_id if side == "newer" else pair.older_id
+    found = find_fact(ctx, fact_id)
+    if found is None:
+        typer.echo("  That fact is no longer there.")
+        return
+    row = found[1]
+    typer.echo(f"  {fact_id}  [{row['tier']}]  {row['agent']}")
+    typer.echo(f"      {shorten(str(row['text']), 300)}")
+    if not typer.confirm("Forget this fact for good? This cannot be undone."):
+        typer.echo("  Nothing was forgotten.")
+        return
+    facts.forget(ctx, fact_id, by_user=True)
+    typer.echo(f"  Forgotten {fact_id}. Its content is gone from the database and the log.")
+
+
+def _review_answer() -> review_ui.Answer:
+    """One understood answer from the terminal. A capital F is refused: see below."""
+    while True:
+        answer = review_ui.parse_answer(str(typer.prompt("Answer", default="", show_default=False)))
+        if answer is None:
+            typer.echo(f"  {review_ui.MENU}")
+        elif answer.letter == "f" and answer.for_all:
+            typer.echo("  Forgetting is never applied to several pairs. Type f for this pair.")
+        else:
+            return answer
+
+
+@conflicts_app.command("review")
+@cli_command
+def conflicts_review(
+    apply: Annotated[
+        str | None,
+        typer.Option(
+            "--apply",
+            metavar="ACTION",
+            help=f"Answer without asking: {', '.join(review_logic.ACTIONS)}. Needs --all.",
+        ),
+    ] = None,
+    every_pair: Annotated[
+        bool, typer.Option("--all", help="With --apply: yes, change every open pair.")
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Go through the open conflict pairs and settle each one, without typing a fact id.
+
+    For each pair both facts are shown in full and one answer is asked: keep both (they are
+    linked), let the newer or the older replace the other, forget one, or skip. Every answer
+    but forget goes through `confirm` or `supersede`, so it is logged and `ingatan undo`
+    takes it back. Forgetting asks for its own confirmation and is never applied in bulk.
+    """
+    if apply is not None and apply not in review_logic.ACTIONS:
+        raise ValidationError(
+            f"Unknown action {apply!r}. Use one of: {', '.join(review_logic.ACTIONS)}."
+        )
+    if every_pair and apply is None:
+        raise ConfigError("--all goes with --apply ACTION: it says which answer to give.")
+    with _open(agent, business) as ctx:
+        pairs = review_logic.open_pairs(ctx)
+        if not pairs:
+            typer.echo("No open conflicts.")
+            return
+        if apply is not None and not every_pair:
+            raise ConfigError(
+                f"--apply {apply} would change every open pair ({len(pairs)} now). "
+                "Add --all to confirm that."
+            )
+        if apply is None and not _is_interactive():
+            raise ConfigError(
+                "conflicts review asks one question per pair, and there is no terminal to ask "
+                f"on. Pass --apply ACTION --all ({', '.join(review_logic.ACTIONS)})."
+            )
+        for_the_rest = apply
+        resolved = 0
+        if for_the_rest is None:
+            typer.echo(review_ui.MENU)
+        for position, pair in enumerate(pairs, start=1):
+            if pair.id not in {open_pair.id for open_pair in review_logic.open_pairs(ctx)}:
+                typer.echo(f"Pair #{pair.id} was settled by an earlier answer.")
+                continue
+            typer.echo("")
+            for line in review_ui.describe(ctx, pair, position, len(pairs)):
+                typer.echo(line)
+            action = for_the_rest
+            if action is None:
+                answer = _review_answer()
+                if answer.letter == "q":
+                    break
+                if answer.letter == "s":
+                    continue
+                if answer.letter == "f":
+                    _review_forget(ctx, pair)
+                    continue
+                action = review_ui.ANSWERS[answer.letter]
+                if answer.for_all:
+                    for_the_rest = action
+            outcome = review_logic.resolve_pair(ctx, pair, action)
+            if outcome.proposal_id is not None:
+                # Approval mode queues the change. The person at this terminal is the
+                # approver, so asking again in `proposals approve` would be asking twice.
+                proposals.approve(ctx, outcome.proposal_id)
+                typer.echo(f"  {outcome.message} Approved here.")
+            else:
+                typer.echo(f"  {outcome.message}")
+            if not outcome.message.startswith("Skipped"):
+                resolved += 1
+        left = len(review_logic.open_pairs(ctx))
+    typer.echo("")
+    typer.echo(f"{resolved} pair(s) resolved, {left} still open.")
 
 
 # ---- reindex, alias, link, pin -------------------------------------------------------
