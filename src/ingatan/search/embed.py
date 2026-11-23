@@ -19,6 +19,7 @@ Cosine scores are not comparable between model families, so every cut-off comes 
 from __future__ import annotations
 
 import array
+import dataclasses
 import json
 import math
 import os
@@ -469,9 +470,17 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
 
 
 def probe_embedding(cfg: EmbeddingConfig) -> int:
-    """Embed one test sentence and return its vector dimensions, or raise `IngatanError`."""
+    """Embed one test sentence and return its vector dimensions, or raise `IngatanError`.
+
+    A health check (`ingatan doctor`, `setup`, `embeddings enable`). With `shared` on it
+    still loads the local model in this process: a check that started the shared process
+    would leave it running, holding the model, long after the command that asked is gone.
+    Whether that process answers is a question of its own (`shared.status`).
+    """
     if not is_enabled(cfg):
         return 0
+    if cfg.shared:
+        cfg = dataclasses.replace(cfg, shared=False)
     model_name = effective_model(cfg)
     try:
         vec = _embed_raw(cfg, "ingatan embedding health check", is_query=True)

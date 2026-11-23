@@ -122,12 +122,27 @@ def test_setup_twice_changes_nothing(invoke: Invoke) -> None:
     assert {name: (Path.cwd() / name).read_bytes() for name in _files(Path.cwd())} == before
 
 
-def test_setup_hermes_prints_block_and_writes_no_file(invoke: Invoke, tmp_path: Path) -> None:
+def test_setup_leaves_an_entry_that_starts_the_server_another_way(invoke: Invoke) -> None:
+    mine = '{"mcpServers": {"ingatan": {"command": "uvx", "args": ["ingatan", "serve"]}}}'
+    (Path.cwd() / ".mcp.json").write_text(mine, encoding="utf-8")
+    result = invoke(*BASE, "--no-semantic", "--client", "claude-code", "--yes")
+    assert result.exit_code == 0, result.output
+    assert (Path.cwd() / ".mcp.json").read_text(encoding="utf-8") == mine
+    assert "started with `uvx ingatan serve`" in result.output
+    assert "Left as it is" in result.output
+
+
+def test_setup_hermes_prints_block_and_writes_no_file(
+    invoke: Invoke, tmp_path: Path, ingatan_home: Path
+) -> None:
     result = invoke(*BASE, "--no-semantic", "--client", "hermes")
     assert result.exit_code == 0, result.output
     assert "mcp_servers:" in result.output
     assert 'INGATAN_BUSINESS: "tokoku"' in result.output
     assert 'INGATAN_AGENT: "claude-code"' in result.output
+    # Hermes hands a server only the variables of this block: without the data folder in
+    # it, the server would open another store than the one this command just set up.
+    assert f"INGATAN_HOME: '{ingatan_home}'" in result.output
     assert _files(Path.cwd()) == [".ingatan.toml"]
     # Nothing was written into the (fake) user home, where a Hermes folder would live.
     assert _files(tmp_path / "user-home") == []

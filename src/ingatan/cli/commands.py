@@ -280,7 +280,14 @@ _NO_TERMINAL = "(there is no terminal to ask on)"
 def _setup_claude_code(*, assume_yes: bool, interactive: bool) -> None:
     module = "ingatan.integrations.claude_code.install"
     change = _import(module, "mcp_entry_change")(Path.cwd())
-    if change is None:
+    own = _import(module, "own_start")(Path.cwd()) if change is None else None
+    if own is not None:
+        typer.echo(
+            f"Claude Code: .mcp.json already has an `ingatan` server, started with `{own}`. "
+            "Left as it is. To get the default (`ingatan serve`), remove that entry and run "
+            "setup again."
+        )
+    elif change is None:
         typer.echo("Claude Code: .mcp.json already runs `ingatan serve`. Nothing to change.")
     else:
         typer.echo(f"Claude Code: this adds the Ingatan server to {change.path}:")
@@ -382,7 +389,10 @@ def setup(
             "Hermes: add this to $HERMES_HOME/config.yaml (Ingatan does not edit that file), "
             "then run /reload-mcp:"
         )
-        typer.echo(block(scope.business, scope.agent))
+        # Only when the data folder was chosen: the default needs no line, and a block
+        # without a path in it can be shared as it is.
+        home = str(scope.home) if os.environ.get("INGATAN_HOME", "").strip() else None
+        typer.echo(block(scope.business, scope.agent, home))
         typer.echo("The memory-provider plugin is described in docs/setup-hermes.md.")
 
     checks = doctor_checks.run_checks()

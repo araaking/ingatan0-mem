@@ -276,9 +276,14 @@ loads the model itself.
   program took over after a crash gets a few random bytes and nothing more.
 - **When it cannot be reached.** The tool call does not fail and does not wait forever: the
   handshake and the request each have one time limit for the whole of it, not for each read,
-  and the server answers from the word index, exactly as it does when the model is missing. It does not load the model itself as a fallback, because that would
-  quietly bring back the memory this setting saves. `ingatan doctor` shows whether the
-  process runs, and the reason for the last failure.
+  and the server answers from the word index, exactly as it does when the model is missing.
+  It does not load the model itself as a fallback, because that would quietly bring back
+  the memory this setting saves. `ingatan doctor` shows whether the process runs, and the
+  reason for the last failure.
+- **What a health check does.** `ingatan doctor`, `setup` and `embeddings enable` embed one
+  sentence to see that the model works. They load the model in their own process for that,
+  also with `shared` on, and never start the shared one: a check that did would leave a
+  process holding the model long after the command is gone.
 - **What it never does.** It downloads nothing: `ingatan embeddings pull` (or `embeddings
   enable`, or `setup`) stays the only download, and a process without the model files says
   so in its answer.

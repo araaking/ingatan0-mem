@@ -66,10 +66,40 @@ def test_no_change_when_the_server_is_already_there(tmp_path: Path) -> None:
     assert install.mcp_entry_change(tmp_path) is None
 
 
-def test_an_entry_with_another_command_is_corrected_and_keeps_its_env(tmp_path: Path) -> None:
-    old = {"command": "python", "args": ["-m", "old"], "env": {"INGATAN_AGENT": "claude-code"}}
+@pytest.mark.parametrize(
+    ("entry", "started_with"),
+    [
+        ({"command": "uvx", "args": ["ingatan", "serve"]}, "uvx ingatan serve"),
+        ({"command": "/opt/tools/bin/ingatan", "args": ["serve"]}, "/opt/tools/bin/ingatan serve"),
+        ({"command": "ingatan"}, "ingatan"),
+        ({"command": "ingatan", "args": ["serve", "--http"]}, "ingatan serve --http"),
+        ({"type": "http", "url": "http://127.0.0.1:8765/mcp"}, "http://127.0.0.1:8765/mcp"),
+    ],
+)
+def test_an_entry_that_starts_the_server_another_way_is_left_alone(
+    tmp_path: Path, entry: dict[str, object], started_with: str
+) -> None:
+    """A path or a launcher in that entry is somebody's choice, and may be what makes it work."""
+    entry = {**entry, "env": {"INGATAN_AGENT": "claude-code"}}
     (tmp_path / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {"ingatan": old}}), encoding="utf-8"
+        json.dumps({"mcpServers": {"ingatan": entry}}), encoding="utf-8"
+    )
+    assert install.mcp_entry_change(tmp_path) is None
+    assert install.own_start(tmp_path) == started_with
+
+
+def test_own_start_is_none_for_no_entry_and_for_the_default_one(tmp_path: Path) -> None:
+    assert install.own_start(tmp_path) is None
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"ingatan": ENTRY, "other": {"command": "x"}}}), encoding="utf-8"
+    )
+    assert install.own_start(tmp_path) is None
+
+
+def test_an_entry_that_starts_nothing_is_completed_and_keeps_its_env(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"ingatan": {"env": {"INGATAN_AGENT": "claude-code"}}}}),
+        encoding="utf-8",
     )
     change = install.mcp_entry_change(tmp_path)
     assert change is not None
@@ -77,6 +107,7 @@ def test_an_entry_with_another_command_is_corrected_and_keeps_its_env(tmp_path: 
         **ENTRY,
         "env": {"INGATAN_AGENT": "claude-code"},
     }
+    assert install.own_start(tmp_path) is None
 
 
 @pytest.mark.parametrize("content", ["[]", '{"mcpServers": []}', "{", '"text"'])

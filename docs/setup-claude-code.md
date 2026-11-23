@@ -64,7 +64,10 @@ exact tool prefix Claude Code shows (`mcp__ingatan__brief` is the usual form).
 
 `ingatan setup --client claude-code` makes the same change to `.mcp.json` for you: it shows
 the difference, asks before it writes (`--yes` answers for a script), keeps every other
-server in the file, and changes nothing when the entry is already there.
+server in the file, and changes nothing when the entry is already there. An `ingatan` entry
+that already starts the server in a way of your own (`uvx ingatan serve`, a full path to the
+program, a URL of the HTTP mode) is left as it is and named in the output: remove it first if
+you want the default back.
 
 ## 3. The hooks
 

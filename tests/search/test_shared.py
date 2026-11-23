@@ -589,3 +589,15 @@ def test_a_state_file_that_cannot_be_read_for_a_moment_does_not_end_the_process(
         assert shared.request(["a"], **CALL) == [[1.0, 1.0]]
     finally:
         running.stop()
+
+
+def test_the_health_check_does_not_start_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`doctor` and `setup` embed one sentence. That must not leave a process behind."""
+    spawned: list[int] = []
+    monkeypatch.setattr(shared, "_spawn", lambda idle_unload_seconds: spawned.append(1))
+    monkeypatch.setattr(shared, "_last_spawn", float("-inf"))
+    monkeypatch.setattr(local, "embed", lambda texts, **_: [[1.0, 0.0] for _ in texts])
+    cfg = EmbeddingConfig(provider="local", shared=True, timeout=0.3)
+    assert embed.probe_embedding(cfg) == 2
+    assert spawned == []
+    assert shared.status() is None
