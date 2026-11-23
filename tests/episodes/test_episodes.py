@@ -242,3 +242,15 @@ def test_purge_leaves_other_agents_episodes_alone(make_ctx: MakeContext, frozen_
     assert episodes.purge(alice) == 0
     assert len(rows(bob)) == 1
     assert episodes.purge(bob) == 1
+
+
+def test_pending_lists_oldest_first_without_counting_an_offer(ctx: Context) -> None:
+    first = episodes.record(ctx, "pesan satu", "jawab satu")
+    second = episodes.record(ctx, "pesan dua", "jawab dua")
+    done = episodes.record(ctx, "pesan tiga", "jawab tiga")
+    episodes.mark_processed(ctx, done)
+    for _ in range(5):  # reading is not offering: nothing is retired by being looked at
+        assert [e.id for e in episodes.pending(ctx, 10)] == [first, second]
+    assert [e.offered for e in episodes.pending(ctx, 10)] == [0, 0]
+    assert [e.id for e in episodes.pending(ctx, 1)] == [first]
+    assert episodes.pending(ctx, 0) == []

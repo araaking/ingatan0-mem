@@ -22,6 +22,7 @@ __all__ = [
     "capture",
     "mark_processed",
     "offer",
+    "pending",
     "purge",
     "record",
 ]
@@ -149,6 +150,20 @@ def offer(ctx: Context, limit: int = MAX_OFFER) -> list[Episode]:
                 )
             )
     return offered
+
+
+def pending(ctx: Context, limit: int) -> list[Episode]:
+    """The calling agent's oldest pending episodes, read without counting as an offer.
+
+    `offer` is for showing an episode to an agent, and retires it after a few showings. A
+    program that reads episodes (the optional fact extraction) uses this instead and marks
+    each one processed itself.
+    """
+    rows = ctx.business.execute(
+        "SELECT * FROM episodes WHERE agent = ? AND status = 'pending' ORDER BY id ASC LIMIT ?",
+        (ctx.scope.agent, max(limit, 0)),
+    ).fetchall()
+    return [_episode(row) for row in rows]
 
 
 def mark_processed(ctx: Context, episode_id: int) -> None:

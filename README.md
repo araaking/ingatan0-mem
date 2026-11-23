@@ -205,6 +205,12 @@ token_budget = 1000
 # defer = true               # remember langsung menyimpan; server mengisi vektor & cek konflik makna belakangan
 # shared = true              # satu proses memegang model untuk semua sesi (hanya 127.0.0.1), bukan satu salinan per sesi
 # recall_floor = 0.83        # ambang kemiripan; bawaannya dikalibrasi per keluarga model
+
+# Ekstraksi fakta opsional (bawaan: mati). Hanya dipakai oleh `ingatan extract`.
+# [llm]
+# provider = "ollama"       # none (bawaan) | ollama | openai (endpoint apa pun yang kompatibel dengan OpenAI)
+# model = "..."             # wajib diisi: Ingatan tidak memilihkan model
+# api_base = "http://localhost:11434"
 ```
 
 | Variabel lingkungan | Fungsi |
@@ -217,6 +223,8 @@ token_budget = 1000
 | `INGATAN_EMBED_THREADS` | Menimpa jumlah thread ONNX `[embeddings].threads` (bawaan: `2`) |
 | `INGATAN_EMBED_IDLE_UNLOAD` | Menimpa detik *idle auto-unload* model lokal (bawaan: `300`, `0` = nonaktif) |
 | `INGATAN_MODEL_DIR` | Folder berkas model lokal. Bawaan: `<INGATAN_HOME>/models` |
+| `INGATAN_EMBED_DEFER`, `INGATAN_EMBED_SHARED` | Menimpa `[embeddings].defer` dan `[embeddings].shared` (`1`/`0`) |
+| `INGATAN_LLM_PROVIDER`, `INGATAN_LLM_MODEL`, `INGATAN_LLM_API_BASE`, `INGATAN_LLM_API_KEY_ENV` | Menimpa `[llm]` untuk `ingatan extract` (bawaan `none`: tidak ada yang dikirim ke model) |
 
 <a id="id-tool"></a>
 
@@ -297,6 +305,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Meninjau dan menyetujui proposal (satuan atau massal) |
 | `ingatan forget <fact_id> [--yes] [--business NAMA]` | Melupakan fakta dari tier mana pun |
 | `ingatan ingest <path> [--business NAMA]` | Membaca berkas Markdown menjadi catatan yang bisa dicari (melewati `.git`/`.venv`/`node_modules`) |
+| `ingatan extract [--limit N] [--dry-run] [--business NAMA] [--agent NAMA]` | Opsional: model yang kamu atur di `[llm]` membaca episode yang tertunda dan mengusulkan fakta. Semuanya masuk antrean proposal dengan tanda `extracted by`; tidak ada yang menjadi fakta sebelum kamu setujui |
 | `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
@@ -319,6 +328,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 - `capture-errors.log` di folder data mendapat satu baris saat hook atau plugin gagal. Hook tidak pernah menghentikan sesi agen.
 - Penyamaran rahasia memakai pencocokan pola dan bisa meleset.
 - Server tidak melakukan panggilan jaringan, kecuali kamu memilih penyedia embedding jarak jauh (`ollama`, `openai`, `gemini`): saat itu teks fakta dan query dikirim ke endpoint tersebut. Model lokal hanya diunduh ketika kamu menjalankan `ingatan embeddings pull`.
+- `ingatan extract` bersifat opsional dan mati secara bawaan. Kalau kamu mengisi `[llm]`, teks episode (percakapan yang ditangkap, setelah disamarkan) dikirim ke model yang kamu tunjuk: Ollama di mesinmu, atau endpoint yang kamu tulis di `api_base`. Server dan `remember` tidak pernah memanggil model itu.
 
 <a id="id-angka"></a>
 
@@ -572,6 +582,12 @@ token_budget = 1000
 # defer = true               # remember saves at once; the server adds the vector and the meaning check afterwards
 # shared = true              # one process holds the model for every session (127.0.0.1 only), not one copy each
 # recall_floor = 0.83        # similarity cut-off; the defaults are calibrated per model family
+
+# Optional fact extraction (off by default). Used by `ingatan extract` only.
+# [llm]
+# provider = "ollama"       # none (default) | ollama | openai (any OpenAI-compatible endpoint)
+# model = "..."             # required: Ingatan picks no model for you
+# api_base = "http://localhost:11434"
 ```
 
 | Environment variable | Purpose |
@@ -584,6 +600,8 @@ token_budget = 1000
 | `INGATAN_EMBED_THREADS` | Overrides the ONNX thread count `[embeddings].threads` (default: `2`) |
 | `INGATAN_EMBED_IDLE_UNLOAD` | Overrides local model idle auto-unload in seconds (default: `300`, `0` = keep) |
 | `INGATAN_MODEL_DIR` | Folder of the local model files. Default: `<INGATAN_HOME>/models` |
+| `INGATAN_EMBED_DEFER`, `INGATAN_EMBED_SHARED` | Override `[embeddings].defer` and `[embeddings].shared` (`1`/`0`) |
+| `INGATAN_LLM_PROVIDER`, `INGATAN_LLM_MODEL`, `INGATAN_LLM_API_BASE`, `INGATAN_LLM_API_KEY_ENV` | Override `[llm]` for `ingatan extract` (default `none`: nothing is sent to a model) |
 
 <a id="en-tools"></a>
 
@@ -664,6 +682,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Review and approve proposals (single or bulk) |
 | `ingatan forget <fact_id> [--yes] [--business NAME]` | Forget a fact of any tier |
 | `ingatan ingest <path> [--business NAME]` | Read Markdown files into searchable notes (skips `.git`/`.venv`/`node_modules`) |
+| `ingatan extract [--limit N] [--dry-run] [--business NAME] [--agent NAME]` | Optional: the model you set under `[llm]` reads pending episodes and proposes facts. Everything goes to the proposal queue marked `extracted by`; nothing is a fact until you approve it |
 | `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
@@ -686,6 +705,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 - `capture-errors.log` in the data folder gets one line when a hook or plugin fails. Hooks never stop the agent session.
 - Redaction is pattern matching and can miss secrets.
 - The server makes no network call, unless you choose a remote embedding provider (`ollama`, `openai`, `gemini`): then the text of facts and queries is sent to that endpoint. The local model is downloaded only when you run `ingatan embeddings pull`.
+- `ingatan extract` is optional and off by default. If you fill in `[llm]`, the text of episodes (captured conversations, after redaction) is sent to the model you name: Ollama on your machine, or the endpoint you put in `api_base`. The server and `remember` never call that model.
 
 <a id="en-numbers"></a>
 

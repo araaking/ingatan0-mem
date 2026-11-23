@@ -21,6 +21,7 @@ from typing import Annotated, Any, TypeVar
 import typer
 
 from ingatan import __version__, audit, facts, proposals, search
+from ingatan import extract as extraction
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
 from ingatan.cli import review as review_ui
@@ -610,6 +611,50 @@ def forget(
                 raise typer.Exit(1)
         facts.forget(ctx, fact_id, by_user=True)
     typer.echo(f"Forgotten {fact_id}. Its content is gone from the database and the log.")
+
+
+# ---- extract --------------------------------------------------------------------------
+
+
+@app.command()
+@cli_command
+def extract(
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, help="How many pending episodes to read.")
+    ] = 10,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be proposed and write nothing."),
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Let the configured model read captured conversations and propose facts (optional).
+
+    Off by default: it needs `[llm] provider` and `model` (an Ollama model, or any
+    OpenAI-compatible endpoint). The model reads this agent's pending episodes, and what it
+    finds goes to the proposal queue, marked with the model's name. Nothing becomes a fact
+    until you approve it with `ingatan proposals approve`.
+    """
+    with _open(agent, business) as ctx:
+        report = extraction.extract_pending(ctx, limit=limit, dry_run=dry_run)
+    verb = "would be proposed" if dry_run else "proposed"
+    typer.echo(
+        f"Read {report.episodes_read} episode(s) with {report.model}: "
+        f"{report.proposed} fact(s) {verb}, {report.rejected} dropped, "
+        f"{report.known} already known, {report.errors} episode(s) failed."
+    )
+    for text in report.texts:
+        typer.echo(f"  {'would propose' if dry_run else 'proposed'}: {shorten(text, 100)}")
+    if report.errors:
+        typer.echo(f"ingatan: the model failed on an episode: {report.last_error}", err=True)
+    if report.proposed and not dry_run:
+        typer.echo(
+            "Nothing is a fact yet. Review with `ingatan proposals list`, then "
+            "`ingatan proposals approve <id>` or `reject <id>`."
+        )
+    if report.errors and report.errors == report.episodes_read:
+        raise typer.Exit(1)
 
 
 # ---- ingest, import, move, conflicts, hook -------------------------------------------

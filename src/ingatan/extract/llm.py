@@ -17,7 +17,7 @@ from typing import Any
 from ingatan.errors import IngatanError
 from ingatan.scope import LlmConfig
 
-__all__ = ["DEFAULT_BASES", "DEFAULT_KEY_ENV", "chat", "model_label"]
+__all__ = ["DEFAULT_BASES", "DEFAULT_KEY_ENV", "chat", "ensure_configured", "model_label"]
 
 DEFAULT_BASES = {
     "ollama": "http://localhost:11434",
@@ -58,19 +58,24 @@ def _content(provider: str, data: Any) -> str:
     return content.strip() if isinstance(content, str) else ""
 
 
-def chat(cfg: LlmConfig, system: str, user: str) -> str:
-    """The model's answer to one system and one user message. Raises `IngatanError`."""
+def ensure_configured(cfg: LlmConfig) -> None:
+    """Raise `IngatanError` unless a provider and a model are set. Sends nothing."""
     if cfg.provider == "none":
         raise IngatanError(
             'Fact extraction is off: [llm] provider is "none". To use it, set [llm] provider '
             "(ollama or openai) and model in .ingatan.toml or in config.toml of the data folder."
         )
-    model = cfg.model.strip()
-    if not model:
+    if not cfg.model.strip():
         raise IngatanError(
             f"[llm] model is not set. Name the {cfg.provider} model that should read the "
             "conversations: Ingatan picks none for you."
         )
+
+
+def chat(cfg: LlmConfig, system: str, user: str) -> str:
+    """The model's answer to one system and one user message. Raises `IngatanError`."""
+    ensure_configured(cfg)
+    model = cfg.model.strip()
     base = (cfg.api_base or DEFAULT_BASES[cfg.provider]).rstrip("/")
     payload: dict[str, Any] = {
         "model": model,
