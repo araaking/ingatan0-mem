@@ -8,6 +8,7 @@ import pytest
 
 from ingatan import facts, search, timeutil
 from ingatan.scope import Context
+from ingatan.search import core
 
 MakeContext = Callable[..., Context]
 InsertFact = Callable[..., str]
@@ -672,7 +673,7 @@ def test_related_is_capped(ctx: Context) -> None:
     for fact_id in extra:
         facts.link_facts(ctx, printer, fact_id)
     found = related_ids(ctx, "pesanan besar minggu ini")
-    assert len(found) == search.core.MAX_RELATED
+    assert len(found) == core.MAX_RELATED
     assert found[0] == printer  # the direct neighbour is never pushed out by what is behind it
 
 
