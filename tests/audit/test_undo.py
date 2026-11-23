@@ -13,6 +13,12 @@ from ingatan.scope import Context
 MakeContext = Callable[..., Context]
 
 
+@pytest.fixture
+def ctx(make_ctx: MakeContext) -> Context:
+    """Undo tests cover both direct writes and the opt-in approval queue."""
+    return make_ctx(require_approval=True)
+
+
 def rem(ctx: Context, text: str, keywords: list[str] | None = None, **kw: Any) -> str:
     kw.setdefault("entities", ["kopi"])  # a shared entity makes two facts similar
     result = facts.remember(ctx, text, keywords=keywords or ["harga"], **kw)

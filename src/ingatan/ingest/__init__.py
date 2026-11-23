@@ -44,9 +44,20 @@ class IngestReport:
     skipped: list[Skipped] = field(default_factory=lambda: [])
 
 
+_SKIP_DIRS = frozenset({".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__"})
+
+
 def _files(path: Path) -> list[Path]:
     if path.is_dir():
-        return sorted(p for p in path.rglob("*") if p.suffix.lower() == ".md" and p.is_file())
+        found: list[Path] = []
+        for p in path.rglob("*"):
+            if p.suffix.lower() != ".md" or not p.is_file():
+                continue
+            rel_parts = p.relative_to(path).parts[:-1]
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
+                continue
+            found.append(p)
+        return sorted(found)
     return [path]
 
 

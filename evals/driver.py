@@ -107,9 +107,12 @@ class MemoryDriver(Protocol):
 class InProcessDriver:
     """Calls the real modules, one open `Context` per actor, all in one data folder."""
 
-    def __init__(self, home: Path, *, token_budget: int = 1000) -> None:
+    def __init__(
+        self, home: Path, *, token_budget: int = 1000, require_approval: bool = False
+    ) -> None:
         self.home = home
         self.token_budget = token_budget
+        self.require_approval = require_approval
         self._contexts: dict[Actor, Context] = {}
 
     # -- plumbing ---------------------------------------------------------
@@ -122,6 +125,7 @@ class InProcessDriver:
                 agent=actor.agent,
                 home=self.home,
                 token_budget=self.token_budget,
+                require_approval=self.require_approval,
             )
             found = self._contexts[actor] = open_context(scope)
         return found

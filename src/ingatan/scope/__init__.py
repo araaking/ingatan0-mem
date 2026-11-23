@@ -23,7 +23,9 @@ else:  # pragma: no cover - exercised on Python 3.10 only
 
 __all__ = [
     "CONFIG_NAME",
+    "DEFAULT_TOKEN_BUDGET",
     "GLOBAL_NAME",
+    "HOME_CONFIG_NAME",
     "NAME_PATTERN",
     "VISIBLE_SQL",
     "VISIBLE_SQL_GLOBAL",
@@ -33,7 +35,10 @@ __all__ = [
     "db_path",
     "find_config",
     "find_fact",
+    "load_home_config",
     "open_context",
+    "parse_bool",
+    "resolve_allowed_businesses",
     "resolve_scope",
     "validate_agent",
     "validate_business",
@@ -41,6 +46,7 @@ __all__ = [
 ]
 
 CONFIG_NAME = ".ingatan.toml"
+HOME_CONFIG_NAME = "config.toml"
 GLOBAL_NAME = "global"
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_TOKEN_BUDGET = 1000
@@ -57,6 +63,7 @@ class Scope:
     agent: str
     home: Path
     token_budget: int = DEFAULT_TOKEN_BUDGET
+    require_approval: bool = False
 
 
 def _check_name(kind: str, value: object) -> str:
@@ -117,24 +124,85 @@ def _read_config(path: Path) -> dict[str, Any]:
         raise ConfigError(f"Cannot read {path}: {exc}") from exc
 
 
-def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = None) -> Scope:
-    """Business and agent from `INGATAN_BUSINESS` / `INGATAN_AGENT`, else `.ingatan.toml`.
+def load_home_config(home: Path) -> dict[str, Any]:
+    """Read `<home>/config.toml` if present, else an empty dict."""
+    path = home / HOME_CONFIG_NAME
+    if not path.is_file():
+        return {}
+    return _read_config(path)
 
-    Each of the two is resolved on its own: the environment variable wins over the file.
+
+def parse_bool(value: object, *, label: str) -> bool:
+    """Parse a boolean from TOML or an environment variable string."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip().casefold()
+        if cleaned in ("1", "true", "yes", "on"):
+            return True
+        if cleaned in ("0", "false", "no", "off"):
+            return False
+    raise ConfigError(f"{label} must be true or false (got {value!r}).")
+
+
+def _parse_budget(config: Mapping[str, Any], origin: str) -> int | None:
+    brief_section = config.get("brief")
+    if isinstance(brief_section, dict) and "token_budget" in brief_section:
+        raw = brief_section["token_budget"]  # pyright: ignore[reportUnknownVariableType]
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+            raise ConfigError(f"[brief] token_budget in {origin} must be a positive integer.")
+        return raw
+    return None
+
+
+def _parse_approval(
+    source: Mapping[str, str],
+    project_cfg: Mapping[str, Any],
+    project_origin: str,
+    home_cfg: Mapping[str, Any],
+    home_origin: str,
+) -> bool:
+    raw_env = (source.get("INGATAN_REQUIRE_APPROVAL") or "").strip()
+    if raw_env:
+        return parse_bool(raw_env, label="INGATAN_REQUIRE_APPROVAL")
+    if "require_approval" in project_cfg:
+        return parse_bool(
+            project_cfg["require_approval"], label=f"require_approval in {project_origin}"
+        )
+    if "require_approval" in home_cfg:
+        return parse_bool(home_cfg["require_approval"], label=f"require_approval in {home_origin}")
+    return False
+
+
+def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = None) -> Scope:
+    """Business and agent from `INGATAN_BUSINESS` / `INGATAN_AGENT`, else `.ingatan.toml`,
+    falling back to `<INGATAN_HOME>/config.toml` for defaults (`default_agent`, `token_budget`,
+    `require_approval`).
+
+    Each setting is resolved on its own: environment wins over `.ingatan.toml`, which wins over
+    `<INGATAN_HOME>/config.toml`.
     """
     source = os.environ if env is None else env
+    home = data_home(source)
+    home_cfg = load_home_config(home)
     config_file = find_config(start)
     config = _read_config(config_file) if config_file is not None else {}
 
-    def pick(key: str, env_name: str) -> str | None:
+    def pick(key: str, env_name: str, home_keys: tuple[str, ...] = ()) -> str | None:
         from_env = (source.get(env_name) or "").strip()
         if from_env:
             return from_env
         value = config.get(key)
-        return value.strip() if isinstance(value, str) and value.strip() else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        for hk in home_keys:
+            hval = home_cfg.get(hk)
+            if isinstance(hval, str) and hval.strip():
+                return hval.strip()
+        return None
 
     business = pick("business", "INGATAN_BUSINESS")
-    agent = pick("agent", "INGATAN_AGENT")
+    agent = pick("agent", "INGATAN_AGENT", ("default_agent", "agent"))
     for label, value, env_name in (
         ("business", business, "INGATAN_BUSINESS"),
         ("agent", agent, "INGATAN_AGENT"),
@@ -146,20 +214,84 @@ def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = Non
             )
     assert business is not None and agent is not None
 
-    budget = DEFAULT_TOKEN_BUDGET
-    brief_section = config.get("brief")
-    if isinstance(brief_section, dict) and "token_budget" in brief_section:
-        raw = brief_section["token_budget"]  # pyright: ignore[reportUnknownVariableType]
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
-            raise ConfigError(f"[brief] token_budget in {config_file} must be a positive integer.")
-        budget = raw
+    home_origin = str(home / HOME_CONFIG_NAME)
+    project_origin = str(config_file) if config_file is not None else CONFIG_NAME
+    budget = _parse_budget(config, project_origin)
+    if budget is None:
+        budget = _parse_budget(home_cfg, home_origin)
+    if budget is None:
+        budget = DEFAULT_TOKEN_BUDGET
+
+    require_approval = _parse_approval(source, config, project_origin, home_cfg, home_origin)
 
     return Scope(
         business=validate_business(business),
         agent=validate_agent(agent),
-        home=data_home(source),
+        home=home,
         token_budget=budget,
+        require_approval=require_approval,
     )
+
+
+def resolve_allowed_businesses(
+    start: Path | None = None, env: Mapping[str, str] | None = None
+) -> tuple[list[str], str, Path, int, bool] | None:
+    """Resolve optional multi-business MCP server configuration.
+
+    Triggered when `INGATAN_BUSINESSES` (comma-separated) is set, or when `allowed_businesses`
+    is configured in `.ingatan.toml` / `<INGATAN_HOME>/config.toml` and no single business is
+    explicitly pinned via `INGATAN_BUSINESS` or `business = ...`.
+    Returns `(businesses, agent, home, token_budget, require_approval)` or `None`.
+    """
+    source = os.environ if env is None else env
+    home = data_home(source)
+    home_cfg = load_home_config(home)
+    config_file = find_config(start)
+    config = _read_config(config_file) if config_file is not None else {}
+
+    raw_env_list = (source.get("INGATAN_BUSINESSES") or "").strip()
+    raw_list: list[str] | None = None
+    if raw_env_list:
+        raw_list = [part.strip() for part in raw_env_list.split(",") if part.strip()]
+    else:
+        single_pinned = bool((source.get("INGATAN_BUSINESS") or "").strip()) or isinstance(
+            config.get("business"), str
+        )
+        if not single_pinned:
+            cfg_list = config.get("allowed_businesses") or home_cfg.get("allowed_businesses")
+            if isinstance(cfg_list, list) and cfg_list:
+                raw_list = [str(item).strip() for item in cfg_list if str(item).strip()]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+
+    if not raw_list:
+        return None
+
+    seen: set[str] = set()
+    businesses: list[str] = []
+    for name in raw_list:
+        valid = validate_business(name)
+        if valid not in seen:
+            seen.add(valid)
+            businesses.append(valid)
+
+    agent = (source.get("INGATAN_AGENT") or "").strip()
+    if not agent:
+        for candidate in (config.get("agent"), home_cfg.get("default_agent"), home_cfg.get("agent")):
+            if isinstance(candidate, str) and candidate.strip():
+                agent = candidate.strip()
+                break
+    if not agent:
+        raise ConfigError(
+            f'No agent name is set. Put `agent = "..."` in {CONFIG_NAME} '
+            "or set the INGATAN_AGENT environment variable."
+        )
+
+    home_origin = str(home / HOME_CONFIG_NAME)
+    project_origin = str(config_file) if config_file is not None else CONFIG_NAME
+    budget = _parse_budget(config, project_origin) or _parse_budget(home_cfg, home_origin)
+    if budget is None:
+        budget = DEFAULT_TOKEN_BUDGET
+    require_approval = _parse_approval(source, config, project_origin, home_cfg, home_origin)
+    return businesses, validate_agent(agent), home, budget, require_approval
 
 
 def visible_sql(*, is_global: bool, alias: str = "", owner_column: str = "agent") -> str:

@@ -174,10 +174,11 @@ def test_remember_with_expect_error_may_have_no_keywords():
 
 def test_a_proposal_key_becomes_a_fact_key_after_approve():
     data = broken(
+        require_approval=True,
         steps=[
             {"op": "remember", "key": "p", "text": "x", "keywords": ["y"], "tier": "business"},
             {"op": "supersede", "old": "p", "new": "p"},
-        ]
+        ],
     )
     with pytest.raises(ScenarioError, match="is a proposal, not a fact"):
         parse_scenario(data)
@@ -223,15 +224,20 @@ def shipped():
 
 
 def test_shipped_scenarios_load(shipped: list[Any]):
-    assert 36 <= len(shipped) <= 40
+    assert 36 <= len(shipped) <= 60
 
 
 def test_shipped_scenarios_cover_every_category(shipped: list[Any]):
     assert {s.category for s in shipped} == set(CATEGORIES)
 
 
-def test_shipped_scenarios_are_all_patterns_never_invented_incidents(shipped: list[Any]):
-    assert {s.source for s in shipped} == {"pattern"}
+def test_shipped_scenarios_match_folder_sources(shipped: list[Any]):
+    for s in shipped:
+        assert s.path is not None
+        if s.path.parent.name == "incidents":
+            assert s.source == "incident"
+        else:
+            assert s.source == "pattern"
 
 
 def test_at_least_five_inflection_scenarios_depend_on_keywords(shipped: list[Any]):

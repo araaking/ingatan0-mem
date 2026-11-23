@@ -68,8 +68,8 @@ def test_forget_business_fact_by_user_deletes_the_episode_of_any_agent(
     result = facts.remember(
         writer, "Pelanggan VIP ada", keywords=["pelanggan"], tier="business", episode=episode
     )
-    assert result.proposal_id is not None
-    fact_id = proposals.approve(admin, result.proposal_id)
+    assert result.fact_id is not None
+    fact_id = result.fact_id
     assert found(raw_bytes(ingatan_home, "tokoku"), EPISODE_MARK)
 
     facts.forget(admin, fact_id, by_user=True)
@@ -88,8 +88,8 @@ def test_forget_global_fact_by_user_deletes_episode_in_business_file(
     result = facts.remember(
         ctx, "Aturan umum berlaku", keywords=["aturan"], tier="global", episode=episode
     )
-    assert result.proposal_id is not None
-    fact_id = proposals.approve(ctx, result.proposal_id)
+    assert result.fact_id is not None
+    fact_id = result.fact_id
     assert found(raw_bytes(ingatan_home, "tokoku"), EPISODE_MARK)
 
     facts.forget(ctx, fact_id, by_user=True)

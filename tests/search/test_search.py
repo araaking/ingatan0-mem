@@ -179,9 +179,7 @@ def test_results_from_both_files_are_merged_before_the_cut(make_ctx: MakeContext
     ctx = make_ctx()
     biz = facts.remember(ctx, "Pajak toko dibayar tiap bulan", keywords=["pajak"], tier="business")
     glo = facts.remember(ctx, "Pajak pribadi dibayar tiap tahun", keywords=["pajak"], tier="global")
-    assert biz.proposal_id and glo.proposal_id
-    proposals.approve(ctx, biz.proposal_id)
-    proposals.approve(ctx, glo.proposal_id)
+    assert biz.fact_id and glo.fact_id
     hits = search.recall(ctx, "pajak dibayar", limit=2)
     assert {h.tier for h in hits.facts} == {"business", "global"}
 
@@ -423,9 +421,9 @@ def test_touch_false_leaves_counters_alone(ctx: Context) -> None:
 
 def test_touch_updates_the_file_where_the_fact_lives(make_ctx: MakeContext) -> None:
     ctx = make_ctx()
-    proposal = facts.remember(ctx, "Nama pemilik Budi", keywords=["pemilik"], tier="global")
-    assert proposal.proposal_id
-    glo_id = proposals.approve(ctx, proposal.proposal_id)
+    glo = facts.remember(ctx, "Nama pemilik Budi", keywords=["pemilik"], tier="global")
+    assert glo.fact_id
+    glo_id = glo.fact_id
     biz_id = rem(ctx, "Nama toko Tokoku", ["toko"])
     search.recall(ctx, "nama")
     assert (
@@ -509,9 +507,9 @@ def test_business_facts_are_shared_between_agents_of_one_business(
 ) -> None:
     a = make_ctx(agent="agent-a")
     b = make_ctx(agent="agent-b")
-    prop = facts.remember(a, "Rekening toko di Bank Maju", keywords=["rekening"], tier="business")
-    assert prop.proposal_id
-    fid = proposals.approve(a, prop.proposal_id)
+    res = facts.remember(a, "Rekening toko di Bank Maju", keywords=["rekening"], tier="business")
+    assert res.fact_id
+    fid = res.fact_id
     assert ids(search.recall(b, "rekening toko")) == [fid]
 
 
@@ -520,9 +518,9 @@ def test_business_x_never_sees_business_y(make_ctx: MakeContext) -> None:
     y = make_ctx(business="usaha-y")
     secret = rem(y, "Margin usaha Y tujuh puluh persen", ["margin"])
     note = insert_note(y.business, "Margin", "margin usaha Y tujuh puluh persen")
-    prop = facts.remember(y, "Margin bisnis Y", keywords=["margin"], tier="business")
-    assert prop.proposal_id
-    biz = proposals.approve(y, prop.proposal_id)
+    res = facts.remember(y, "Margin bisnis Y", keywords=["margin"], tier="business")
+    assert res.fact_id
+    biz = res.fact_id
     for query in ("margin", "usaha Y", "tujuh puluh"):
         result = search.recall(x, query, include_closed=True)
         assert result.facts == [] and result.notes == []
@@ -533,13 +531,16 @@ def test_business_x_never_sees_business_y(make_ctx: MakeContext) -> None:
 def test_global_facts_are_visible_to_every_business(make_ctx: MakeContext) -> None:
     x = make_ctx(business="usaha-x")
     y = make_ctx(business="usaha-y")
-    prop = facts.remember(x, "Pemilik tinggal di Medan", keywords=["pemilik"], tier="global")
-    assert prop.proposal_id
-    fid = proposals.approve(x, prop.proposal_id)
+    res = facts.remember(x, "Pemilik tinggal di Medan", keywords=["pemilik"], tier="global")
+    assert res.fact_id
+    fid = res.fact_id
     assert ids(search.recall(y, "pemilik Medan")) == [fid]
 
 
-def test_a_pending_proposal_is_never_recalled_not_even_by_its_author(ctx: Context) -> None:
+def test_a_pending_proposal_is_never_recalled_not_even_by_its_author(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     facts.remember(ctx, "Rahasia proposal zzpendingzz", keywords=["zzpendingzz"], tier="business")
     facts.remember(ctx, "Rahasia global zzpendingzz", keywords=["zzpendingzz"], tier="global")
     for query in ("zzpendingzz", "Rahasia proposal", "proposal"):

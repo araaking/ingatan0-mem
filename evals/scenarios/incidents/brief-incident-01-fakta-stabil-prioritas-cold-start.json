@@ -1,0 +1,80 @@
+{
+  "id": "brief-incident-01-fakta-stabil-prioritas-cold-start",
+  "title": "Saat use_count nol, fakta stabil muncul di brief mendahului log volatile terbaru",
+  "category": "brief",
+  "source": "incident",
+  "token_budget": 120,
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "harga_dasar",
+      "text": "Harga langganan paket Premium resmi adalah Rp49.000 per bulan.",
+      "keywords": [
+        "harga",
+        "premium",
+        "langganan"
+      ],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "advance_days",
+      "days": 1
+    },
+    {
+      "op": "remember",
+      "key": "log_1",
+      "text": "Catatan jadwal posting konten harian tanggal satu dengan teks panjang untuk memenuhi anggaran brief secara penuh.",
+      "keywords": [
+        "jadwal",
+        "konten"
+      ],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "advance_days",
+      "days": 1
+    },
+    {
+      "op": "remember",
+      "key": "log_2",
+      "text": "Catatan perubahan ad set iklan harian tanggal dua dengan teks panjang untuk memenuhi anggaran brief secara penuh.",
+      "keywords": [
+        "adset",
+        "iklan"
+      ],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "advance_days",
+      "days": 1
+    },
+    {
+      "op": "remember",
+      "key": "log_3",
+      "text": "Catatan referensi konten harian tanggal tiga dengan teks panjang untuk memenuhi anggaran brief secara penuh.",
+      "keywords": [
+        "referensi",
+        "konten"
+      ],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "brief",
+      "expect_in_section": {
+        "business": [
+          "harga_dasar"
+        ]
+      }
+    }
+  ]
+}

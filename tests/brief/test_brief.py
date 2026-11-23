@@ -125,8 +125,9 @@ def test_overdue_volatile_fact_appears_only_in_check_first(
 
 
 def test_fact_with_pending_supersede_is_check_first_only(
-    ctx: Context, insert_fact: InsertFact, frozen_clock: FrozenClock
+    approval_ctx: Context, insert_fact: InsertFact, frozen_clock: FrozenClock
 ) -> None:
+    ctx = approval_ctx
     old = insert_fact(ctx.business, text="Supplier utama PT Maju", tier="business")
     new = facts.remember(ctx, "Supplier utama PT Jaya", keywords=["supplier", "pemasok"])
     assert new.fact_id is not None
@@ -140,8 +141,9 @@ def test_fact_with_pending_supersede_is_check_first_only(
 
 
 def test_pending_count_zero_and_n_and_pending_text_never_shown(
-    ctx: Context, frozen_clock: FrozenClock
+    approval_ctx: Context, frozen_clock: FrozenClock
 ) -> None:
+    ctx = approval_ctx
     assert "waiting for the user: 0" in brief.build(ctx)
     facts.remember(ctx, "Rahasia usulan bisnis", keywords=["usulan"], tier="business")
     facts.remember(ctx, "Rahasia usulan global", keywords=["usulan"], tier="global")

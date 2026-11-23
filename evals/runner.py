@@ -37,7 +37,9 @@ PASS, FAIL, XFAIL, XPASS, SKIP = "PASS", "FAIL", "XFAIL", "XPASS", "SKIP"
 
 
 def default_driver_factory(home: Path, scenario: Scenario) -> MemoryDriver:
-    return InProcessDriver(home, token_budget=scenario.token_budget)
+    return InProcessDriver(
+        home, token_budget=scenario.token_budget, require_approval=scenario.require_approval
+    )
 
 
 @dataclass

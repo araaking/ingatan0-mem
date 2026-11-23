@@ -87,29 +87,32 @@ def test_a_bad_review_after_is_a_validation_error_and_saves_nothing(ctx: Context
     assert count(ctx.business, "facts") == 0 and count(ctx.business, "log") == 0
 
 
-# ---- keywords are required (FR-10) --------------------------------------------------
+# ---- keywords are optional with auto-extraction -------------------------------------
 
 
 @pytest.mark.parametrize("keywords", [None, [], [""], ["  ", ""], ""])
-def test_missing_keywords_error_asks_for_them_and_saves_nothing(
+def test_missing_keywords_are_auto_extracted_from_text_and_entities(
     ctx: Context, keywords: Any
 ) -> None:
-    with pytest.raises(ValidationError, match="keywords") as info:
-        facts.remember(ctx, "Pelanggan membayar tunai", keywords=keywords)
-    assert "synonym" in str(info.value) and "root" in str(info.value)
-    for conn in ctx.connections():
-        assert count(conn, "facts") == 0
-        assert count(conn, "log") == 0
-        assert count(conn, "proposals") == 0
-        assert count(conn, "facts_fts") == 0
-    assert count(ctx.business, "conflicts") == 0
+    result = facts.remember(
+        ctx,
+        "Pelanggan membayar tunai di kasir",
+        keywords=keywords,
+        entities=["Kasir Utama"],
+    )
+    assert result.fact_id is not None
+    row = ctx.business.execute("SELECT keywords FROM facts WHERE id = ?", (result.fact_id,)).fetchone()
+    stored = json.loads(row["keywords"])
+    assert stored
+    assert "pelanggan" in stored or "bayar" in stored
+    assert search.recall(ctx, "pembayaran tunai").facts[0].id == result.fact_id
 
 
 @pytest.mark.parametrize("tier", ["business", "global"])
-def test_missing_keywords_saves_no_proposal_either(ctx: Context, tier: str) -> None:
-    with pytest.raises(ValidationError):
-        facts.remember(ctx, "Aturan toko", keywords=[], tier=tier)
-    assert proposals.pending_count(ctx) == 0
+def test_missing_keywords_also_auto_extracts_for_shared_tiers(ctx: Context, tier: str) -> None:
+    result = facts.remember(ctx, "Aturan retur toko tujuh hari", keywords=[], tier=tier)
+    assert result.fact_id is not None and result.proposal_id is None
+    assert search.recall(ctx, "retur").facts[0].id == result.fact_id
 
 
 @pytest.mark.parametrize(
@@ -159,7 +162,10 @@ def test_a_secret_is_absent_from_facts_and_log_tables(ctx: Context) -> None:
 
 
 @pytest.mark.parametrize("tier", ["business", "global"])
-def test_a_secret_is_absent_from_proposals_and_their_log(ctx: Context, tier: str) -> None:
+def test_a_secret_is_absent_from_proposals_and_their_log(
+    approval_ctx: Context, tier: str
+) -> None:
+    ctx = approval_ctx
     result = facts.remember(
         ctx, f"Token {SECRET}", keywords=["token", f"password={PASSWORD}"], tier=tier
     )
@@ -258,11 +264,11 @@ def test_at_most_three_similar_facts_are_paired(ctx: Context) -> None:
 
 
 def test_a_pair_with_a_global_fact_lives_in_the_business_file(ctx: Context) -> None:
-    prop = facts.remember(
+    glo_res = facts.remember(
         ctx, "Pemilik tinggal di Medan", keywords=["pemilik"], entities=["Budi"], tier="global"
     )
-    assert prop.proposal_id
-    glo = proposals.approve(ctx, prop.proposal_id)
+    assert glo_res.fact_id
+    glo = glo_res.fact_id
     mine = facts.remember(ctx, "Budi tinggal di Bandung", keywords=["tinggal"], entities=["Budi"])
     assert [s["id"] for s in mine.similar] == [glo]
     assert count(ctx.glob, "conflicts") == 0
@@ -270,7 +276,8 @@ def test_a_pair_with_a_global_fact_lives_in_the_business_file(ctx: Context) -> N
     assert {h.status for h in search.recall(ctx, "Budi tinggal").facts} == {"possible conflict"}
 
 
-def test_a_proposal_returns_similar_facts_but_records_no_pair_yet(ctx: Context) -> None:
+def test_a_proposal_returns_similar_facts_but_records_no_pair_yet(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     mine = facts.remember(
         ctx, "Supplier Budi kirim Senin", keywords=["supplier"], entities=["Budi"]
     )
@@ -284,7 +291,7 @@ def test_a_proposal_returns_similar_facts_but_records_no_pair_yet(ctx: Context) 
     assert {h.id for h in search.recall(ctx, "supplier Budi").facts} == {mine.fact_id, new_id}
 
 
-# ---- tier routing (FR-21, FR-22) ----------------------------------------------------
+# ---- tier routing (write-then-undo default + opt-in approval queue) -----------------
 
 
 def test_agent_tier_creates_a_valid_fact_at_once(ctx: Context) -> None:
@@ -294,9 +301,21 @@ def test_agent_tier_creates_a_valid_fact_at_once(ctx: Context) -> None:
 
 
 @pytest.mark.parametrize(("tier", "file"), [("business", "business"), ("global", "glob")])
-def test_business_and_global_tiers_create_only_a_pending_proposal(
+def test_business_and_global_tiers_save_immediately_by_default(
     ctx: Context, tier: str, file: str
 ) -> None:
+    result = facts.remember(ctx, "Aturan retur 7 hari", keywords=["retur"], tier=tier)
+    conn = getattr(ctx, file)
+    assert result.fact_id and result.fact_id.startswith("f_") and result.proposal_id is None
+    assert count(conn, "facts") == 1 and count(conn, "proposals") == 0
+    assert [h.id for h in search.recall(ctx, "retur").facts] == [result.fact_id]
+
+
+@pytest.mark.parametrize(("tier", "file"), [("business", "business"), ("global", "glob")])
+def test_business_and_global_tiers_queue_proposals_when_approval_required(
+    approval_ctx: Context, tier: str, file: str
+) -> None:
+    ctx = approval_ctx
     result = facts.remember(ctx, "Aturan retur 7 hari", keywords=["retur"], tier=tier)
     conn = getattr(ctx, file)
     assert result.fact_id is None and result.proposal_id and result.proposal_id.startswith("p_")
@@ -371,7 +390,8 @@ def test_create_writes_one_entry_with_the_full_fact(ctx: Context) -> None:
     assert "valid_from" in after and "source" in after and "seq" not in after
 
 
-def test_proposal_writes_a_propose_entry_in_the_tier_file(ctx: Context) -> None:
+def test_proposal_writes_a_propose_entry_in_the_tier_file(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     biz = facts.remember(ctx, "Aturan A", keywords=["a"], tier="business")
     glo = facts.remember(ctx, "Aturan B", keywords=["b"], tier="global")
     biz_log = ctx.business.execute("SELECT * FROM log").fetchall()

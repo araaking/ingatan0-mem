@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -22,12 +23,14 @@ import typer
 from ingatan import __version__, audit, facts, proposals
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
-from ingatan.cli.conflicts import compute_report, render_report
+from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
 from ingatan.cli.render import log_line, render_diff, shorten
-from ingatan.errors import ConfigError, IngatanError, NotFoundError
+from ingatan.errors import ConfigError, IngatanError, NotFoundError, ValidationError
+from ingatan.facts._util import fact_dict
 from ingatan.scope import (
     CONFIG_NAME,
     Context,
+    Scope,
     data_home,
     db_path,
     find_fact,
@@ -61,6 +64,13 @@ token_app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 app.add_typer(token_app, name="token")
+conflicts_app = typer.Typer(
+    help="Inspect conflict resolution report, list open conflicts, or scan existing facts.",
+    invoke_without_command=True,
+    add_completion=False,
+    pretty_exceptions_enable=False,
+)
+app.add_typer(conflicts_app, name="conflicts")
 
 AgentOption = Annotated[
     str | None,
@@ -70,6 +80,17 @@ AgentOption = Annotated[
         help="Open the context as this agent, to see its private (agent tier) entries.",
     ),
 ]
+BusinessOption = Annotated[
+    str | None,
+    typer.Option(
+        "--business",
+        "-b",
+        metavar="NAME",
+        help="Target business name (overrides .ingatan.toml and INGATAN_BUSINESS).",
+    ),
+]
+
+_ROOT_BUSINESS: str | None = None
 
 
 def cli_command(func: F) -> F:
@@ -86,8 +107,15 @@ def cli_command(func: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-def _open(agent: str | None = None) -> Context:
+def _pick_business(business: str | None) -> str | None:
+    return business if business is not None else _ROOT_BUSINESS
+
+
+def _open(agent: str | None = None, business: str | None = None) -> Context:
     env = dict(os.environ)
+    resolved_business = _pick_business(business)
+    if resolved_business is not None:
+        env["INGATAN_BUSINESS"] = validate_business(resolved_business)
     if agent is not None:
         env["INGATAN_AGENT"] = validate_agent(agent)
     return open_context(resolve_scope(env=env))
@@ -120,7 +148,10 @@ def root(
             "--version", callback=_version_callback, is_eager=True, help="Show the version."
         ),
     ] = False,
+    business: BusinessOption = None,
 ) -> None:
+    global _ROOT_BUSINESS
+    _ROOT_BUSINESS = business
     if context.invoked_subcommand is None:
         _serve()
 
@@ -211,9 +242,9 @@ def init(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(business: BusinessOption = None, agent: AgentOption = None) -> None:
     """Check Python, SQLite features, the resolved config and the databases."""
-    checks = doctor_checks.run_checks()
+    checks = doctor_checks.run_checks(business=_pick_business(business), agent=agent)
     typer.echo(doctor_checks.render(checks))
     if any(check.failed for check in checks):
         raise typer.Exit(1)
@@ -266,9 +297,10 @@ def log_command(
     limit: Annotated[int, typer.Option("--limit", "-n", min=1, help="How many entries.")] = 20,
     fact: Annotated[str | None, typer.Option("--fact", help="Only this fact or proposal.")] = None,
     agent: AgentOption = None,
+    business: BusinessOption = None,
 ) -> None:
     """List log entries, newest first."""
-    with _open(agent) as ctx:
+    with _open(agent, business) as ctx:
         if fact is not None and fact.startswith("f_"):
             found = list(reversed(facts.history(ctx, fact)))[:limit]
         elif fact is not None:
@@ -288,9 +320,10 @@ def log_command(
 def diff(
     log_id: Annotated[int, typer.Argument(help="Log entry id, as shown by `ingatan log`.")],
     agent: AgentOption = None,
+    business: BusinessOption = None,
 ) -> None:
     """Show the before and after of one log entry, field by field."""
-    with _open(agent) as ctx:
+    with _open(agent, business) as ctx:
         entry = audit.get(ctx, log_id)
         typer.echo(render_diff(audit.diff(ctx, log_id), entry))
 
@@ -300,9 +333,10 @@ def diff(
 def undo(
     log_id: Annotated[int, typer.Argument(help="Log entry id, as shown by `ingatan log`.")],
     agent: AgentOption = None,
+    business: BusinessOption = None,
 ) -> None:
     """Reverse one log entry (create, supersede, confirm or approve)."""
-    with _open(agent) as ctx:
+    with _open(agent, business) as ctx:
         entry = audit.get(ctx, log_id)
         new_id = audit.undo(ctx, log_id)
     typer.echo(f"Undid entry {log_id} ({entry.op} of {entry.fact_id}). New log entry: {new_id}.")
@@ -321,9 +355,9 @@ def _replaced_text(ctx: Context, fact_id: str) -> str | None:
 
 @proposals_app.command("list")
 @cli_command
-def proposals_list() -> None:
+def proposals_list(business: BusinessOption = None, agent: AgentOption = None) -> None:
     """List pending proposals from every agent of this business and of the global tier."""
-    with _open() as ctx:
+    with _open(agent, business) as ctx:
         pending = proposals.pending(ctx)
         if not pending:
             typer.echo("No pending proposals.")
@@ -338,18 +372,47 @@ def proposals_list() -> None:
 
 @proposals_app.command("approve")
 @cli_command
-def proposals_approve(proposal_id: Annotated[str, typer.Argument(help="Proposal id.")]) -> None:
-    """Approve a proposal: the fact becomes valid in its tier."""
-    with _open() as ctx:
-        fact_id = proposals.approve(ctx, proposal_id)
-    typer.echo(f"Approved {proposal_id}. The new fact is {fact_id}.")
+def proposals_approve(
+    proposal_ids: Annotated[
+        list[str] | None, typer.Argument(help="One or more proposal ids (omit with --all).")
+    ] = None,
+    approve_all_flag: Annotated[
+        bool, typer.Option("--all", help="Approve every pending proposal in order.")
+    ] = False,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Approve one, several, or all pending proposals."""
+    ids = list(proposal_ids or [])
+    if approve_all_flag and ids:
+        raise ValidationError("Pass either proposal ids or --all, not both.")
+    if not approve_all_flag and not ids:
+        raise ValidationError("Pass at least one proposal id, or use --all.")
+    with _open(agent, business) as ctx:
+        if approve_all_flag:
+            pending_items = proposals.pending(ctx)
+            if not pending_items:
+                typer.echo("No pending proposals.")
+                return
+            total = len(pending_items)
+            for idx, p in enumerate(pending_items, start=1):
+                fact_id = proposals.approve(ctx, p.id)
+                typer.echo(f"[{idx}/{total}] Approved {p.id}. The new fact is {fact_id}.")
+            return
+        for pid in ids:
+            fact_id = proposals.approve(ctx, pid)
+            typer.echo(f"Approved {pid}. The new fact is {fact_id}.")
 
 
 @proposals_app.command("reject")
 @cli_command
-def proposals_reject(proposal_id: Annotated[str, typer.Argument(help="Proposal id.")]) -> None:
+def proposals_reject(
+    proposal_id: Annotated[str, typer.Argument(help="Proposal id.")],
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
     """Reject a proposal: no fact is created."""
-    with _open() as ctx:
+    with _open(agent, business) as ctx:
         proposals.reject(ctx, proposal_id)
     typer.echo(f"Rejected {proposal_id}. No fact was created.")
 
@@ -360,9 +423,10 @@ def forget(
     fact_id: Annotated[str, typer.Argument(help="Fact id.")],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not ask for confirmation.")] = False,
     agent: AgentOption = None,
+    business: BusinessOption = None,
 ) -> None:
     """Forget a fact of any tier for good, as the user. This cannot be undone."""
-    with _open(agent) as ctx:
+    with _open(agent, business) as ctx:
         found = find_fact(ctx, fact_id)
         if found is None:
             raise NotFoundError(f"No fact {fact_id}.")
@@ -377,7 +441,7 @@ def forget(
     typer.echo(f"Forgotten {fact_id}. Its content is gone from the database and the log.")
 
 
-# ---- ingest, conflicts, hook ---------------------------------------------------------
+# ---- ingest, import, move, conflicts, hook -------------------------------------------
 
 
 def _count(value: object) -> object:
@@ -386,12 +450,16 @@ def _count(value: object) -> object:
 
 @app.command()
 @cli_command
-def ingest(path: Annotated[Path, typer.Argument(help="A Markdown file or a folder.")]) -> None:
+def ingest(
+    path: Annotated[Path, typer.Argument(help="A Markdown file or a folder.")],
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
     """Read Markdown documents into searchable notes."""
     ingest_path = _import("ingatan.ingest", "ingest_path")
     if not path.exists():
         raise NotFoundError(f"No such file or folder: {path}")
-    with _open() as ctx:
+    with _open(agent, business) as ctx:
         report = ingest_path(ctx, path)
     typer.echo(
         f"Files: {_count(report.files)}  created: {_count(report.created)}  "
@@ -403,13 +471,205 @@ def ingest(path: Annotated[Path, typer.Argument(help="A Markdown file or a folde
             typer.echo(f"  skipped: {item}")
 
 
+def _load_import_records(path: Path) -> list[dict[str, Any]]:
+    raw = path.read_text(encoding="utf-8-sig").strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            raise ValidationError(f"{path} must contain a JSON array or JSONL lines.")
+        return [item for item in data if isinstance(item, dict)]  # pyright: ignore[reportUnknownVariableType]
+    records: list[dict[str, Any]] = []
+    for line_no, line in enumerate(raw.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError as exc:
+            raise ValidationError(f"{path}:{line_no} is not valid JSON: {exc}") from exc
+        if not isinstance(obj, dict):
+            raise ValidationError(f"{path}:{line_no} must be a JSON object.")
+        records.append(obj)  # pyright: ignore[reportUnknownArgumentType]
+    return records
+
+
+@app.command("import")
+@cli_command
+def import_facts(
+    path: Annotated[Path, typer.Argument(help="JSONL or JSON array file of facts to import.")],
+    default_tier: Annotated[
+        str, typer.Option("--tier", help="Default tier when a record omits `tier`.")
+    ] = "business",
+    scan: Annotated[
+        bool,
+        typer.Option("--scan-conflicts", help="Scan for conflicts across imported facts at the end."),
+    ] = False,
+    check_conflicts: Annotated[
+        bool,
+        typer.Option("--check-conflicts/--no-check-conflicts", help="Check conflicts per item."),
+    ] = True,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Bulk-import facts from a JSONL or JSON file, preserving original dates."""
+    if not path.is_file():
+        raise NotFoundError(f"No such file: {path}")
+    records = _load_import_records(path)
+    if not records:
+        typer.echo("No records to import.")
+        return
+    with _open(agent, business) as ctx:
+        imported = 0
+        for idx, rec in enumerate(records, start=1):
+            text = str(rec.get("text") or "").strip()
+            if not text:
+                raise ValidationError(f"Record #{idx} has empty `text`.")
+            src = rec.get("source")
+            source_dict: dict[str, Any] = dict(src) if isinstance(src, dict) else (
+                {"document": src} if isinstance(src, str) and src else {}
+            )
+            raw_date = rec.get("date") or source_dict.get("date")
+            if isinstance(raw_date, str) and raw_date.strip():
+                source_dict["date"] = raw_date.strip()
+            valid_from = rec.get("valid_from") or (
+                raw_date if isinstance(raw_date, str) and raw_date.strip() else None
+            )
+            facts.remember(
+                ctx,
+                text,
+                keywords=rec.get("keywords"),
+                entities=rec.get("entities"),
+                tier=str(rec.get("tier") or default_tier),
+                kind=rec.get("kind"),
+                review_after=rec.get("review_after"),
+                source=source_dict or None,
+                valid_from=valid_from,
+                check_conflicts=check_conflicts and not scan,
+            )
+            imported += 1
+        typer.echo(f"Imported {imported} fact(s) into {ctx.scope.business}.")
+        if scan:
+            res = scan_conflicts(ctx)
+            typer.echo(
+                f"Conflict scan: scanned {res.facts_scanned} fact(s), "
+                f"recorded {res.pairs_recorded} new conflict pair(s)."
+            )
+
+
 @app.command()
 @cli_command
-def conflicts(agent: AgentOption = None) -> None:
+def move(
+    fact_id: Annotated[str, typer.Argument(help="Fact id to move.")],
+    to_business: Annotated[str, typer.Option("--to", help="Destination business name.")],
+    tier: Annotated[
+        str | None, typer.Option("--tier", help="Destination tier (default: keep original tier).")
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Do not ask for confirmation.")] = False,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Move a misplaced fact from one business database to another."""
+    dest_name = validate_business(to_business)
+    with _open(agent, business) as src_ctx:
+        if dest_name == src_ctx.scope.business:
+            raise ValidationError(f"Source and destination business are both '{dest_name}'.")
+        found = find_fact(src_ctx, fact_id)
+        if found is None:
+            raise NotFoundError(f"No fact {fact_id}.")
+        row = found[1]
+        if row["tier"] == "global":
+            raise ValidationError("Global facts are already shared across all businesses.")
+        data = fact_dict(row)
+        dest_tier = tier or str(data["tier"])
+        if not yes:
+            typer.echo(
+                f"Move {fact_id} [{data['tier']}] from {src_ctx.scope.business} -> "
+                f"{dest_name} [{dest_tier}]:"
+            )
+            typer.echo(f"    {shorten(str(data['text']), 300)}")
+            if not typer.confirm("Copy to destination and forget from source?"):
+                typer.echo("Nothing was moved.")
+                raise typer.Exit(1)
+        dest_scope = Scope(
+            business=dest_name,
+            agent=str(data["agent"]),
+            home=src_ctx.scope.home,
+            token_budget=src_ctx.scope.token_budget,
+            require_approval=False,
+        )
+        with open_context(dest_scope) as dst_ctx:
+            saved = facts.remember(
+                dst_ctx,
+                str(data["text"]),
+                keywords=data["keywords"],
+                entities=data["entities"],
+                tier=dest_tier,
+                kind=str(data["kind"]),
+                review_after=data["review_after"],
+                source=data["source"],
+                valid_from=str(data["valid_from"]),
+            )
+        facts.forget(src_ctx, fact_id, by_user=True)
+    typer.echo(
+        f"Moved {fact_id} from {src_ctx.scope.business} to {dest_name} as {saved.fact_id}."
+    )
+
+
+@conflicts_app.callback()
+@cli_command
+def conflicts_main(
+    context: typer.Context,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
     """Report how many conflict candidates were resolved (NFR-9), from the audit log."""
-    with _open(agent) as ctx:
+    if context.invoked_subcommand is not None:
+        return
+    with _open(agent, business) as ctx:
         report = compute_report(audit.entries(ctx))
     typer.echo(render_report(report))
+
+
+@conflicts_app.command("list")
+@cli_command
+def conflicts_list(agent: AgentOption = None, business: BusinessOption = None) -> None:
+    """List currently open conflict pairs between valid facts."""
+    with _open(agent, business) as ctx:
+        items = open_conflicts(ctx)
+        if not items:
+            typer.echo("No open conflicts.")
+            return
+        for item in items:
+            typer.echo(f"#{item.id}  {item.fact_a} <-> {item.fact_b}  ({item.created_at[:10]})")
+            typer.echo(f"    A [{item.fact_a}]: {shorten(item.text_a, 100)}")
+            typer.echo(f"    B [{item.fact_b}]: {shorten(item.text_b, 100)}")
+
+
+@conflicts_app.command("scan")
+@cli_command
+def conflicts_scan(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report matching pairs without writing them.")
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Scan existing valid facts for unflagged conflicts (e.g. after bulk import)."""
+    with _open(agent, business) as ctx:
+        res = scan_conflicts(ctx, dry_run=dry_run)
+        if dry_run:
+            typer.echo(
+                f"Scanned {res.facts_scanned} fact(s): found {res.pairs_found} candidate pair(s) (dry run)."
+            )
+        else:
+            typer.echo(
+                f"Scanned {res.facts_scanned} fact(s): found {res.pairs_found}, "
+                f"recorded {res.pairs_recorded} new conflict pair(s)."
+            )
+        for a, b in res.pairs:
+            typer.echo(f"  {a} <-> {b}")
 
 
 def _log_hook_failure(event: str, exc: BaseException) -> None:

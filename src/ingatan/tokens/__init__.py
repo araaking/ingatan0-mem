@@ -21,7 +21,14 @@ from typing import Any
 
 from ingatan import timeutil
 from ingatan.errors import ConfigError, NotFoundError
-from ingatan.scope import Scope, validate_agent, validate_business
+from ingatan.scope import (
+    DEFAULT_TOKEN_BUDGET,
+    Scope,
+    load_home_config,
+    parse_bool,
+    validate_agent,
+    validate_business,
+)
 
 __all__ = [
     "TOKEN_PREFIX",
@@ -198,10 +205,24 @@ class TokenStore:
         if match is None:
             return None
         try:
+            home_cfg = load_home_config(self.home)
+            budget = DEFAULT_TOKEN_BUDGET
+            brief_section = home_cfg.get("brief")
+            if isinstance(brief_section, dict) and "token_budget" in brief_section:
+                raw_b = brief_section["token_budget"]  # pyright: ignore[reportUnknownVariableType]
+                if not isinstance(raw_b, bool) and isinstance(raw_b, int) and raw_b > 0:
+                    budget = raw_b
+            require_approval = False
+            if "require_approval" in home_cfg:
+                require_approval = parse_bool(
+                    home_cfg["require_approval"], label="require_approval"
+                )
             return Scope(
                 business=validate_business(match.business),
                 agent=validate_agent(match.agent),
                 home=self.home,
+                token_budget=budget,
+                require_approval=require_approval,
             )
         except ConfigError:
             return None  # a hand-edited record with a bad name routes nowhere

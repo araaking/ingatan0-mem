@@ -39,25 +39,18 @@ def present(blob: bytes, marks: list[str]) -> list[str]:
 
 def store_and_touch(ctx: Context, tier_flow: str) -> str:
     """Store a fact carrying all markers and write several log entries about it."""
-    if tier_flow == "agent":
-        result = facts.remember(
-            ctx,
-            f"Kode gudang {TEXT_MARK} ada di rak belakang",
-            keywords=[KEYWORD_MARK, "gudang"],
-            entities=[ENTITY_MARK],
-            kind="volatile",
-        )
-        fact_id = result.fact_id
-    else:
-        result = facts.remember(
-            ctx,
-            f"Kode gudang {TEXT_MARK} ada di rak belakang",
-            keywords=[KEYWORD_MARK, "gudang"],
-            entities=[ENTITY_MARK],
-            tier=tier_flow,
-        )
-        assert result.proposal_id is not None
+    result = facts.remember(
+        ctx,
+        f"Kode gudang {TEXT_MARK} ada di rak belakang",
+        keywords=[KEYWORD_MARK, "gudang"],
+        entities=[ENTITY_MARK],
+        tier=tier_flow,
+        kind="volatile",
+    )
+    if result.proposal_id is not None:
         fact_id = proposals.approve(ctx, result.proposal_id)
+    else:
+        fact_id = result.fact_id
     assert fact_id is not None
     facts.confirm(ctx, fact_id, f"dicek ulang, {REASON_MARK}")
     search.recall(ctx, TEXT_MARK)
@@ -127,7 +120,10 @@ def test_forget_business_fact_by_user_leaves_no_bytes(
     assert present(raw_bytes(ingatan_home, "global"), ALL_MARKS) == []
 
 
-def test_forget_scrubs_the_proposal_that_created_the_fact(ctx: Context, ingatan_home: Path) -> None:
+def test_forget_scrubs_the_proposal_that_created_the_fact(
+    approval_ctx: Context, ingatan_home: Path
+) -> None:
+    ctx = approval_ctx
     result = facts.remember(
         ctx, f"Rahasia {TEXT_MARK}", keywords=["rahasia"], entities=[ENTITY_MARK], tier="business"
     )
@@ -149,8 +145,9 @@ def test_forget_scrubs_the_proposal_that_created_the_fact(ctx: Context, ingatan_
 
 
 def test_forget_scrubs_a_pending_copy_made_by_supersede_and_rejects_it(
-    ctx: Context, ingatan_home: Path
+    approval_ctx: Context, ingatan_home: Path
 ) -> None:
+    ctx = approval_ctx
     old = facts.remember(ctx, "Harga lama", keywords=["harga"], tier="business")
     assert old.proposal_id is not None
     old_id = proposals.approve(ctx, old.proposal_id)
@@ -176,8 +173,9 @@ def test_forget_scrubs_a_pending_copy_made_by_supersede_and_rejects_it(
 
 
 def test_pending_proposal_that_supersedes_a_forgotten_fact_keeps_no_dangling_link(
-    ctx: Context,
+    approval_ctx: Context,
 ) -> None:
+    ctx = approval_ctx
     old = facts.remember(ctx, "Tarif lama", keywords=["tarif"], tier="business")
     assert old.proposal_id is not None
     old_id = proposals.approve(ctx, old.proposal_id)
@@ -254,9 +252,9 @@ def test_agent_cannot_forget_business_or_global_facts(make_ctx: MakeContext) -> 
     ctx = make_ctx()
     biz = facts.remember(ctx, "Jam buka 09.00", keywords=["jam"], tier="business")
     glo = facts.remember(ctx, "Pemilik bernama Budi", keywords=["pemilik"], tier="global")
-    assert biz.proposal_id and glo.proposal_id
-    biz_id = proposals.approve(ctx, biz.proposal_id)
-    glo_id = proposals.approve(ctx, glo.proposal_id)
+    assert biz.fact_id and glo.fact_id
+    biz_id = biz.fact_id
+    glo_id = glo.fact_id
     log_counts = [
         c.execute("SELECT count(*) FROM log").fetchone()[0] for c in (ctx.business, ctx.glob)
     ]

@@ -1,0 +1,56 @@
+{
+  "id": "partial-incident-01-identifier-underscore",
+  "title": "Query dengan identifier underscore (sync_report) menemukan fakta skrip sync_report.py",
+  "category": "partial-word",
+  "source": "incident",
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "skrip_baru",
+      "text": "Pipeline update laporan iklan memakai skrip sync_report.py dengan parameter tanggal mulai.",
+      "keywords": [
+        "pipeline",
+        "skrip",
+        "laporan",
+        "iklan"
+      ],
+      "entities": [
+        "Ads"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "advance_days",
+      "days": 5
+    },
+    {
+      "op": "remember",
+      "key": "log_baru",
+      "text": "Catatan harian update report sheet campaign laporan iklan hari ini berjalan lancar.",
+      "keywords": [
+        "update",
+        "report",
+        "sheet",
+        "campaign",
+        "laporan"
+      ],
+      "entities": [
+        "Ads"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "recall",
+      "query": "update ads report sheet sync_report pipeline campaign laporan",
+      "expect_top5": [
+        "skrip_baru"
+      ]
+    }
+  ]
+}

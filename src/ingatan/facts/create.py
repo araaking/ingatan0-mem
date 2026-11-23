@@ -24,6 +24,7 @@ from ingatan.facts._util import (
 from ingatan.redact import redact
 from ingatan.scope import Context
 from ingatan.search import FactHit, similar_facts
+from ingatan.search.stopwords import extract_auto_keywords
 
 __all__ = ["RememberResult", "create_fact", "insert_proposal", "remember"]
 
@@ -59,6 +60,7 @@ def create_fact(
         review_after = fields.get("review_after") or timeutil.iso(
             timeutil.now() + timedelta(days=interval)
         )
+    valid_from = str(fields.get("valid_from") or now)
     row: dict[str, Any] = {
         "id": fact_id,
         "text": fields["text"],
@@ -67,7 +69,7 @@ def create_fact(
         "tier": fields["tier"],
         "agent": fields["agent"],
         "kind": kind,
-        "valid_from": now,
+        "valid_from": valid_from,
         "review_after": review_after,
         "review_interval_days": interval,
         "source": json.dumps(dict(fields["source"]), ensure_ascii=False),
@@ -123,7 +125,6 @@ def insert_proposal(
 def _source(
     ctx: Context, source: Mapping[str, Any] | str | None, episode: int | None = None
 ) -> dict[str, Any]:
-    out: dict[str, Any] = {"agent": ctx.scope.agent, "date": now_iso()[:10]}
     extra: Mapping[str, Any]
     if isinstance(source, str):
         extra = {"document": source}
@@ -131,6 +132,11 @@ def _source(
         extra = source
     else:
         extra = {}
+    date_value = now_iso()[:10]
+    raw_date = extra.get("date")
+    if isinstance(raw_date, str) and raw_date.strip():
+        date_value = timeutil.iso(timeutil.parse(raw_date))[:10]
+    out: dict[str, Any] = {"agent": ctx.scope.agent, "date": date_value}
     for key in ("session", "document"):
         value = extra.get(key)
         if value:
@@ -171,15 +177,17 @@ def remember(
     ctx: Context,
     text: str,
     *,
-    keywords: Sequence[str] | None,
+    keywords: Sequence[str] | None = None,
     entities: Sequence[str] | None = None,
     tier: str = "agent",
     kind: str | None = None,
     review_after: str | None = None,
     source: Mapping[str, Any] | str | None = None,
     episode: int | None = None,
+    valid_from: str | None = None,
+    check_conflicts: bool = True,
 ) -> RememberResult:
-    """Save a fact (tier `agent`) or queue a proposal (tier `business` or `global`)."""
+    """Save a fact immediately (write-then-undo), or queue a proposal when `require_approval` is on."""
     if tier not in TIERS:
         raise ValidationError(f"Unknown tier '{tier}'. Use agent, business or global.")
     if kind is not None and kind not in KINDS:
@@ -187,15 +195,13 @@ def remember(
     clean_text = redact(text or "").strip()
     if not clean_text:
         raise ValidationError("The fact text is empty.")
+    entity_list = clean_list([entities] if isinstance(entities, str) else entities)
     keyword_list = clean_list([keywords] if isinstance(keywords, str) else keywords)
     if not keyword_list:
-        raise ValidationError(
-            "keywords are required. Add synonyms and root words (for example the base form "
-            "of each inflected word) so the fact can be found later by a different wording."
-        )
-    entity_list = clean_list([entities] if isinstance(entities, str) else entities)
+        keyword_list = clean_list(extract_auto_keywords(clean_text, entity_list))
     resolved_kind = kind or "volatile"
     explicit_review = timeutil.normalize(review_after) if review_after else None
+    resolved_valid_from = timeutil.normalize(valid_from) if valid_from else None
     interval: int | None = None
     if resolved_kind == "volatile":
         interval = DEFAULT_REVIEW_DAYS
@@ -203,8 +209,11 @@ def remember(
             seconds = (timeutil.parse(explicit_review) - timeutil.now()).total_seconds()
             interval = max(1, math.ceil(seconds / 86400)) if seconds > 0 else DEFAULT_REVIEW_DAYS
     _check_episode(ctx, episode)
+    resolved_source = _source(ctx, source, episode)
 
-    similar = similar_facts(ctx, clean_text, entity_list, keyword_list)
+    similar = (
+        similar_facts(ctx, clean_text, entity_list, keyword_list) if check_conflicts else []
+    )
     similar_ids = [h.id for h in similar]
     content: dict[str, Any] = {
         "text": clean_text,
@@ -213,8 +222,10 @@ def remember(
         "kind": resolved_kind,
         "review_after": explicit_review if resolved_kind == "volatile" else None,
         "review_interval_days": interval,
-        "source": _source(ctx, source, episode),
+        "source": resolved_source,
     }
+    if resolved_valid_from is not None:
+        content["valid_from"] = resolved_valid_from
     note = ""
     if similar:
         note = (
@@ -223,14 +234,16 @@ def remember(
             "that names the other fact id."
         )
 
-    if tier == "agent":
+    needs_approval = tier != "agent" and ctx.scope.require_approval
+    conn = ctx.conn_for_tier(tier)
+
+    if not needs_approval:
         fields = {**content, "tier": tier, "agent": ctx.scope.agent, "similar": similar_ids}
-        with transaction(ctx.business):
-            fact_id = create_fact(ctx.business, ctx, fields)
+        with transaction(ctx.business), transaction(conn):
+            fact_id = create_fact(conn, ctx, fields)
             _mark_episode(ctx, episode)
         return RememberResult(fact_id, None, _similar_view(similar), f"Saved as {fact_id}." + note)
 
-    conn = ctx.conn_for_tier(tier)
     with transaction(conn):
         proposal_id = insert_proposal(
             conn, ctx, tier=tier, payload=content, similar=similar_ids, supersedes=None

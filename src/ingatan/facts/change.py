@@ -90,6 +90,8 @@ def supersede(ctx: Context, old_id: str, new_id: str) -> SupersedeResult:
                 "Pass the id of the new fact."
             )
         return _close_old(ctx, old_conn, old_row, new_id)
+    if not ctx.scope.require_approval and new_fact is not None:
+        return _close_old(ctx, old_conn, old_row, new_id)
     return _queue_change(ctx, old_conn, old_row, new_id, proposal, new_fact)
 
 
@@ -97,9 +99,9 @@ def _close_old(
     ctx: Context, conn: sqlite3.Connection, old: sqlite3.Row, new_id: str
 ) -> SupersedeResult:
     now = now_iso()
-    with transaction(conn):
+    with transaction(ctx.business), transaction(conn):
         conn.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ? WHERE id = ?",
+            "UPDATE facts SET valid_to = ?, superseded_by = ?, pending_proposal = NULL WHERE id = ?",
             (now, new_id, old["id"]),
         )
         resolved = resolve_conflicts(ctx, old["id"], "supersede")
@@ -158,26 +160,37 @@ def _queue_change(
         else:
             assert new_fact is not None
             source_row = new_fact[1]
-            if source_row["tier"] != "agent":
-                raise ValidationError(
-                    f"{old_id} is a {old['tier']} fact. Replace it with one of your own agent "
-                    "facts or with a pending proposal id."
+            if source_row["tier"] == old["tier"]:
+                # Already-approved shared fact: queue a retire-only proposal without duplicating.
+                content: dict[str, Any] = {
+                    "retire_to": new_id,
+                    "text": f"Retire {old_id} in favour of existing {source_row['tier']} fact {new_id}",
+                }
+                proposal_id = insert_proposal(
+                    conn, ctx, tier=old["tier"], payload=content, similar=[], supersedes=old_id
                 )
-            payload = fact_dict(source_row)
-            content = {
-                "text": payload["text"],
-                "entities": payload["entities"],
-                "keywords": payload["keywords"],
-                "kind": payload["kind"],
-                "review_after": None,
-                "review_interval_days": payload["review_interval_days"],
-                "source": payload["source"],
-                "origin_fact": new_id,  # lets forget find this copy of the text
-            }
-            proposal_id = insert_proposal(
-                conn, ctx, tier=old["tier"], payload=content, similar=[], supersedes=old_id
-            )
-            after = {"pending_proposal": proposal_id, "proposal_from_fact": new_id}
+                after = {"pending_proposal": proposal_id, "proposal_from_fact": new_id}
+            elif source_row["tier"] == "agent":
+                payload = fact_dict(source_row)
+                content = {
+                    "text": payload["text"],
+                    "entities": payload["entities"],
+                    "keywords": payload["keywords"],
+                    "kind": payload["kind"],
+                    "review_after": None,
+                    "review_interval_days": payload["review_interval_days"],
+                    "source": payload["source"],
+                    "origin_fact": new_id,  # lets forget find this copy of the text
+                }
+                proposal_id = insert_proposal(
+                    conn, ctx, tier=old["tier"], payload=content, similar=[], supersedes=old_id
+                )
+                after = {"pending_proposal": proposal_id, "proposal_from_fact": new_id}
+            else:
+                raise ValidationError(
+                    f"{old_id} is a {old['tier']} fact. Replace it with a {old['tier']} fact, "
+                    "one of your own agent facts, or a pending proposal id for the same tier."
+                )
         conn.execute("UPDATE facts SET pending_proposal = ? WHERE id = ?", (proposal_id, old_id))
         audit.write(
             conn,
@@ -213,7 +226,7 @@ def confirm(ctx: Context, fact_id: str, reason: str) -> ConfirmResult:
     new_review = row["review_after"]
     if row["kind"] == "volatile" and row["review_interval_days"]:
         new_review = timeutil.iso(timeutil.now() + timedelta(days=row["review_interval_days"]))
-    with transaction(conn):
+    with transaction(ctx.business), transaction(conn):
         conn.execute(
             "UPDATE facts SET review_after = ?, pending_proposal = NULL WHERE id = ?",
             (new_review, fact_id),

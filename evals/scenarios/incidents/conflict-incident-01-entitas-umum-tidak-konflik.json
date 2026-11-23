@@ -1,0 +1,62 @@
+{
+  "id": "conflict-incident-01-entitas-umum-tidak-konflik",
+  "title": "Dua fakta beda topik dengan entitas umum sama dan ID sheet berbeda tidak ditandai konflik",
+  "category": "conflict",
+  "source": "incident",
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "cuaca",
+      "text": "Sheet data cuaca pendakian disimpan di Google Sheet id 1AbCdEfGhIjKlMnOpQrStUvWxYz123456.",
+      "keywords": [
+        "cuaca",
+        "pendakian",
+        "sheet"
+      ],
+      "entities": [
+        "proyekku",
+        "Google Sheet"
+      ]
+    },
+    {
+      "op": "remember",
+      "key": "keuangan",
+      "text": "Sheet pencatatan keuangan bulanan disimpan di Google Sheet id 1ZyXwVuTsRqPoNmLkJiHgFeDcBa987654.",
+      "keywords": [
+        "keuangan",
+        "bulanan",
+        "sheet"
+      ],
+      "entities": [
+        "proyekku",
+        "Google Sheet"
+      ]
+    },
+    {
+      "op": "recall",
+      "query": "sheet cuaca pendakian",
+      "expect_top5": [
+        "cuaca"
+      ],
+      "expect_status": {
+        "cuaca": "valid"
+      }
+    },
+    {
+      "op": "recall",
+      "query": "sheet keuangan bulanan",
+      "expect_top5": [
+        "keuangan"
+      ],
+      "expect_status": {
+        "keuangan": "valid"
+      }
+    }
+  ]
+}

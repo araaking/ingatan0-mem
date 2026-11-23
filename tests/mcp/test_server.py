@@ -120,11 +120,12 @@ def test_descriptions_teach_the_agent(ctx: Context) -> None:
     assert "cannot be undone" in docs["forget"].lower()
 
 
-def test_remember_without_keywords_is_an_error_result_and_saves_nothing(ctx: Context) -> None:
-    result = call(ctx, "remember", {"text": "Harga kopi Rp 18.000"})
-    assert result.is_error
-    assert "keywords" in text_of(result)
-    assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 0
+def test_remember_without_keywords_auto_extracts_and_saves(ctx: Context) -> None:
+    result = call(ctx, "remember", {"text": "Harga kopi susu Rp 18.000"})
+    assert not result.is_error
+    assert FACT_ID.search(text_of(result)) is not None
+    assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 1
+    assert "Harga kopi susu" in text_of(call(ctx, "recall", {"query": "kopi susu"}))
 
 
 def test_recall_lists_id_text_source_date_status(ctx: Context) -> None:
@@ -190,7 +191,22 @@ def test_conflict_and_check_first_hints_are_in_recall(ctx: Context) -> None:
     assert "supersede(old, new)" in out
 
 
-def test_business_tier_remember_returns_a_proposal_and_brief_counts_it(ctx: Context) -> None:
+def test_business_tier_remember_saves_directly_by_default(ctx: Context) -> None:
+    out = text_of(
+        call(
+            ctx,
+            "remember",
+            {"text": "Jam buka toko 08.00", "keywords": ["jam"], "tier": "business"},
+        )
+    )
+    assert FACT_ID.search(out) is not None
+    assert "Jam buka toko 08.00" in text_of(call(ctx, "recall", {"query": "jam buka"}))
+
+
+def test_business_tier_remember_returns_a_proposal_when_approval_required(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     out = text_of(
         call(
             ctx,
@@ -279,9 +295,9 @@ def test_end_to_end_over_stdio(ingatan_home: Path, tmp_path: Path) -> None:
             async def use(name: str, **arguments: Any) -> Any:
                 return await client.call_tool(name, arguments)
 
-            bad = await use("remember", text="Harga kopi susu Rp 18.000")
-            assert bad.is_error
-            assert "keywords" in text_of(bad)
+            auto_kw = await use("remember", text="Jam operasional gudang 08.00")
+            assert not auto_kw.is_error
+            assert FACT_ID.search(text_of(auto_kw)) is not None
 
             first = text_of(
                 await use(

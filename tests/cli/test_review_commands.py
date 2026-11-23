@@ -35,6 +35,12 @@ def propose(ctx: Context, text: str, tier: str = "business", **kw: Any) -> str:
     return result.proposal_id
 
 
+@pytest.fixture
+def approval_cli_ctx(configured: None, make_ctx: MakeContext) -> Context:
+    """CLI context with opt-in proposal approval enabled."""
+    return make_ctx(require_approval=True)
+
+
 def recalled(ctx: Context, query: str) -> set[str]:
     return {h.id for h in search.recall(ctx, query, touch=False).facts}
 
@@ -207,10 +213,11 @@ def test_undo_writes_a_new_entry_and_leaves_the_old_one(cli_ctx: Context, invoke
 
 
 def test_proposals_list_shows_id_tier_text_agent_date_and_what_it_replaces(
-    cli_ctx: Context, make_ctx: MakeContext, invoke: Invoke, frozen_clock: Any
+    approval_cli_ctx: Context, make_ctx: MakeContext, invoke: Invoke, frozen_clock: Any
 ) -> None:
+    cli_ctx = approval_cli_ctx
     shared = proposals.approve(cli_ctx, propose(cli_ctx, "Retur maksimal 7 hari"))
-    other = make_ctx(agent="hermes")
+    other = make_ctx(agent="hermes", require_approval=True)
     first = propose(other, "Jam buka toko “09.00” – 21.00", tier="global")
     second = propose(cli_ctx, "Retur maksimal 14 hari")
     facts.supersede(cli_ctx, shared, second)
@@ -229,9 +236,10 @@ def test_proposals_list_when_empty(cli_ctx: Context, invoke: Invoke) -> None:
 
 
 def test_approve_makes_the_fact_valid_recallable_and_keeps_the_writing_agent(
-    cli_ctx: Context, make_ctx: MakeContext, invoke: Invoke
+    approval_cli_ctx: Context, make_ctx: MakeContext, invoke: Invoke
 ) -> None:
-    other = make_ctx(agent="hermes")
+    cli_ctx = approval_cli_ctx
+    other = make_ctx(agent="hermes", require_approval=True)
     pid = propose(other, "Retur maksimal 7 hari", keywords=["retur"])
     assert recalled(cli_ctx, "retur") == set()
     result = invoke("proposals", "approve", pid)
@@ -243,8 +251,9 @@ def test_approve_makes_the_fact_valid_recallable_and_keeps_the_writing_agent(
 
 
 def test_reject_creates_no_fact_and_both_actions_are_logged(
-    cli_ctx: Context, invoke: Invoke
+    approval_cli_ctx: Context, invoke: Invoke
 ) -> None:
+    cli_ctx = approval_cli_ctx
     keep = propose(cli_ctx, "Retur 7 hari", keywords=["retur"])
     drop = propose(cli_ctx, "Retur 30 hari", keywords=["retur"])
     assert invoke("proposals", "reject", drop).exit_code == 0
@@ -255,8 +264,9 @@ def test_reject_creates_no_fact_and_both_actions_are_logged(
 
 
 def test_proposal_commands_fail_cleanly_for_unknown_or_decided_ids(
-    cli_ctx: Context, invoke: Invoke
+    approval_cli_ctx: Context, invoke: Invoke
 ) -> None:
+    cli_ctx = approval_cli_ctx
     pid = propose(cli_ctx, "Retur 7 hari")
     assert invoke("proposals", "approve", "p_000000000000").exit_code == 1
     assert invoke("proposals", "approve", pid).exit_code == 0
@@ -268,7 +278,11 @@ def test_proposal_commands_fail_cleanly_for_unknown_or_decided_ids(
 
 
 def approved(ctx: Context, text: str, tier: str) -> str:
-    return proposals.approve(ctx, propose(ctx, text, tier=tier, keywords=["rahasia"]))
+    res = facts.remember(ctx, text, tier=tier, keywords=["rahasia"])
+    if res.proposal_id is not None:
+        return proposals.approve(ctx, res.proposal_id)
+    assert res.fact_id is not None
+    return res.fact_id
 
 
 @pytest.mark.parametrize("tier", ["business", "global"])

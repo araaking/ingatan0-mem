@@ -18,6 +18,12 @@ from ingatan.scope import Context
 Action = Callable[[Context], None]
 
 
+@pytest.fixture
+def ctx(make_ctx: Any) -> Context:
+    """Exercise all write paths including the opt-in proposal approval queue."""
+    return make_ctx(require_approval=True)
+
+
 def remember_fact(ctx: Context, text: str = "Harga kopi 50 ribu") -> str:
     fact_id = facts.remember(ctx, text, keywords=["harga"]).fact_id
     assert fact_id

@@ -18,6 +18,9 @@ from ingatan.search import is_valid_sql, status_of
 __all__ = ["build", "estimate_tokens"]
 
 CHARS_PER_TOKEN = 4
+# Indonesian/mixed text averages ~3.5 chars per LLM token; trim slightly tighter so real
+# token counts stay within `token_budget` while keeping `estimate_tokens(text) <= budget`.
+TARGET_CHARS_PER_TOKEN = 3.5
 # Below this many spare characters an episode is not worth showing, even cut short.
 MIN_EPISODE_CHARS = 120
 
@@ -40,8 +43,9 @@ def estimate_tokens(text: str) -> int:
 
 @dataclass(frozen=True)
 class _Item:
-    # Smaller means less used, and dropped first when the brief is over budget.
-    rank: tuple[int, str, str, str]
+    # Smaller means dropped first when the brief is over budget:
+    # use_count -> last_used -> stable before volatile -> valid_from -> id.
+    rank: tuple[int, str, int, str, str]
     line: str
 
 
@@ -51,8 +55,9 @@ def _flat(text: str) -> str:
 
 def _item(row: sqlite3.Row, tags: list[str]) -> _Item:
     suffix = f" ({'; '.join(tags)})" if tags else ""
+    stable_boost = 1 if row["kind"] == "stable" else 0
     return _Item(
-        rank=(row["use_count"], row["last_used"] or "", row["valid_from"], row["id"]),
+        rank=(row["use_count"], row["last_used"] or "", stable_boost, row["valid_from"], row["id"]),
         line=f"- [{row['id']}] {_flat(row['text'])}{suffix}",
     )
 
@@ -101,8 +106,12 @@ def _core(header: str, check: list[_Item], omitted: int, tiers: dict[str, list[_
     return "\n\n".join(blocks)
 
 
+def _char_limit(budget: int) -> int:
+    return min(budget * CHARS_PER_TOKEN, max(1, int(budget * TARGET_CHARS_PER_TOKEN)))
+
+
 def _fit_core(header: str, check: list[_Item], tiers: dict[str, list[_Item]], budget: int) -> str:
-    limit = budget * CHARS_PER_TOKEN
+    limit = _char_limit(budget)
     tiers = {name: list(items) for name, items in tiers.items()}
 
     # Drop the least used facts across the three sections. First a coarse cut: whatever lies
@@ -195,7 +204,7 @@ def _episode_block(
 
 def _with_episodes(core: str, found: list[episodes.Episode], budget: int) -> tuple[str, int]:
     """`core` plus as many episodes as fit. Returns the text and how many were used."""
-    limit = budget * CHARS_PER_TOKEN
+    limit = _char_limit(budget)
     head = f"{core}\n\n## Episodes to digest\n{_EPISODE_INTRO}"
     for count in range(len(found), 0, -1):
         text = head + "\n" + "\n".join(_episode_block(e, None, None) for e in found[:count])
@@ -224,7 +233,7 @@ def build(ctx: Context, *, offer_episodes: bool = True) -> str:
     )
     check, tiers = _facts(ctx)
     text = _core(header, check, 0, tiers)
-    if estimate_tokens(text) > budget:
+    if len(text) > _char_limit(budget):
         text = _fit_core(header, check, tiers, budget)
 
     if offer_episodes:

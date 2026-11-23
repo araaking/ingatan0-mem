@@ -76,18 +76,30 @@ def existing_fact_ids(ctx: Context, ids: Iterable[str]) -> list[str]:
 def record_conflicts(ctx: Context, new_id_: str, others: Iterable[str]) -> list[str]:
     """Open a `conflicts` pair between `new_id_` and each existing id. Returns those ids.
 
-    Pairs always live in the business file, even when one fact is global.
+    Pairs always live in the business file, even when one fact is global. Pairs that were
+    already recorded (whether open or previously resolved) are skipped so a confirmed pair
+    is never re-opened.
     """
     ids = [i for i in existing_fact_ids(ctx, others) if i != new_id_]
     if not ids:
         return []
     now = now_iso()
+    added: list[str] = []
     with transaction(ctx.business):
-        ctx.business.executemany(
-            "INSERT INTO conflicts (fact_a, fact_b, created_at) VALUES (?, ?, ?)",
-            [(new_id_, other, now) for other in ids],
-        )
-    return ids
+        for other in ids:
+            already = ctx.business.execute(
+                "SELECT 1 FROM conflicts "
+                "WHERE (fact_a = ? AND fact_b = ?) OR (fact_a = ? AND fact_b = ?) LIMIT 1",
+                (new_id_, other, other, new_id_),
+            ).fetchone()
+            if already is not None:
+                continue
+            ctx.business.execute(
+                "INSERT INTO conflicts (fact_a, fact_b, created_at) VALUES (?, ?, ?)",
+                (new_id_, other, now),
+            )
+            added.append(other)
+    return added
 
 
 def resolve_conflicts(

@@ -13,6 +13,12 @@ from ingatan.scope import Context
 MakeContext = Callable[..., Context]
 
 
+@pytest.fixture
+def ctx(make_ctx: MakeContext) -> Context:
+    """Proposal queue tests exercise the opt-in `require_approval=True` workflow."""
+    return make_ctx(require_approval=True)
+
+
 def propose(ctx: Context, text: str, tier: str = "business", **kw: Any) -> str:
     result = facts.remember(ctx, text, keywords=kw.pop("keywords", ["x"]), tier=tier, **kw)
     assert result.proposal_id is not None
@@ -52,8 +58,8 @@ def test_pending_text_is_never_returned_by_recall(ctx: Context) -> None:
 def test_pending_lists_both_files_oldest_first_with_the_writing_agent(
     make_ctx: MakeContext, frozen_clock: Any
 ) -> None:
-    a = make_ctx(agent="agent-a")
-    b = make_ctx(agent="agent-b")
+    a = make_ctx(agent="agent-a", require_approval=True)
+    b = make_ctx(agent="agent-b", require_approval=True)
     first = propose(a, "Satu", "global")
     frozen_clock.advance(minutes=1)
     second = propose(b, "Dua", "business")
@@ -83,8 +89,8 @@ def test_pending_count_drops_when_a_proposal_is_decided(ctx: Context) -> None:
 def test_business_x_does_not_see_the_pending_proposals_of_business_y(
     make_ctx: MakeContext,
 ) -> None:
-    x = make_ctx(business="usaha-x")
-    y = make_ctx(business="usaha-y")
+    x = make_ctx(business="usaha-x", require_approval=True)
+    y = make_ctx(business="usaha-y", require_approval=True)
     propose(y, "Usulan Y")
     assert proposals.pending(x) == [] and proposals.pending_count(x) == 0
 
@@ -96,8 +102,8 @@ def test_business_x_does_not_see_the_pending_proposals_of_business_y(
 def test_approve_creates_the_fact_in_the_requested_tier(
     make_ctx: MakeContext, frozen_clock: Any, tier: str, file: str
 ) -> None:
-    writer = make_ctx(agent="agent-a")
-    user = make_ctx(agent="owner")
+    writer = make_ctx(agent="agent-a", require_approval=True)
+    user = make_ctx(agent="owner", require_approval=True)
     pid = propose(
         writer,
         "Aturan retur 7 hari",

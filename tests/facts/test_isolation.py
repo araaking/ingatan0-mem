@@ -99,11 +99,11 @@ def test_a_conflict_with_another_agents_fact_is_not_revealed(
 ) -> None:
     a = make_ctx(agent="agent-a")
     b = make_ctx(agent="agent-b")
-    prop = facts.remember(
+    shared_res = facts.remember(
         a, "Supplier Budi kirim Senin", keywords=["supplier"], entities=["Budi"], tier="business"
     )
-    assert prop.proposal_id
-    shared = proposals.approve(a, prop.proposal_id)
+    assert shared_res.fact_id
+    shared = shared_res.fact_id
     facts.remember(a, "Supplier Budi kirim Selasa", keywords=["supplier"], entities=["Budi"])
     assert search.recall(a, "supplier Budi").facts[0].status == "possible conflict"
     # Agent B sees the shared fact, but not that a private fact of A disagrees with it.
@@ -115,8 +115,8 @@ def test_business_x_cannot_touch_business_y_by_id(make_ctx: MakeContext) -> None
     x = make_ctx(business="usaha-x")
     y = make_ctx(business="usaha-y")
     fid = facts.remember(y, "Data Y", keywords=["data"]).fact_id
-    prop = facts.remember(y, "Aturan Y", keywords=["aturan"], tier="business")
-    biz = proposals.approve(y, prop.proposal_id or "")
+    biz = facts.remember(y, "Aturan Y", keywords=["aturan"], tier="business").fact_id
+    assert biz
     mine = facts.remember(x, "Data X", keywords=["data"]).fact_id
     assert fid and mine
     before = snapshot(x)

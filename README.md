@@ -58,9 +58,9 @@ flowchart LR
     core --> glob[("global.db<br/>facts about the user")]
 ```
 
-The business and the agent name are fixed when the server starts, so no tool call can reach another business. Agents write private notes directly; anything shared waits for your approval in the CLI.
+The business and the agent name are fixed when the server starts (or restricted to an explicit `allowed_businesses` list in multi-business mode), so no tool call can reach an unauthorized business. Facts save directly by default (write-then-undo: every change is logged and undoable in the CLI); opt in to `require_approval = true` if you want a manual proposal queue.
 
-Nama bisnis dan nama agen dikunci saat server menyala, jadi tidak ada pemanggilan tool yang bisa menjangkau bisnis lain. Agen menulis catatan pribadinya langsung; apa pun yang dibagikan menunggu persetujuanmu di CLI.
+Nama bisnis dan nama agen dikunci saat server menyala (atau dibatasi ke daftar `allowed_businesses` pada mode multi-bisnis), jadi tidak ada pemanggilan tool yang bisa menjangkau bisnis di luar izin. Fakta langsung tersimpan secara bawaan (write-then-undo: setiap perubahan tercatat dan bisa di-`undo` di CLI); aktifkan `require_approval = true` bila ingin memakai antrean proposal manual.
 
 ---
 
@@ -88,7 +88,7 @@ Ingatan dibuat untuk orang yang memakai beberapa agen (asisten umum, agen SEO, a
 | **Tanpa LLM di server** | Pencarian memakai SQLite FTS5 (BM25 dan indeks trigram), kecocokan entitas, dan kebaruan, digabung dengan reciprocal rank fusion. Agen sendiri yang memberi keywords dan entitas saat menyimpan. |
 | **Paham imbuhan Indonesia** | Pelepas imbuhan ringan memperluas query, sehingga "dikirim" menemukan fakta yang tertulis "pengiriman". |
 | **Scope dikunci server** | Bisnis dan agen ditentukan dari berkas konfigurasi atau variabel lingkungan saat server menyala. Tidak ada tool yang menerima nama bisnis, dan tidak ada pencarian lintas bisnis. |
-| **Berbagi harus disetujui** | Tulisan ke tier `business` dan `global` menjadi proposal sampai kamu menyetujuinya di terminal. |
+| **Langsung simpan, bisa di-undo** | Bawaan memakai pola *write-then-undo* (fakta `business`/`global` langsung tersimpan dan selalu bisa dibatalkan lewat `ingatan undo`). Bila ingin antrean persetujuan manual, set `require_approval = true` di config. |
 | **Bisa diaudit dan dibatalkan** | Setiap perubahan masuk log append-only. Kamu bisa membaca, membandingkan, dan membatalkannya. |
 | **Lupa berarti benar-benar hilang** | `forget` menghapus isi fakta sampai ke byte di berkas database dan berkas WAL. |
 | **Rahasia disamarkan** | Teks yang mirip API key, kata sandi, atau token diganti `[redacted]` sebelum disimpan. |
@@ -108,10 +108,10 @@ Perbandingan dengan mem0, Hindsight, Graphiti, dan claude-mem ada di [docs/DESIG
 
 ### Instalasi
 
-Ingatan belum dirilis ke PyPI, jadi pasang dari hasil clone:
+Ingatan belum dirilis ke PyPI, jadi pasang secara editable dari hasil clone (agar `git pull` langsung memakai kode terbaru setelah restart MCP):
 
 ```bash
-uv tool install /path/to/ingatan
+uv tool install --editable /path/to/ingatan
 ```
 
 Setelah rilis PyPI nanti, cukup satu perintah (saat ini **belum berfungsi**):
@@ -197,28 +197,29 @@ token_budget = 1000
 |---|---|
 | `brief()` | Ringkasan awal sesi dalam anggaran token (bawaan 1.000): fakta "check first", lalu fakta global, bisnis, dan agen, jumlah proposal yang menunggu, dan paling banyak tiga episode untuk dicerna. |
 | `recall(query)` | Fakta valid yang cocok, masing-masing dengan id, sumber, tanggal, dan status. Fakta yang sudah ditutup hanya muncul dengan `include_closed`. |
-| `remember(text, keywords, ...)` | Menyimpan fakta. `keywords` wajib (sinonim, kata dasar). Mengembalikan fakta serupa yang sudah ada. |
-| `supersede(old, new)` | Menutup fakta lama dan menautkannya ke yang baru. Untuk fakta bisnis atau global, ini menjadi proposal. |
+| `remember(text, ...)` | Menyimpan fakta (`keywords` opsional — otomatis diekstrak jika kosong, tetapi sinonim/alias tetap disarankan). Mengembalikan fakta serupa yang berpotensi konflik. |
+| `supersede(old, new)` | Menutup fakta lama dan menautkannya ke yang baru (langsung berlaku secara bawaan, atau jadi proposal jika `require_approval = true`). |
 | `confirm(id, reason)` | Menyatakan fakta yang diragukan masih benar dan memajukan tanggal tinjaunya. Alasan wajib dan dicatat. |
-| `forget(id)` | Menghapus isi fakta untuk selamanya. Hanya untuk fakta tier agen. |
+| `forget(id)` | Menghapus isi fakta untuk selamanya. Agen hanya boleh menghapus tier `agent`; `business`/`global` lewat CLI. |
 | `history(id atau entitas)` | Riwayat perubahan sebuah fakta, proposal, atau entitas. |
 
 <a id="id-tier"></a>
 
-### Tier dan antrean proposal
+### Tier, write-then-undo, dan antrean proposal (opsional)
 
-| Tier | Arti | Cara tertulis |
-|---|---|---|
-| `agent` | Pribadi untuk satu agen di satu bisnis | Langsung tersimpan |
-| `business` | Dibagi ke semua agen di satu bisnis | Menjadi proposal |
-| `global` | Tentang kamu, terlihat di semua bisnis | Menjadi proposal |
+| Tier | Arti | Cara tertulis (bawaan) | Jika `require_approval = true` |
+|---|---|---|---|
+| `agent` | Pribadi untuk satu agen di satu bisnis | Langsung tersimpan | Langsung tersimpan |
+| `business` | Dibagi ke semua agen di satu bisnis | Langsung tersimpan (bisa di-`undo`) | Menjadi proposal |
+| `global` | Tentang kamu, terlihat di semua bisnis | Langsung tersimpan (bisa di-`undo`) | Menjadi proposal |
 
-Agen tidak bisa menulis langsung ke `business` atau `global`, dan tidak punya tool untuk melihat atau menyetujui proposal. `brief` hanya menampilkan jumlah yang menunggu.
+Secara bawaan, Ingatan memakai pola **write-then-undo**: fakta langsung tersimpan agar alur kerja tidak tersendat, dan setiap perubahan tercatat di log append-only sehingga bisa dilihat (`ingatan diff`) atau dibatalkan (`ingatan undo`). Jika kamu ingin persetujuan manual di CLI, aktifkan `require_approval = true` di `.ingatan.toml` / `~/.ingatan/config.toml` atau `INGATAN_REQUIRE_APPROVAL=1`:
 
 ```bash
-ingatan proposals list
-ingatan proposals approve p_0123456789ab
-ingatan proposals reject p_0123456789ab
+ingatan proposals list --business tokoku
+ingatan proposals approve p_0123456789ab --business tokoku
+ingatan proposals approve --all --business tokoku
+ingatan proposals reject p_0123456789ab --business tokoku
 ```
 
 <a id="id-status-fakta"></a>
@@ -251,22 +252,24 @@ ingatan proposals reject p_0123456789ab
 
 ### CLI
 
-Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Entri pribadi agen lain tetap tersembunyi; perintah yang membaca log menerima `--agent NAMA` untuk membuka konteks sebagai agen itu.
+Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunakan `--business NAMA` (`-b`) di perintah mana pun tanpa perlu `cd` ke folder proyek, atau simpan default bersama (`default_agent`, `require_approval`, `[brief].token_budget`) di `~/.ingatan/config.toml`. Entri pribadi agen lain tetap tersembunyi; gunakan `--agent NAMA` untuk membukanya.
 
 | Perintah | Fungsi |
 |---|---|
-| `ingatan` / `ingatan serve` | Menjalankan server MCP lewat stdio |
+| `ingatan` / `ingatan serve` | Menjalankan server MCP lewat stdio (mendukung mode multi-bisnis via `INGATAN_BUSINESSES`) |
 | `ingatan serve --http [--host H] [--port P]` | Menjalankan server MCP lewat HTTP (bearer token) |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Mengelola token mode HTTP |
 | `ingatan init [--business NAMA] [--agent NAMA]` | Membuat `.ingatan.toml` dan database |
-| `ingatan doctor` | Memeriksa Python, fitur SQLite, konfigurasi, database, dan folder data |
-| `ingatan log [--limit N] [--fact ID] [--agent NAMA]` | Daftar entri log, terbaru dulu |
-| `ingatan diff <log_id>` | Sebelum dan sesudah satu entri log |
-| `ingatan undo <log_id>` | Membatalkan create, supersede, confirm, atau approve (bukan forget) |
-| `ingatan proposals list`, `approve <id>`, `reject <id>` | Meninjau proposal |
-| `ingatan forget <fact_id> [--yes]` | Melupakan fakta dari tier mana pun |
-| `ingatan ingest <path>` | Membaca berkas Markdown menjadi catatan yang bisa dicari, terpisah dari fakta |
-| `ingatan conflicts` | Laporan penyelesaian konflik dari log |
+| `ingatan doctor [--business NAMA]` | Memeriksa Python, fitur SQLite, konfigurasi, database, dan folder data |
+| `ingatan log [--limit N] [--fact ID] [--business NAMA] [--agent NAMA]` | Daftar entri log, terbaru dulu |
+| `ingatan diff <log_id> [--business NAMA]` | Sebelum dan sesudah satu entri log |
+| `ingatan undo <log_id> [--business NAMA]` | Membatalkan create, supersede, confirm, atau approve (bukan forget) |
+| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Meninjau dan menyetujui proposal (satuan atau massal) |
+| `ingatan forget <fact_id> [--yes] [--business NAMA]` | Melupakan fakta dari tier mana pun |
+| `ingatan ingest <path> [--business NAMA]` | Membaca berkas Markdown menjadi catatan yang bisa dicari (melewati `.git`/`.venv`/`node_modules`) |
+| `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
+| `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
+| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
 | `ingatan hook <event>` | Titik masuk hook Claude Code; selalu keluar dengan kode 0 |
 
 <a id="id-data"></a>
@@ -283,17 +286,17 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Entri 
 
 ### Angka terukur
 
-Sumber: [evals/reports/latest.md](evals/reports/latest.md) (dijalankan 2026-11-11, tanpa LLM, tanpa jaringan) dan [docs/RAM.md](docs/RAM.md).
+Sumber: [evals/reports/latest.md](evals/reports/latest.md) (dijalankan 2026-11-23, tanpa LLM, tanpa jaringan) dan [docs/RAM.md](docs/RAM.md).
 
-Eval berisi 40 skenario berbahasa Indonesia, semuanya berbasis pola dan ditulis oleh pembuatnya. Belum ada insiden nyata di dalamnya. Jadi angka ini adalah **baseline regresi**, bukan bukti akurasi di pemakaian nyata, dan targetnya masih tebakan awal.
+Eval berisi 43 skenario berbahasa Indonesia (40 berbasis pola + 3 skenario insiden teranonimisasi). Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
 
 | Metrik | Hasil | Target tebakan awal |
 |---|---|---|
-| Skenario | 40 dijalankan, 40 lulus | tidak ada |
-| recall@5 | 100,0% dari 45 pemeriksaan | di atas 80% |
-| Stale rate | 0,0% dari 63 pemeriksaan recall | di bawah 5% |
-| Leak rate | 0,0% (0 dari 86 hasil) | 0 |
-| Token per brief | rata-rata 65, maksimum 278 dari 19 brief | sekitar 1.000 |
+| Skenario | 43 dijalankan, 43 lulus | tidak ada |
+| recall@5 | 100,0% dari 48 pemeriksaan | di atas 80% |
+| Stale rate | 0,0% dari 66 pemeriksaan recall | di bawah 5% |
+| Leak rate | 0,0% (0 dari 90 hasil) | 0 |
+| Token per brief | rata-rata 64, maksimum 242 dari 20 brief | sekitar 1.000 |
 
 Pemakaian memori satu proses server stdio: 70,2 MB saat diam dan 73,6 MB setelah 500 fakta disimpan. Diukur sekali, di satu laptop Windows 11, Python 3.11.16, mcp 2.3.0.
 
@@ -426,10 +429,10 @@ The comparison with mem0, Hindsight, Graphiti and claude-mem is in [docs/DESIGN.
 
 ### Installation
 
-Ingatan is not on PyPI yet, so install from a checkout:
+Ingatan is not on PyPI yet, so install in editable mode from a checkout (so `git pull` takes effect after restarting MCP):
 
 ```bash
-uv tool install /path/to/ingatan
+uv tool install --editable /path/to/ingatan
 ```
 
 After the PyPI release it will be one command (this **does not work yet**):
@@ -515,28 +518,29 @@ token_budget = 1000
 |---|---|
 | `brief()` | Session-start summary within a token budget (default 1,000): "check first" facts, then global, business and agent facts, the number of proposals waiting, and up to three captured episodes to digest. |
 | `recall(query)` | Valid facts matching the query, each with id, source, date and status. Closed facts appear only with `include_closed`. |
-| `remember(text, keywords, ...)` | Saves a fact. `keywords` are required (synonyms, root words). Returns similar existing facts. |
-| `supersede(old, new)` | Closes the old fact and links it to the new one. For a business or global fact it becomes a proposal. |
+| `remember(text, ...)` | Saves a fact (`keywords` optional — auto-extracted if omitted, though synonyms/aliases are encouraged). Returns similar existing facts. |
+| `supersede(old, new)` | Closes the old fact and links it to the new one (applied immediately by default, or queued as a proposal when `require_approval = true`). |
 | `confirm(id, reason)` | Says a doubtful fact is still true and moves its review date forward. A reason is required and logged. |
-| `forget(id)` | Deletes a fact's content for good. Agent-tier facts only. |
+| `forget(id)` | Deletes a fact's content for good. Agents can forget `agent`-tier facts only; `business`/`global` require the CLI. |
 | `history(id or entity)` | The change history of a fact, a proposal or an entity. |
 
 <a id="en-tiers"></a>
 
-### Tiers and the proposal queue
+### Tiers, write-then-undo, and the optional proposal queue
 
-| Tier | Meaning | How it is written |
-|---|---|---|
-| `agent` | Private to one agent in one business | Saved at once |
-| `business` | Shared by every agent of one business | Becomes a proposal |
-| `global` | About you, visible in every business | Becomes a proposal |
+| Tier | Meaning | Default behaviour | With `require_approval = true` |
+|---|---|---|---|
+| `agent` | Private to one agent in one business | Saved at once | Saved at once |
+| `business` | Shared by every agent of one business | Saved at once (undoable) | Becomes a proposal |
+| `global` | About you, visible in every business | Saved at once (undoable) | Becomes a proposal |
 
-An agent cannot write to `business` or `global` directly, and has no tool to list or approve proposals. `brief` only shows how many are waiting.
+By default, Ingatan uses **write-then-undo**: writes take effect immediately so workflows stay fast, while every change is recorded in the append-only audit log and can be inspected (`ingatan diff`) or reversed (`ingatan undo`). To require manual CLI approval for shared tiers, set `require_approval = true` in `.ingatan.toml` / `~/.ingatan/config.toml` or `INGATAN_REQUIRE_APPROVAL=1`:
 
 ```bash
-ingatan proposals list
-ingatan proposals approve p_0123456789ab
-ingatan proposals reject p_0123456789ab
+ingatan proposals list --business tokoku
+ingatan proposals approve p_0123456789ab --business tokoku
+ingatan proposals approve --all --business tokoku
+ingatan proposals reject p_0123456789ab --business tokoku
 ```
 
 <a id="en-fact-status"></a>
@@ -569,22 +573,24 @@ ingatan proposals reject p_0123456789ab
 
 ### CLI
 
-Commands act as you for the configured business and agent. Another agent's private entries stay hidden; commands that read the log take `--agent NAME` to open the context as that agent.
+Commands act as you for the configured business and agent. Pass `--business NAME` (`-b`) on any command from any folder, or set shared defaults (`default_agent`, `require_approval`, `[brief].token_budget`) in `~/.ingatan/config.toml`. Another agent's private entries stay hidden unless you pass `--agent NAME`.
 
 | Command | Purpose |
 |---|---|
-| `ingatan` / `ingatan serve` | Start the MCP server on stdio |
+| `ingatan` / `ingatan serve` | Start the MCP server on stdio (supports multi-business allowlist via `INGATAN_BUSINESSES`) |
 | `ingatan serve --http [--host H] [--port P]` | Start the MCP server over HTTP (bearer tokens) |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Manage the HTTP-mode tokens |
 | `ingatan init [--business NAME] [--agent NAME]` | Create `.ingatan.toml` and the databases |
-| `ingatan doctor` | Check Python, SQLite features, config, databases and the data folder |
-| `ingatan log [--limit N] [--fact ID] [--agent NAME]` | List log entries, newest first |
-| `ingatan diff <log_id>` | Before and after of one log entry |
-| `ingatan undo <log_id>` | Reverse a create, supersede, confirm or approve (not a forget) |
-| `ingatan proposals list`, `approve <id>`, `reject <id>` | Review proposals |
-| `ingatan forget <fact_id> [--yes]` | Forget a fact of any tier |
-| `ingatan ingest <path>` | Read Markdown files into searchable notes, kept apart from facts |
-| `ingatan conflicts` | Conflict-resolution report from the log |
+| `ingatan doctor [--business NAME]` | Check Python, SQLite features, config, databases and the data folder |
+| `ingatan log [--limit N] [--fact ID] [--business NAME] [--agent NAME]` | List log entries, newest first |
+| `ingatan diff <log_id> [--business NAME]` | Before and after of one log entry |
+| `ingatan undo <log_id> [--business NAME]` | Reverse a create, supersede, confirm or approve (not a forget) |
+| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Review and approve proposals (single or bulk) |
+| `ingatan forget <fact_id> [--yes] [--business NAME]` | Forget a fact of any tier |
+| `ingatan ingest <path> [--business NAME]` | Read Markdown files into searchable notes (skips `.git`/`.venv`/`node_modules`) |
+| `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
+| `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
+| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
 | `ingatan hook <event>` | Claude Code hook entry point; always exits 0 |
 
 <a id="en-data"></a>
@@ -601,17 +607,17 @@ Commands act as you for the configured business and agent. Another agent's priva
 
 ### Measured numbers
 
-Sources: [evals/reports/latest.md](evals/reports/latest.md) (run on 2026-11-11, no LLM, no network) and [docs/RAM.md](docs/RAM.md).
+Sources: [evals/reports/latest.md](evals/reports/latest.md) (run on 2026-11-23, no LLM, no network) and [docs/RAM.md](docs/RAM.md).
 
-The eval is 40 scenarios in Indonesian, all pattern-based and written by the implementers. It contains no real incidents yet. These numbers are therefore a **regression baseline**, not evidence of accuracy in real use, and the targets are first guesses.
+The eval contains 43 scenarios in Indonesian (40 pattern-based + 3 anonymized incident scenarios). These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
 
 | Metric | Result | First-guess target |
 |---|---|---|
-| Scenarios | 40 run, 40 pass | none |
-| recall@5 | 100.0% over 45 checks | over 80% |
-| Stale rate | 0.0% over 63 recall checks | under 5% |
-| Leak rate | 0.0% (0 of 86 results) | 0 |
-| Tokens per brief | mean 65, max 278 over 19 briefs | about 1,000 |
+| Scenarios | 43 run, 43 pass | none |
+| recall@5 | 100.0% over 48 checks | over 80% |
+| Stale rate | 0.0% over 66 recall checks | under 5% |
+| Leak rate | 0.0% (0 of 90 results) | 0 |
+| Tokens per brief | mean 64, max 242 over 20 briefs | about 1,000 |
 
 Memory use of one stdio server process: 70.2 MB idle and 73.6 MB after 500 facts were saved. Measured once, on one Windows 11 laptop, Python 3.11.16, mcp 2.3.0.
 

@@ -15,10 +15,11 @@ from ingatan import audit
 from ingatan.db import transaction
 from ingatan.errors import NotFoundError, ValidationError
 from ingatan.facts import create_fact
-from ingatan.facts._util import new_id, now_iso
+from ingatan.facts._util import new_id, now_iso, resolve_conflicts
 from ingatan.scope import Context
+from ingatan.search import similar_facts
 
-__all__ = ["Proposal", "approve", "pending", "pending_count", "reject"]
+__all__ = ["Proposal", "approve", "approve_all", "pending", "pending_count", "reject"]
 
 
 @dataclass(frozen=True)
@@ -82,18 +83,42 @@ def _load_pending(ctx: Context, proposal_id: str) -> tuple[sqlite3.Connection, s
 
 
 def approve(ctx: Context, proposal_id: str) -> str:
-    """Create the proposed fact in its tier. Returns the new fact id.
+    """Create the proposed fact in its tier (or retire a superseded fact). Returns the fact id.
 
     The proposing agent stays the fact's `source.agent`. If the proposal replaces a fact,
-    that fact is closed in the same transaction. One `approve` log entry records it all.
+    that fact is closed and its open conflicts resolved in the same transaction. Similar
+    facts are re-evaluated against the current valid store so bulk-queued proposals still
+    catch conflicts with each other.
     """
     conn, row = _load_pending(ctx, proposal_id)
     proposal = _proposal(row)
     now = now_iso()
-    with transaction(conn):
+
+    retire_to = proposal.payload.get("retire_to")
+    if isinstance(retire_to, str) and retire_to:
+        return _approve_retire(ctx, conn, proposal, retire_to, now)
+
+    # Re-evaluate similar facts against the live store (merging with stored ids),
+    # excluding the fact this proposal intentionally supersedes.
+    fresh_similar = [
+        h.id
+        for h in similar_facts(
+            ctx,
+            str(proposal.payload.get("text") or ""),
+            list(proposal.payload.get("entities") or []),
+            list(proposal.payload.get("keywords") or []),
+        )
+    ]
+    merged_similar = [
+        fid
+        for fid in dict.fromkeys([*proposal.similar, *fresh_similar])
+        if fid != proposal.supersedes
+    ]
+
+    with transaction(ctx.business), transaction(conn):
         fields: dict[str, Any] = dict(proposal.payload)
         fields.pop("origin_fact", None)
-        fields.update(tier=proposal.tier, agent=proposal.agent, similar=proposal.similar)
+        fields.update(tier=proposal.tier, agent=proposal.agent, similar=merged_similar)
         source = dict(fields.get("source") or {})
         source["agent"] = proposal.agent
         fields["source"] = source
@@ -120,6 +145,7 @@ def approve(ctx: Context, proposal_id: str) -> str:
                     "WHERE id = ?",
                     (now, new_fact_id, target),
                 )
+                resolved_old = resolve_conflicts(ctx, target, "supersede")
                 extra["closed"] = {
                     "fact_id": target,
                     "before": before,
@@ -127,6 +153,7 @@ def approve(ctx: Context, proposal_id: str) -> str:
                         "valid_to": now,
                         "superseded_by": new_fact_id,
                         "pending_proposal": None,
+                        "resolved_conflicts": resolved_old,
                     },
                 }
                 affects.append(target)
@@ -141,6 +168,72 @@ def approve(ctx: Context, proposal_id: str) -> str:
             (now, new_fact_id, proposal_id),
         )
     return new_fact_id
+
+
+def _approve_retire(
+    ctx: Context, conn: sqlite3.Connection, proposal: Proposal, retire_to: str, now: str
+) -> str:
+    """Approve a retire-only supersede proposal pointing to an already-valid shared fact."""
+    target = proposal.supersedes
+    with transaction(ctx.business), transaction(conn):
+        extra: dict[str, Any] = {"proposal_id": proposal.id, "retire_only": True, "id": retire_to}
+        affects: list[str] = []
+        if target is not None:
+            old = conn.execute("SELECT * FROM facts WHERE id = ?", (target,)).fetchone()
+            if (
+                old is not None
+                and old["superseded_by"] is None
+                and (old["valid_to"] is None or old["valid_to"] > now)
+            ):
+                before = {
+                    "valid_to": old["valid_to"],
+                    "superseded_by": old["superseded_by"],
+                    "pending_proposal": old["pending_proposal"],
+                }
+                conn.execute(
+                    "UPDATE facts SET valid_to = ?, superseded_by = ?, pending_proposal = NULL "
+                    "WHERE id = ?",
+                    (now, retire_to, target),
+                )
+                resolved_old = resolve_conflicts(ctx, target, "supersede")
+                extra["closed"] = {
+                    "fact_id": target,
+                    "before": before,
+                    "after": {
+                        "valid_to": now,
+                        "superseded_by": retire_to,
+                        "pending_proposal": None,
+                        "resolved_conflicts": resolved_old,
+                    },
+                }
+                affects.append(target)
+            elif old is not None and old["pending_proposal"] == proposal.id:
+                conn.execute("UPDATE facts SET pending_proposal = NULL WHERE id = ?", (target,))
+        if affects:
+            extra["affects"] = affects
+        audit.write(
+            conn,
+            agent=ctx.scope.agent,
+            op="approve",
+            fact_id=retire_to,
+            tier=proposal.tier,
+            owner=proposal.agent,
+            before=None,
+            after=extra,
+        )
+        conn.execute(
+            "UPDATE proposals SET status = 'approved', decided_at = ?, fact_id = ? WHERE id = ?",
+            (now, retire_to, proposal.id),
+        )
+    return retire_to
+
+
+def approve_all(ctx: Context) -> list[tuple[str, str]]:
+    """Approve every pending proposal in creation order. Returns `(proposal_id, fact_id)` pairs."""
+    done: list[tuple[str, str]] = []
+    for p in pending(ctx):
+        done.append((p.id, approve(ctx, p.id)))
+    return done
 
 
 def reject(ctx: Context, proposal_id: str) -> None:

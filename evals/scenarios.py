@@ -118,6 +118,7 @@ class Scenario:
     xfail: str | None = None
     needs: str | None = None
     token_budget: int = 1000
+    require_approval: bool = False
     path: Path | None = field(default=None, compare=False)
 
     @property
@@ -163,6 +164,7 @@ def parse_scenario(
         "xfail",
         "needs",
         "token_budget",
+        "require_approval",
         "actors",
         "steps",
     }
@@ -193,8 +195,29 @@ def parse_scenario(
     if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
         raise _fail(where, "'token_budget' must be a positive integer")
 
+    raw_steps = data["steps"]
+    raw_approval = data.get("require_approval")
+    if raw_approval is None:
+        # Existing scenarios that exercise the proposal queue opt into approval mode automatically.
+        require_approval = str(data["category"]) == "proposal" or (
+            isinstance(raw_steps, list)
+            and any(
+                isinstance(s, dict)
+                and (
+                    s.get("op") in ("approve", "reject")
+                    or (s.get("op") == "supersede" and "as" in s)
+                    or (s.get("op") == "brief" and int(s.get("expect_pending", 0) or 0) > 0)
+                )
+                for s in raw_steps  # pyright: ignore[reportUnknownVariableType]
+            )
+        )
+    elif isinstance(raw_approval, bool):
+        require_approval = raw_approval
+    else:
+        raise _fail(where, "'require_approval' must be true or false")
+
     actors = _parse_actors(where, data["actors"])
-    steps = _parse_steps(where, data["steps"], actors)
+    steps = _parse_steps(where, raw_steps, actors, require_approval=require_approval)
     return Scenario(
         id=sid,
         title=title,
@@ -205,6 +228,7 @@ def parse_scenario(
         xfail=xfail,
         needs=needs,
         token_budget=budget,
+        require_approval=require_approval,
         path=path,
     )
 
@@ -225,7 +249,9 @@ def _parse_actors(where: str, raw: Any) -> dict[str, Actor]:
     return actors
 
 
-def _parse_steps(where: str, raw: Any, actors: dict[str, Actor]) -> list[Step]:
+def _parse_steps(
+    where: str, raw: Any, actors: dict[str, Actor], *, require_approval: bool = False
+) -> list[Step]:
     if not isinstance(raw, list) or not raw:
         raise _fail(where, "'steps' must be a non-empty list")
     steps: list[Step] = []
@@ -252,13 +278,19 @@ def _parse_steps(where: str, raw: Any, actors: dict[str, Actor]) -> list[Step]:
         extra = sorted(set(body) - required - optional)
         if extra:
             raise _fail(at, f"unexpected field(s): {', '.join(extra)}")
-        _validate_step(at, op, body, keys, expect_error)
+        _validate_step(at, op, body, keys, expect_error, require_approval=require_approval)
         steps.append(Step(i, op, actor, body, expect_error))
     return steps
 
 
 def _validate_step(
-    at: str, op: str, body: dict[str, Any], keys: dict[str, str], expect_error: str | None
+    at: str,
+    op: str,
+    body: dict[str, Any],
+    keys: dict[str, str],
+    expect_error: str | None,
+    *,
+    require_approval: bool = False,
 ) -> None:
     def known(name: str, *, fact: bool = False) -> None:
         key = _check_key(at, name, body[name])
@@ -292,7 +324,8 @@ def _validate_step(
         if expect_error is None:
             if "key" not in body:
                 raise _fail(at, "'key' is required (a name to refer to the fact later)")
-            define(body["key"], "proposal" if body.get("tier", "agent") != "agent" else "fact")
+            is_prop = require_approval and body.get("tier", "agent") != "agent"
+            define(body["key"], "proposal" if is_prop else "fact")
         elif "key" in body:
             raise _fail(at, "a step with 'expect_error' defines no key")
     elif op == "supersede":

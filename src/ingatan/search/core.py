@@ -13,6 +13,13 @@ from ingatan import timeutil
 from ingatan.db import transaction
 from ingatan.scope import Context
 from ingatan.search import stem_id
+from ingatan.search.stopwords import (
+    CONFLICT_NOISE_WORDS,
+    STOPWORDS,
+    extract_content_tokens,
+    extract_identifier_phrases,
+    extract_resource_ids,
+)
 
 __all__ = [
     "FactHit",
@@ -34,6 +41,18 @@ MAX_EXPANDED_TOKENS = 60
 # to 2/110, and two expanded signals at the best rank to 2*0.25/61, so a fact that matches
 # the literal word outranks one that only matches a root, apart from recency and entity bonuses.
 EXPANDED_WEIGHT = 0.25
+# Recency breaks ties and gently favours newer facts without drowning out lexical matches.
+RECENCY_WEIGHT = 0.35
+# Identifier phrase bonus (e.g. `sync_report` -> `"sync report"` matching `sync_report.py`).
+PHRASE_WEIGHT = 1.0
+# Default maximum number of document excerpts returned alongside recalled facts.
+DEFAULT_NOTES_LIMIT = 2
+
+# Conflict detection tuning (prevents false positives on generic entities and noisy overlaps).
+GENERIC_ENTITY_MIN_FACTS = 10
+GENERIC_ENTITY_FREQ_RATIO = 0.35
+MIN_CONFLICT_OVERLAP_RATIO = 0.35
+GENERIC_ONLY_OVERLAP_RATIO = 0.50
 
 # Column weights for bm25(): (text, entities, keywords) and (heading, text).
 _FACT_WEIGHTS = "1.0, 3.0, 2.0"
@@ -149,7 +168,8 @@ def status_of(ctx: Context, fact_row: Mapping[str, Any] | sqlite3.Row) -> str:
 
 
 def _in_open_conflict(ctx: Context, fact_id: str) -> bool:
-    """An unresolved pair counts only while the other fact is one the caller can see."""
+    """An unresolved pair counts only while the other fact is still valid and visible."""
+    now = _now()
     rows = ctx.business.execute(
         "SELECT CASE WHEN fact_a = :id THEN fact_b ELSE fact_a END AS other FROM conflicts "
         "WHERE resolved_at IS NULL AND (fact_a = :id OR fact_b = :id)",
@@ -158,8 +178,9 @@ def _in_open_conflict(ctx: Context, fact_id: str) -> bool:
     for r in rows:
         for conn in ctx.connections():
             hit = conn.execute(
-                f"SELECT 1 FROM facts WHERE id = :other AND {ctx.visible_sql(conn)}",
-                {"other": r["other"], **ctx.params},
+                f"SELECT 1 FROM facts WHERE id = :other AND {is_valid_sql()} "
+                f"AND {ctx.visible_sql(conn)}",
+                {"other": r["other"], "now": now, **ctx.params},
             ).fetchone()
             if hit is not None:
                 return True
@@ -254,19 +275,63 @@ def _touch(hits: list[FactHit], pool: dict[str, _Candidate]) -> None:
             )
 
 
+def _valid_fact_count(ctx: Context) -> int:
+    now = _now()
+    total = 0
+    for conn in ctx.connections():
+        total += int(
+            conn.execute(
+                f"SELECT count(*) FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)}",
+                {"now": now, **ctx.params},
+            ).fetchone()[0]
+        )
+    return total
+
+
+def _row_blob(row: sqlite3.Row) -> str:
+    ents = " ".join(_json_list(row["entities"]))
+    kws = " ".join(_json_list(row["keywords"]))
+    return f"{row['text']} {ents} {kws}".casefold()
+
+
+def _matched_term_count(blob: str, terms: Sequence[str], extra: Sequence[str]) -> int:
+    """Count distinct query tokens matched in `blob` (exact word or trigram/root substring)."""
+    words = {w.casefold() for w in _WORD.findall(blob)}
+    hits = 0
+    for tok in terms:
+        low = tok.casefold()
+        if low in words or (len(low) >= MIN_TRIGRAM_LENGTH and low in blob):
+            hits += 1
+            continue
+        for root in stem_id.candidates(low):
+            if root in words or (len(root) >= MIN_TRIGRAM_LENGTH and root in blob):
+                hits += 1
+                break
+    if hits == 0 and extra:
+        for root in extra:
+            if root in words or (len(root) >= MIN_TRIGRAM_LENGTH and root in blob):
+                hits += 1
+                break
+    return hits
+
+
 def recall(
     ctx: Context,
     query: str,
     *,
     limit: int = 5,
+    notes_limit: int = DEFAULT_NOTES_LIMIT,
     include_closed: bool = False,
     touch: bool = True,
 ) -> RecallResult:
     """Facts (both files, visibility applied) and document notes matching `query`."""
-    tokens = _tokens(query)
-    if not tokens or limit <= 0:
+    raw_tokens = _tokens(query)
+    if not raw_tokens or limit <= 0:
         return RecallResult()
+    tokens = [t for t in raw_tokens if t.casefold() not in STOPWORDS] or raw_tokens
+    non_noise = [t for t in tokens if t.casefold() not in CONFLICT_NOISE_WORDS]
     trigram_tokens = [t for t in tokens if len(t) >= MIN_TRIGRAM_LENGTH]
+    phrases = extract_identifier_phrases(query)
 
     pool: dict[str, _Candidate] = {}
     word_bm = _bm25_scores(ctx, "facts_fts", _match(tokens), include_closed, pool)
@@ -274,6 +339,9 @@ def recall(
         _bm25_scores(ctx, "facts_tri", _match(trigram_tokens), include_closed, pool)
         if trigram_tokens
         else {}
+    )
+    phrase_bm = (
+        _bm25_scores(ctx, "facts_fts", _match(phrases), include_closed, pool) if phrases else {}
     )
 
     # Roots of the query words, against both indexes, as separate and weaker signals.
@@ -288,6 +356,7 @@ def recall(
     for bm, weight in (
         (word_bm, 1.0),
         (tri_bm, 1.0),
+        (phrase_bm, PHRASE_WEIGHT),
         (exp_word_bm, EXPANDED_WEIGHT),
         (exp_tri_bm, EXPANDED_WEIGHT),
     ):
@@ -305,12 +374,48 @@ def recall(
     for fact_id, rank in _competition_ranks(entity_counts).items():
         scores[fact_id] += 1.0 / (RRF_K + rank)
 
+    # Filter out noise-only hits on multi-term queries (prevents long queries from returning
+    # unrelated facts that only matched a boilerplate word like "dokumen" or "data").
+    if pool and len(tokens) >= 3 and non_noise:
+        kept: dict[str, _Candidate] = {}
+        term_hits: dict[str, int] = {}
+        for fact_id, cand in pool.items():
+            blob = _row_blob(cand.row)
+            specific_hits = _matched_term_count(blob, non_noise, extra)
+            all_hits = _matched_term_count(blob, tokens, extra)
+            term_hits[fact_id] = specific_hits
+            if (
+                specific_hits >= 1
+                or all_hits >= 2
+                or fact_id in entity_counts
+                or fact_id in phrase_bm
+            ):
+                kept[fact_id] = cand
+        pool = kept
+        # When the store is non-trivial and strong hits exist, drop weak single-term tail hits.
+        if len(pool) > 1 and _valid_fact_count(ctx) >= 8:
+            lex_mag = {
+                fid: max(abs(word_bm.get(fid, 0.0)), abs(tri_bm.get(fid, 0.0))) for fid in pool
+            }
+            top_mag = max(lex_mag.values(), default=0.0)
+            if top_mag >= 1.0:
+                pool = {
+                    fid: cand
+                    for fid, cand in pool.items()
+                    if (
+                        term_hits.get(fid, 0) >= 2
+                        or fid in entity_counts
+                        or fid in phrase_bm
+                        or lex_mag[fid] >= top_mag * 0.25
+                    )
+                }
+
     # Recency: newest valid_from first. ISO strings sort as text, so map them to ordinals.
     stamps = sorted({c.row["valid_from"] for c in pool.values()})
     ordinal = {stamp: float(i) for i, stamp in enumerate(stamps)}
     recency = {i: ordinal[c.row["valid_from"]] for i, c in pool.items()}
     for fact_id, rank in _competition_ranks(recency).items():
-        scores[fact_id] += 1.0 / (RRF_K + rank)
+        scores[fact_id] += RECENCY_WEIGHT / (RRF_K + rank)
 
     # Ties on score fall back to the newest fact, then the id.
     ordered = sorted(pool, key=lambda i: (-round(scores[i], 12), -recency[i], i))[:limit]
@@ -319,15 +424,27 @@ def recall(
     hits = [_hit(ctx, pool[i]) for i in ordered]
     if touch and hits:
         _touch(hits, pool)
-    return RecallResult(facts=hits, notes=_notes(ctx, tokens, trigram_tokens, extra, limit))
+    effective_notes = min(limit, notes_limit) if notes_limit > 0 else 0
+    notes = (
+        _notes(ctx, tokens, non_noise, trigram_tokens, extra, effective_notes)
+        if effective_notes > 0
+        else []
+    )
+    return RecallResult(facts=hits, notes=notes)
 
 
 def _notes(
-    ctx: Context, tokens: list[str], trigram_tokens: list[str], extra: list[str], limit: int
+    ctx: Context,
+    tokens: list[str],
+    non_noise: list[str],
+    trigram_tokens: list[str],
+    extra: list[str],
+    limit: int,
 ) -> list[NoteHit]:
     conn = ctx.business
     rows: dict[int, sqlite3.Row] = {}
     scores: dict[int, float] = {}
+    best_bm: dict[int, float] = {}
     signals = (
         ("notes_fts", tokens, 1.0),
         ("notes_tri", trigram_tokens, 1.0),
@@ -344,13 +461,54 @@ def _notes(
             {"q": _match(toks), "lim": CANDIDATES_PER_SIGNAL},
         ).fetchall()
         for rank, row in enumerate(found, start=1):
-            rows.setdefault(row["id"], row)
-            scores[row["id"]] = scores.get(row["id"], 0.0) + weight / (RRF_K + rank)
-    best = sorted(rows, key=lambda i: (-scores[i], i))[:limit]
+            nid = row["id"]
+            rows.setdefault(nid, row)
+            scores[nid] = scores.get(nid, 0.0) + weight / (RRF_K + rank)
+            if weight >= 1.0:
+                best_bm[nid] = max(best_bm.get(nid, 0.0), abs(float(row["bm"])))
+
+    if not rows:
+        return []
+
+    # Drop noise-only notes on multi-term queries and weak tail notes on non-trivial note stores.
+    kept_ids = list(rows)
+    if len(tokens) >= 3 and non_noise:
+        kept_ids = [
+            nid
+            for nid in kept_ids
+            if _matched_term_count(
+                f"{rows[nid]['heading']} {rows[nid]['text']}".casefold(), non_noise, extra
+            )
+            >= 1
+        ]
+    note_total = int(conn.execute("SELECT count(*) FROM notes").fetchone()[0])
+    if len(kept_ids) > 1 and note_total >= 4:
+        top_bm = max((best_bm.get(nid, 0.0) for nid in kept_ids), default=0.0)
+        if top_bm >= 1.0:
+            kept_ids = [nid for nid in kept_ids if best_bm.get(nid, 0.0) >= top_bm * 0.35]
+
+    best = sorted(kept_ids, key=lambda i: (-scores[i], i))[:limit]
     return [
         NoteHit(id=i, path=rows[i]["path"], heading=rows[i]["heading"], text=rows[i]["text"])
         for i in best
     ]
+
+
+def _generic_entities(ctx: Context, valid_rows: list[tuple[sqlite3.Connection, sqlite3.Row]]) -> set[str]:
+    """Entities that represent the whole scope or appear across too many facts to signal conflict."""
+    generic = {ctx.scope.business.casefold(), ctx.scope.agent.casefold()}
+    total = len(valid_rows)
+    if total < GENERIC_ENTITY_MIN_FACTS:
+        return generic
+    counts: dict[str, int] = {}
+    for _, row in valid_rows:
+        for ent in {e.casefold().strip() for e in _json_list(row["entities"]) if e.strip()}:
+            counts[ent] = counts.get(ent, 0) + 1
+    cutoff = total * GENERIC_ENTITY_FREQ_RATIO
+    for ent, freq in counts.items():
+        if freq >= cutoff:
+            generic.add(ent)
+    return generic
 
 
 def similar_facts(
@@ -362,23 +520,80 @@ def similar_facts(
     exclude_id: str | None = None,
     limit: int = 3,
 ) -> list[FactHit]:
-    """The top FTS matches among valid facts that share at least one entity (OQ-7).
+    """Valid visible facts that share an entity AND genuinely overlap in topic content.
 
-    Never touches `use_count`.
+    Filters out generic scope/high-frequency entities, boilerplate words, and facts pointing
+    to distinct external resource IDs (e.g. different Google Sheets). Never touches `use_count`.
     """
     wanted = {e.casefold().strip() for e in entities if e.strip()}
-    tokens = _tokens(" ".join(entities), " ".join(keywords), text)
-    if not wanted or not tokens or limit <= 0:
+    if not wanted or limit <= 0:
         return []
-    pool: dict[str, _Candidate] = {}
-    scored: list[tuple[float, str]] = []
+
+    now = _now()
+    valid_rows: list[tuple[sqlite3.Connection, sqlite3.Row]] = []
     for conn in ctx.connections():
-        for row in _fact_matches(ctx, conn, "facts_fts", _match(tokens), False):
-            if row["id"] == exclude_id:
-                continue
-            if wanted.isdisjoint(e.casefold().strip() for e in _json_list(row["entities"])):
-                continue
-            pool[row["id"]] = _Candidate(row, conn)
-            scored.append((row["bm"], row["id"]))
-    scored.sort()
-    return [_hit(ctx, pool[i]) for _, i in scored[:limit]]
+        rows = conn.execute(
+            f"SELECT * FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)}",
+            {"now": now, **ctx.params},
+        ).fetchall()
+        valid_rows.extend((conn, r) for r in rows)
+
+    if not valid_rows:
+        return []
+
+    generic = _generic_entities(ctx, valid_rows)
+    generic_words = frozenset(w.casefold() for g in generic for w in _WORD.findall(g))
+    new_tokens = extract_content_tokens(text, " ".join(keywords), exclude=generic_words)
+    new_res_ids = extract_resource_ids(text)
+
+    scored: list[tuple[float, int, int, str, sqlite3.Connection, sqlite3.Row]] = []
+    for conn, row in valid_rows:
+        fid = str(row["id"])
+        if fid == exclude_id:
+            continue
+        row_entities = {e.casefold().strip() for e in _json_list(row["entities"]) if e.strip()}
+        shared_ents = wanted & row_entities
+        if not shared_ents:
+            continue
+
+        specific_shared = shared_ents - generic
+        shared_ent_words = frozenset(w.casefold() for e in shared_ents for w in _WORD.findall(e))
+        cand_tokens = extract_content_tokens(
+            str(row["text"]),
+            " ".join(_json_list(row["keywords"])),
+            exclude=generic_words,
+        )
+        overlap_all = new_tokens & cand_tokens
+        overlap_non_ent = overlap_all - shared_ent_words
+        min_len = max(1, min(len(new_tokens), len(cand_tokens)))
+        ratio_all = len(overlap_all) / min_len
+
+        # Guard: distinct external resource IDs (e.g. two different Google Sheets) rarely conflict.
+        cand_res_ids = extract_resource_ids(str(row["text"]))
+        if new_res_ids and cand_res_ids and new_res_ids.isdisjoint(cand_res_ids) and ratio_all < 0.75:
+            continue
+
+        new_non_ent = new_tokens - shared_ent_words
+        cand_non_ent = cand_tokens - shared_ent_words
+
+        accepted = False
+        if specific_shared:
+            if (
+                (len(overlap_non_ent) >= 2 and ratio_all >= MIN_CONFLICT_OVERLAP_RATIO)
+                or (len(overlap_non_ent) >= 1 and min_len <= 4)
+                or (len(new_non_ent) <= 1 and len(cand_non_ent) <= 1 and len(overlap_all) >= 1)
+            ):
+                accepted = True
+        else:
+            # Only generic/scope entities shared (e.g. business name or frequent user name):
+            # require strong lexical overlap on actual topic content.
+            if len(overlap_non_ent) >= 3 and ratio_all >= GENERIC_ONLY_OVERLAP_RATIO:
+                accepted = True
+
+        if accepted:
+            scored.append(
+                (ratio_all, len(overlap_non_ent), len(specific_shared), fid, conn, row)
+            )
+
+    scored.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+    return [_hit(ctx, _Candidate(row, conn)) for _, _, _, _, conn, row in scored[:limit]]

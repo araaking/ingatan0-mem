@@ -69,7 +69,9 @@ def _check_feature(name: str, label: str, statements: tuple[str, ...], hint: str
     return Check(name, "pass", f"{label} (SQLite {sqlite3.sqlite_version})")
 
 
-def _sources() -> tuple[list[str], dict[str, str | None]]:
+def _sources(
+    env: dict[str, str],
+) -> tuple[list[str], dict[str, str | None]]:
     """Where business and agent come from, mirroring `resolve_scope`. Never raises."""
     notes: list[str] = []
     values: dict[str, str | None] = {}
@@ -86,7 +88,7 @@ def _sources() -> tuple[list[str], dict[str, str | None]]:
         except ConfigError as exc:
             notes.append(f"config file problem: {exc.message}")
     for key, env_name in (("business", "INGATAN_BUSINESS"), ("agent", "INGATAN_AGENT")):
-        from_env = (os.environ.get(env_name) or "").strip()
+        from_env = (env.get(env_name) or "").strip()
         from_file = config.get(key)
         if from_env:
             values[key] = from_env
@@ -100,14 +102,17 @@ def _sources() -> tuple[list[str], dict[str, str | None]]:
     return notes, values
 
 
-def _check_config() -> tuple[Check, str | None]:
+def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
     """The config check, and the business name to look for a database under (if any)."""
-    notes, values = _sources()
+    notes, values = _sources(env)
     try:
-        scope = resolve_scope()
+        scope = resolve_scope(env=env)
     except ConfigError as exc:
         return Check("config", "FAIL", exc.message, notes), _valid_business(values["business"])
     notes.append(f"token budget: {scope.token_budget}")
+    notes.append(
+        f"approval mode: {'required (proposal queue)' if scope.require_approval else 'write-then-undo (immediate)'}"
+    )
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business
@@ -178,7 +183,14 @@ def _check_tokens(home: Path) -> Check:
     return Check("tokens", "pass", f"{count} HTTP access token(s) in {tokens.tokens_path(home)}")
 
 
-def run_checks() -> list[Check]:
+def run_checks(
+    *, business: str | None = None, agent: str | None = None
+) -> list[Check]:
+    env = dict(os.environ)
+    if business is not None:
+        env["INGATAN_BUSINESS"] = business
+    if agent is not None:
+        env["INGATAN_AGENT"] = agent
     checks = [
         _check_python(),
         _check_feature(
@@ -203,11 +215,11 @@ def run_checks() -> list[Check]:
             "It needs SQLite 3.42 or newer, and `forget` relies on it.",
         ),
     ]
-    config, business = _check_config()
+    config, resolved_business = _check_config(env)
     checks.append(config)
-    home = data_home()
-    if business is not None:
-        checks.append(_check_database(business, db_path(home, business)))
+    home = data_home(env)
+    if resolved_business is not None:
+        checks.append(_check_database(resolved_business, db_path(home, resolved_business)))
     else:
         checks.append(Check("database business", "skip", "no valid business name (see config)"))
     checks.append(_check_database(GLOBAL_NAME, db_path(home, GLOBAL_NAME)))

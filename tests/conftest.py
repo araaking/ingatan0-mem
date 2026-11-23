@@ -48,10 +48,19 @@ def make_ctx(ingatan_home: Path) -> Iterator[MakeContext]:
     opened: list[Context] = []
 
     def factory(
-        agent: str = DEFAULT_AGENT, business: str = DEFAULT_BUSINESS, token_budget: int = 1000
+        agent: str = DEFAULT_AGENT,
+        business: str = DEFAULT_BUSINESS,
+        token_budget: int = 1000,
+        require_approval: bool = False,
     ) -> Context:
         ctx = open_context(
-            Scope(business=business, agent=agent, home=ingatan_home, token_budget=token_budget)
+            Scope(
+                business=business,
+                agent=agent,
+                home=ingatan_home,
+                token_budget=token_budget,
+                require_approval=require_approval,
+            )
         )
         opened.append(ctx)
         return ctx
@@ -65,6 +74,12 @@ def make_ctx(ingatan_home: Path) -> Iterator[MakeContext]:
 def ctx(make_ctx: MakeContext) -> Context:
     """Business "tokoku", agent "claude-code"."""
     return make_ctx()
+
+
+@pytest.fixture
+def approval_ctx(make_ctx: MakeContext) -> Context:
+    """Business "tokoku", agent "claude-code", with opt-in proposal approval mode enabled."""
+    return make_ctx(require_approval=True)
 
 
 class FrozenClock:

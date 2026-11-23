@@ -13,8 +13,10 @@ The plugin imports the `ingatan` package, so install it into the Python environm
 Hermes (and keep an `ingatan` command available for the MCP server):
 
 ```
-pip install ingatan      # or: uv tool / pip install from a checkout
+pip install -e /path/to/ingatan      # or: uv tool install --editable /path/to/ingatan
 ```
+
+Installing in `--editable` mode ensures `git pull` updates the running binary after you restart Hermes/MCP.
 
 ## 2. Copy the plugin
 
@@ -68,6 +70,21 @@ mcp_servers:
       # INGATAN_HOME: /home/you/.ingatan   # must match the Hermes process if you set it there
     enabled: true
 ```
+
+If one Hermes agent works across several businesses and you want a single MCP server (7 tools instead of 7 × N), replace `INGATAN_BUSINESS` with a comma-separated `INGATAN_BUSINESSES` allowlist:
+
+```yaml
+mcp_servers:
+  ingatan:
+    command: ingatan
+    args: ["serve"]
+    env:
+      INGATAN_BUSINESSES: toko-a,toko-b,pribadi
+      INGATAN_AGENT: hermes
+    enabled: true
+```
+
+Each tool then accepts a `business` parameter strictly limited to that allowlist, with separate SQLite databases and no cross-business search. By default, writes to `business` and `global` tiers take effect immediately (write-then-undo, reversible via `ingatan undo`); set `INGATAN_REQUIRE_APPROVAL: "1"` (or `require_approval = true` in `~/.ingatan/config.toml`) if you prefer the manual CLI proposal queue.
 
 Apply with `/reload-mcp` and test with `hermes mcp test ingatan`. The tools appear with a
 prefix: `mcp_ingatan_brief`, `mcp_ingatan_recall`, `mcp_ingatan_remember`,

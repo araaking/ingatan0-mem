@@ -233,6 +233,7 @@ def _undo_approve(
     row = _fact(conn, entry.fact_id)
 
     reopened: dict[str, Any] | None = None
+    reopened_conflicts: list[int] = []
     closed = after.get("closed")
     if isinstance(closed, dict):
         target_id = str(closed["fact_id"])  # pyright: ignore[reportUnknownArgumentType]
@@ -256,27 +257,35 @@ def _undo_approve(
                 ),
             )
             reopened = {"fact_id": target_id, **old}
+            reopened_conflicts = _reopen_pairs(
+                ctx, expected.get("resolved_conflicts"), "supersede"
+            )
 
-    _close(conn, row, "approval", now)
+    retire_only = bool(after.get("retire_only"))
+    if not retire_only:
+        _close(conn, row, "approval", now)
     # The proposal is pending again. It keeps its fact_id on purpose: a later forget of
     # the (closed) fact then still finds the proposal that holds a copy of its text.
     conn.execute(
         "UPDATE proposals SET status = 'pending', decided_at = NULL WHERE id = ?", (proposal_id,)
     )
-    resolved = _resolve_pairs(ctx, entry.fact_id, now)
+    resolved = [] if retire_only else _resolve_pairs(ctx, entry.fact_id, now)
     undo_after: dict[str, Any] = {
-        "valid_to": now,
         "proposal_id": proposal_id,
         "proposal_status": "pending",
         "resolved_conflicts": resolved,
     }
+    if not retire_only:
+        undo_after["valid_to"] = now
+    if reopened_conflicts:
+        undo_after["reopened_conflicts"] = reopened_conflicts
     if reopened is not None:
         undo_after["reopened"] = reopened
         undo_after["affects"] = [reopened["fact_id"]]
-    return (
-        {"valid_to": row["valid_to"], "proposal_status": "approved"},
-        undo_after,
-    )
+    undo_before: dict[str, Any] = {"proposal_status": "approved"}
+    if not retire_only:
+        undo_before["valid_to"] = row["valid_to"]
+    return undo_before, undo_after
 
 
 def _undo_supersede(

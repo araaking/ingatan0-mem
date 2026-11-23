@@ -20,8 +20,10 @@ def rem(ctx: Context, text: str, keywords: list[str] | None = None, **kw: Any) -
 
 def approved(ctx: Context, text: str, tier: str = "business", **kw: Any) -> str:
     result = facts.remember(ctx, text, keywords=kw.pop("keywords", ["x"]), tier=tier, **kw)
-    assert result.proposal_id is not None
-    return proposals.approve(ctx, result.proposal_id)
+    if result.proposal_id is not None:
+        return proposals.approve(ctx, result.proposal_id)
+    assert result.fact_id is not None
+    return result.fact_id
 
 
 def row(ctx: Context, fact_id: str) -> Any:
@@ -137,7 +139,8 @@ def test_supersede_rejects_nonsense_without_changing_anything(ctx: Context) -> N
     assert snapshot(ctx) == before
 
 
-def test_an_agent_fact_cannot_be_superseded_by_a_proposal(ctx: Context) -> None:
+def test_an_agent_fact_cannot_be_superseded_by_a_proposal(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     mine = rem(ctx, "Harga kopi 50 ribu", ["harga"])
     prop = facts.remember(ctx, "Harga kopi 55 ribu", keywords=["harga"], tier="business")
     before = snapshot(ctx)
@@ -146,13 +149,26 @@ def test_an_agent_fact_cannot_be_superseded_by_a_proposal(ctx: Context) -> None:
     assert snapshot(ctx) == before
 
 
-# ---- supersede, business and global facts (FR-59) -----------------------------------
+# ---- supersede, business and global facts (default write-then-undo + opt-in approval)
+
+
+@pytest.mark.parametrize("tier", ["business", "global"])
+def test_supersede_of_a_shared_fact_closes_immediately_by_default(
+    ctx: Context, tier: str
+) -> None:
+    old = approved(ctx, "Jam buka 09.00", tier, keywords=["jam"])
+    new = approved(ctx, "Jam buka 08.00", tier, keywords=["jam"])
+    result = facts.supersede(ctx, old, new)
+    assert result.closed is True and result.proposal_id is None
+    assert row(ctx, old)["superseded_by"] == new
+    assert [h.id for h in search.recall(ctx, "jam buka").facts] == [new]
 
 
 @pytest.mark.parametrize(("tier", "file"), [("business", "business"), ("global", "glob")])
 def test_supersede_of_a_shared_fact_with_an_agent_fact_queues_a_proposal(
-    ctx: Context, tier: str, file: str
+    approval_ctx: Context, tier: str, file: str
 ) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", tier, keywords=["jam"])
     mine = rem(ctx, "Jam buka 08.00", ["jam"])
     result = facts.supersede(ctx, old, mine)
@@ -173,7 +189,10 @@ def test_supersede_of_a_shared_fact_with_an_agent_fact_queues_a_proposal(
     assert row(ctx, mine)["valid_to"] is None
 
 
-def test_supersede_of_a_shared_fact_with_a_pending_proposal_links_it(ctx: Context) -> None:
+def test_supersede_of_a_shared_fact_with_a_pending_proposal_links_it(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     prop = facts.remember(ctx, "Jam buka 08.00", keywords=["jam"], tier="business")
     result = facts.supersede(ctx, old, prop.proposal_id or "")
@@ -188,7 +207,8 @@ def test_supersede_of_a_shared_fact_with_a_pending_proposal_links_it(ctx: Contex
     assert all("08.00" not in h.text for h in search.recall(ctx, "jam buka").facts)
 
 
-def test_supersede_logs_the_queued_change_on_the_old_fact(ctx: Context) -> None:
+def test_supersede_logs_the_queued_change_on_the_old_fact(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     mine = rem(ctx, "Jam buka 08.00", ["jam"])
     result = facts.supersede(ctx, old, mine)
@@ -200,7 +220,10 @@ def test_supersede_logs_the_queued_change_on_the_old_fact(ctx: Context) -> None:
     }
 
 
-def test_a_shared_fact_with_a_change_waiting_cannot_get_a_second_one(ctx: Context) -> None:
+def test_a_shared_fact_with_a_change_waiting_cannot_get_a_second_one(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     first = rem(ctx, "Jam buka 08.00", ["jam"])
     second = rem(ctx, "Jam buka 10.00", ["jam"])
@@ -211,21 +234,29 @@ def test_a_shared_fact_with_a_change_waiting_cannot_get_a_second_one(ctx: Contex
     assert snapshot(ctx) == before
 
 
-def test_shared_fact_supersede_input_checks(ctx: Context) -> None:
+def test_shared_fact_supersede_with_existing_shared_fact_queues_retire_proposal(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
-    other_shared = approved(ctx, "Jam tutup 17.00", keywords=["jam"])
+    other_shared = approved(ctx, "Jam buka 08.00", keywords=["jam"])
     global_prop = facts.remember(ctx, "Jam global", keywords=["jam"], tier="global")
-    before = snapshot(ctx)
-    with pytest.raises(ValidationError):  # a shared fact is not a valid replacement
-        facts.supersede(ctx, old, other_shared)
-    with pytest.raises(ValidationError):  # proposal for another tier
+    with pytest.raises(ValidationError):  # proposal for another tier still rejected
         facts.supersede(ctx, old, global_prop.proposal_id or "")
-    assert snapshot(ctx) == before
+    # Replacing a business fact with an existing valid business fact queues a retire-only proposal
+    # and approving closes `old -> other_shared` without creating a duplicate fact.
+    before_count = ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0]
+    queued = facts.supersede(ctx, old, other_shared)
+    assert queued.closed is False and queued.proposal_id is not None
+    kept = proposals.approve(ctx, queued.proposal_id)
+    assert kept == other_shared
+    assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == before_count
+    assert row(ctx, old)["superseded_by"] == other_shared
 
 
 def test_another_agents_proposal_cannot_be_used_to_supersede(make_ctx: MakeContext) -> None:
-    a = make_ctx(agent="agent-a")
-    b = make_ctx(agent="agent-b")
+    a = make_ctx(agent="agent-a", require_approval=True)
+    b = make_ctx(agent="agent-b", require_approval=True)
     old = approved(a, "Jam buka 09.00", keywords=["jam"])
     prop = facts.remember(a, "Jam buka 08.00", keywords=["jam"], tier="business")
     before = snapshot(b)
@@ -351,7 +382,8 @@ def test_confirm_on_a_shared_fact_is_applied_directly_and_logged(
     assert len(found) == 1 and found[0]["tier"] == tier
 
 
-def test_confirm_clears_the_check_first_of_a_pending_supersede(ctx: Context) -> None:
+def test_confirm_clears_the_check_first_of_a_pending_supersede(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     mine = rem(ctx, "Jam buka 08.00", ["jam"])
     facts.supersede(ctx, old, mine)
@@ -378,7 +410,8 @@ def test_confirm_refuses_a_closed_fact(ctx: Context) -> None:
 # ---- check first for a pending supersede ends with reject ---------------------------
 
 
-def test_check_first_of_a_pending_supersede_is_cleared_by_reject(ctx: Context) -> None:
+def test_check_first_of_a_pending_supersede_is_cleared_by_reject(approval_ctx: Context) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     mine = rem(ctx, "Jam buka 08.00", ["jam"])
     result = facts.supersede(ctx, old, mine)
@@ -426,15 +459,18 @@ def test_history_of_an_unknown_id_is_not_found(ctx: Context) -> None:
 
 
 def test_history_of_a_proposal_belongs_to_its_author_only(make_ctx: MakeContext) -> None:
-    a = make_ctx(agent="agent-a")
-    b = make_ctx(agent="agent-b")
+    a = make_ctx(agent="agent-a", require_approval=True)
+    b = make_ctx(agent="agent-b", require_approval=True)
     prop = facts.remember(a, "Rahasia usulan", keywords=["rahasia"], tier="business")
     assert [e.op for e in facts.history(a, prop.proposal_id or "")] == ["propose"]
     with pytest.raises(NotFoundError):
         facts.history(b, prop.proposal_id or "")
 
 
-def test_history_of_a_replaced_fact_shows_the_approval_that_closed_it(ctx: Context) -> None:
+def test_history_of_a_replaced_fact_shows_the_approval_that_closed_it(
+    approval_ctx: Context,
+) -> None:
+    ctx = approval_ctx
     old = approved(ctx, "Jam buka 09.00", keywords=["jam"])
     mine = rem(ctx, "Jam buka 08.00", ["jam"])
     queued = facts.supersede(ctx, old, mine)
