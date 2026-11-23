@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -18,7 +19,8 @@ from typing import Any
 
 import pytest
 
-from ingatan.search import local, shared
+from ingatan.scope import EmbeddingConfig
+from ingatan.search import embed, local, shared
 
 CALL = {"model_name": "", "model_dir": "", "threads": 2, "timeout": 5.0}
 
@@ -301,3 +303,146 @@ def test_it_exits_when_its_state_file_is_taken_away(
     state_file(ingatan_home).unlink()
     running.thread.join(5)
     assert not running.thread.is_alive()
+
+
+# ---- the caller that starts the process when it is not there ---------------------------------
+
+EMBED_CALL = {**CALL, "idle_unload_seconds": 300}
+
+
+@pytest.fixture
+def spawns(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the attempts to start a process, without starting one."""
+    calls: list[int] = []
+    monkeypatch.setattr(shared, "_spawn", calls.append)
+    monkeypatch.setattr(shared, "_last_spawn", float("-inf"))
+    return calls
+
+
+def test_embed_asks_the_running_process(process: Process, spawns: list[int]) -> None:
+    assert shared.embed(["dua kata"], **EMBED_CALL) == [[8.0, 2.0]]
+    assert spawns == []
+
+
+def test_embed_starts_the_process_and_retries(
+    model: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[Process] = []
+
+    def start(idle_unload_seconds: int) -> None:
+        running = Process(idle_unload_seconds=0)
+        running.thread.start()
+        started.append(running)
+
+    monkeypatch.setattr(shared, "_spawn", start)
+    monkeypatch.setattr(shared, "_last_spawn", float("-inf"))
+    try:
+        assert shared.embed(["dua kata"], **EMBED_CALL) == [[8.0, 2.0]]
+        assert len(started) == 1
+    finally:
+        for running in started:
+            running.stop()
+
+
+def test_embed_gives_up_when_the_process_does_not_come_up(spawns: list[int]) -> None:
+    started = time.monotonic()
+    with pytest.raises(shared.Unavailable):
+        shared.embed(["a"], **{**EMBED_CALL, "timeout": 0.5})
+    assert spawns == [300]
+    assert time.monotonic() - started < 3
+
+
+def test_spawn_is_rate_limited(spawns: list[int]) -> None:
+    for _ in range(2):
+        with pytest.raises(shared.Unavailable):
+            shared.embed(["a"], **{**EMBED_CALL, "timeout": 0.3})
+    assert len(spawns) == 1
+
+
+def test_a_model_error_does_not_start_another_process(
+    process: Process, spawns: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        raise FileNotFoundError("model.onnx is missing")
+
+    monkeypatch.setattr(local, "embed", broken)
+    with pytest.raises(shared.Unavailable, match=r"model\.onnx is missing"):
+        shared.embed(["a"], **EMBED_CALL)
+    assert spawns == []
+
+
+def test_the_spawn_command_is_the_serve_command_and_stays_off_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class FakePopen:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            seen["argv"] = argv
+            seen.update(kwargs)
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    shared._spawn(120)  # pyright: ignore[reportPrivateUsage]
+    assert seen["argv"] == [
+        sys.executable,
+        "-m",
+        "ingatan.cli",
+        "embeddings",
+        "serve",
+        "--idle-seconds",
+        "120",
+    ]
+    # A stdio MCP server speaks its protocol on stdout: the child must never write there.
+    assert seen["stdout"] == subprocess.DEVNULL
+    assert seen["stderr"] == subprocess.DEVNULL
+    assert seen["stdin"] == subprocess.DEVNULL
+
+
+def test_the_process_really_starts_as_a_subprocess(ingatan_home: Path) -> None:
+    shared._spawn(30)  # pyright: ignore[reportPrivateUsage]
+    try:
+        assert wait_for(lambda: shared.status() is not None, 20)
+        status = shared.status()
+        assert status is not None and status.pid != os.getpid()
+    finally:
+        assert shared.stop() is True
+    assert wait_for(lambda: not state_file(ingatan_home).exists(), 10)
+
+
+# ---- the embedding layer picks the process when `shared` is on -----------------------------
+
+
+def test_embed_uses_the_process_when_shared(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[list[str]] = []
+
+    def through_process(texts: Sequence[str], **kwargs: Any) -> list[list[float]]:
+        asked.append(list(texts))
+        assert kwargs["timeout"] == 15.0 and kwargs["idle_unload_seconds"] == 300
+        return [[1.0, 0.0] for _ in texts]
+
+    def in_process(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        raise AssertionError("with `shared` on, this process must not load the model")
+
+    monkeypatch.setattr(shared, "embed", through_process)
+    monkeypatch.setattr(local, "embed", in_process)
+    cfg = EmbeddingConfig(provider="local", shared=True)
+    assert embed.embed_text(cfg, "ongkir Bandung", is_query=False) == [1.0, 0.0]
+    assert embed.embed_batch(cfg, ["satu", "dua"]) == [[1.0, 0.0], [1.0, 0.0]]
+    # The model's own prefix is added before the text leaves this process.
+    assert asked == [["passage: ongkir Bandung"], ["passage: satu", "passage: dua"]]
+
+
+def test_embed_stays_in_this_process_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    def through_process(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        raise AssertionError("without `shared`, nothing may reach for another process")
+
+    def in_process(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        return [[0.0, 1.0] for _ in texts]
+
+    monkeypatch.setattr(shared, "embed", through_process)
+    monkeypatch.setattr(local, "embed", in_process)
+    cfg = EmbeddingConfig(provider="local")
+    assert embed.embed_text(cfg, "ongkir Bandung", is_query=False) == [0.0, 1.0]

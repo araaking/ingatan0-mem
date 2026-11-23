@@ -36,6 +36,7 @@ import os
 import secrets
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -47,7 +48,17 @@ from typing import Any
 from ingatan.scope import data_home
 from ingatan.search import local
 
-__all__ = ["HOST", "SharedStatus", "Unavailable", "request", "serve", "status", "stop"]
+__all__ = [
+    "HOST",
+    "Refused",
+    "SharedStatus",
+    "Unavailable",
+    "embed",
+    "request",
+    "serve",
+    "status",
+    "stop",
+]
 
 HOST = "127.0.0.1"
 STATE_DIR = "run"
@@ -63,10 +74,20 @@ _REQUEST_SECONDS = 60.0
 _CONTROL_SECONDS = 2.0
 _TICK_SECONDS = 0.25
 _OWNERSHIP_CHECK_SECONDS = 1.0
+# A caller that finds no process starts one, but not more often than this: when the process
+# cannot start at all, every tool call would otherwise launch another.
+SPAWN_INTERVAL_SECONDS = 30.0
 
 
 class Unavailable(OSError):
     """The shared process cannot be reached, cannot be trusted, or could not embed."""
+
+
+class Refused(Unavailable):
+    """The process answered, and the answer was an error (a missing model file, say).
+
+    Starting another process would not help, so the caller does not try.
+    """
 
 
 @dataclass(frozen=True)
@@ -185,7 +206,7 @@ def _call(
             if not isinstance(header, dict):
                 raise ValueError("the answer is not a JSON object")
             if not header.get("ok"):  # pyright: ignore[reportUnknownMemberType]
-                raise Unavailable(str(header.get("error") or "the shared process refused"))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                raise Refused(str(header.get("error") or "the shared process refused"))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             blob = _receive(sock, MAX_VECTOR_BYTES) if vectors else b""
     except Unavailable:
         raise
@@ -240,6 +261,92 @@ def request(
     if sys.byteorder == "big":
         flat.byteswap()
     return [list(flat[index * dims : (index + 1) * dims]) for index in range(count)]
+
+
+_spawn_lock = threading.Lock()
+_last_spawn = float("-inf")
+
+
+def _spawn(idle_unload_seconds: int) -> None:
+    """Start the process, detached from this one, with nothing connected to its streams.
+
+    A stdio MCP server speaks its protocol on stdout, so the child must never inherit it.
+    """
+    options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        options["start_new_session"] = True
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "ingatan.cli",
+            "embeddings",
+            "serve",
+            "--idle-seconds",
+            str(idle_unload_seconds),
+        ],
+        **options,
+    )
+    # Collect its exit status when it leaves, so it never lingers as a defunct process.
+    threading.Thread(target=child.wait, name="ingatan-shared-reaper", daemon=True).start()
+
+
+def _start_process(idle_unload_seconds: int) -> bool:
+    """Start the process unless this caller tried a moment ago. True if it was started."""
+    global _last_spawn
+    with _spawn_lock:
+        now = time.monotonic()
+        if now - _last_spawn < SPAWN_INTERVAL_SECONDS:
+            return False
+        _last_spawn = now
+    try:
+        _spawn(idle_unload_seconds)
+    except OSError:
+        return False
+    return True
+
+
+def embed(
+    texts: Sequence[str],
+    *,
+    model_name: str,
+    model_dir: Path | str,
+    threads: int,
+    idle_unload_seconds: int,
+    timeout: float,
+) -> list[list[float]]:
+    """Vectors for `texts` from the shared process, starting it when it is not there.
+
+    One attempt to start it, at most once per `SPAWN_INTERVAL_SECONDS` in this process, a
+    wait of at most `timeout` seconds for it to answer, then one retry. Raises `Unavailable`
+    when that is not enough; the model is never loaded into the calling process instead.
+    """
+    try:
+        return request(
+            texts, model_name=model_name, model_dir=model_dir, threads=threads, timeout=timeout
+        )
+    except Refused:
+        raise
+    except Unavailable:
+        if not _start_process(idle_unload_seconds):
+            raise
+    deadline = time.monotonic() + timeout
+    while status() is None:
+        if time.monotonic() >= deadline:
+            raise Unavailable("the shared embedding process was started but did not answer")
+        time.sleep(0.05)
+    return request(
+        texts, model_name=model_name, model_dir=model_dir, threads=threads, timeout=timeout
+    )
 
 
 def status() -> SharedStatus | None:

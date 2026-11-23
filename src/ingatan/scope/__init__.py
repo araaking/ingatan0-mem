@@ -68,7 +68,9 @@ class EmbeddingConfig:
 
     `model_dir` is where the local provider keeps its model files (empty means
     `<INGATAN_HOME>/models`). With `defer`, `remember` saves a fact without waiting for the
-    model and a background step of the server fills the vector in afterwards. The three
+    model and a background step of the server fills the vector in afterwards. With
+    `shared`, the local model is held by one separate process that every server of the data
+    folder asks for vectors, instead of one copy per server. The three
     similarity fields override the cut-offs calibrated for the model family; None keeps the
     calibrated value.
     """
@@ -82,6 +84,7 @@ class EmbeddingConfig:
     idle_unload_seconds: int = 300
     model_dir: str = ""
     defer: bool = False
+    shared: bool = False
     recall_floor: float | None = None
     conflict_similarity: float | None = None
     conflict_strict_similarity: float | None = None
@@ -303,6 +306,7 @@ def parse_embeddings(
         idle_unload_seconds=idle_unload,
         model_dir=model_dir,
         defer=pick_bool("defer", "INGATAN_EMBED_DEFER"),
+        shared=pick_bool("shared", "INGATAN_EMBED_SHARED"),
         recall_floor=pick_similarity("recall_floor"),
         conflict_similarity=pick_similarity("conflict_similarity"),
         conflict_strict_similarity=pick_similarity("conflict_strict_similarity"),

@@ -36,7 +36,7 @@ from ingatan import timeutil
 from ingatan.db import transaction
 from ingatan.errors import IngatanError
 from ingatan.scope import Context, EmbeddingConfig
-from ingatan.search import local
+from ingatan.search import local, shared
 
 __all__ = [
     "DEFAULT_MODELS",
@@ -318,13 +318,26 @@ def _embed_local_batch(
     cfg: EmbeddingConfig, model_name: str, texts: Sequence[str], *, is_query: bool
 ) -> list[list[float] | None]:
     prepared = [_apply_model_prefix(model_name, t, is_query=is_query) for t in texts]
-    vectors = local.embed(
-        prepared,
-        model_name=model_name,
-        model_dir=cfg.model_dir,
-        threads=cfg.threads,
-        idle_unload_seconds=cfg.idle_unload_seconds,
-    )
+    if cfg.shared:
+        # One process holds the model for every server of this data folder. When it cannot
+        # be reached this raises an `OSError`, which the callers turn into "no vector": the
+        # model is never loaded into this process as a fallback.
+        vectors = shared.embed(
+            prepared,
+            model_name=model_name,
+            model_dir=cfg.model_dir,
+            threads=cfg.threads,
+            idle_unload_seconds=cfg.idle_unload_seconds,
+            timeout=cfg.timeout,
+        )
+    else:
+        vectors = local.embed(
+            prepared,
+            model_name=model_name,
+            model_dir=cfg.model_dir,
+            threads=cfg.threads,
+            idle_unload_seconds=cfg.idle_unload_seconds,
+        )
     return [vec if vec else None for vec in vectors]
 
 

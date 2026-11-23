@@ -297,3 +297,18 @@ def test_defer_rejects_non_boolean(value: object) -> None:
 def test_defer_env_rejects_non_boolean() -> None:
     with pytest.raises(ConfigError, match="INGATAN_EMBED_DEFER"):
         parse_embeddings({"INGATAN_EMBED_DEFER": "maybe"}, {}, {})
+
+
+# ---- [embeddings] shared -----------------------------------------------------------
+
+
+def test_shared_setting_parses() -> None:
+    assert parse_embeddings({}, {}, {}).shared is False
+    assert parse_embeddings({}, {"embeddings": {"shared": True}}, {}).shared is True
+    assert parse_embeddings({}, {}, {"embeddings": {"shared": True}}).shared is True
+    from_env = parse_embeddings(
+        {"INGATAN_EMBED_SHARED": "1"}, {"embeddings": {"shared": False}}, {}
+    )
+    assert from_env.shared is True
+    with pytest.raises(ConfigError, match=r"\[embeddings\] shared"):
+        parse_embeddings({}, {"embeddings": {"shared": "sometimes"}}, {})
