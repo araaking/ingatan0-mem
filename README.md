@@ -326,11 +326,11 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 
 Sumber: [evals/reports/latest.md](evals/reports/latest.md) dan [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (dijalankan 2026-11-23, tanpa LLM, tanpa jaringan), [docs/RAM.md](docs/RAM.md), dan [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-Eval berisi 48 skenario berbahasa Indonesia (45 berbasis pola + 3 skenario insiden teranonimisasi). Satu di antaranya butuh model embedding dan dilewati pada run bawaan, dan satu ditandai `xfail` (celah produk yang diketahui: `recall` belum memakai sinyal pemakaian). Kolom model lokal berasal dari run sebelum dua skenario `usage` ditambahkan; jalankan ulang `python -m evals --embeddings local` di mesin yang punya modelnya. Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
+Eval berisi 48 skenario berbahasa Indonesia (45 berbasis pola + 3 skenario insiden teranonimisasi). Satu di antaranya butuh model embedding dan dilewati pada run bawaan. Kolom model lokal berasal dari run sebelum dua skenario `usage` ditambahkan; jalankan ulang `python -m evals --embeddings local` di mesin yang punya modelnya. Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
 
 | Metrik | Bawaan (FTS5 saja) | Dengan model lokal | Target tebakan awal |
 |---|---|---|---|
-| Skenario | 48: 46 lulus, 1 xfail, 1 dilewati | 46: 46 lulus | tidak ada |
+| Skenario | 48: 47 lulus, 1 dilewati | 46: 46 lulus | tidak ada |
 | recall@5 | 100,0% dari 55 pemeriksaan | 100,0% dari 53 pemeriksaan | di atas 80% |
 | Stale rate | 0,0% dari 76 pemeriksaan recall | 0,0% dari 74 pemeriksaan recall | di bawah 5% |
 | Leak rate | 0,0% (0 dari 101 hasil) | 0,0% (0 dari 111 hasil) | 0 |
@@ -693,11 +693,11 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 
 Sources: [evals/reports/latest.md](evals/reports/latest.md) and [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (run on 2026-11-23, no LLM, no network), [docs/RAM.md](docs/RAM.md) and [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-The eval contains 48 scenarios in Indonesian (45 pattern-based + 3 anonymized incident scenarios). One of them needs an embedding model and is skipped in the default run, and one is marked `xfail` (a known product gap: `recall` does not use a usage signal yet). The local-model column is from a run made before the two `usage` scenarios were added; run `python -m evals --embeddings local` again on a machine that has the model. These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
+The eval contains 48 scenarios in Indonesian (45 pattern-based + 3 anonymized incident scenarios). One of them needs an embedding model and is skipped in the default run. The local-model column is from a run made before the two `usage` scenarios were added; run `python -m evals --embeddings local` again on a machine that has the model. These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
 
 | Metric | Default (FTS5 only) | With the local model | First-guess target |
 |---|---|---|---|
-| Scenarios | 48: 46 pass, 1 xfail, 1 skipped | 46: 46 pass | none |
+| Scenarios | 48: 47 pass, 1 skipped | 46: 46 pass | none |
 | recall@5 | 100.0% over 55 checks | 100.0% over 53 checks | over 80% |
 | Stale rate | 0.0% over 76 recall checks | 0.0% over 74 recall checks | under 5% |
 | Leak rate | 0.0% (0 of 101 results) | 0.0% (0 of 111 results) | 0 |

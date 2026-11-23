@@ -1,7 +1,7 @@
 # Ingatan eval report
 
 Date: 2026-11-23  
-Result: 48 scenarios: 46 pass, 0 fail, 1 xfail, 0 xpass, 1 skipped  
+Result: 48 scenarios: 47 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
 Embeddings: none (FTS5 only)  
 Network attempts during the run: 0
 
@@ -67,16 +67,11 @@ Definitions are in `evals/README.md`.
 | supersede-02-rantai-tiga-versi | supersede | pattern | PASS |  |
 | supersede-03-riwayat-dengan-include-closed | supersede | pattern | PASS |  |
 | usage-01-fakta-populer-yang-salah | usage | pattern | PASS |  |
-| usage-02-pemakaian-memecah-seri | usage | pattern | XFAIL | step 6 (recall): query 'jadwal antar barang': expected first: antar_toko_a; the order was antar_toko_b[valid], antar_toko_a[valid] |
+| usage-02-pemakaian-memecah-seri | usage | pattern | PASS |  |
 
 ## Expected failures (xfail)
 
-### usage-02-pemakaian-memecah-seri (XFAIL)
-
-Reason: recall belum memakai sinyal pemakaian: seri jatuh ke fakta yang ditulis paling akhir
-
-- step 6 (recall): query 'jadwal antar barang': expected first: antar_toko_a; the order was antar_toko_b[valid], antar_toko_a[valid]
-
+None.
 ## Briefs measured
 
 | Scenario | Caller | Tokens | Budget |

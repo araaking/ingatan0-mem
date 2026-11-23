@@ -3,7 +3,6 @@
   "title": "Dua fakta yang sama kuat cocoknya: yang lebih sering dan baru dipakai muncul lebih dulu",
   "category": "usage",
   "source": "pattern",
-  "xfail": "recall belum memakai sinyal pemakaian: seri jatuh ke fakta yang ditulis paling akhir",
   "actors": {
     "asisten": {
       "business": "tokoku",

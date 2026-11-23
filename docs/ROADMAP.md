@@ -23,7 +23,6 @@ this roadmap most:
 | 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
-| 5 | [Usage and decay in `recall`](#3-usage-and-time-decay-in-recall) | Needs eval scenarios before any code |
 | 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | The largest item; needs design decisions first |
 | 7 | [Light knowledge graph](#8-light-knowledge-graph-optional) | Reuses the extraction pass |
 | 8 | [Tombstones](#5-tombstones-for-wrong-values) | Needs a design that cannot collide with `forget` |
@@ -62,25 +61,6 @@ the results in EMBEDDINGS.md. This section goes when those numbers are in.
 **Done when.** `remember` with the local provider takes about as long as with
 `provider = "none"` (`scripts/bench_scale.py`), every fact gets its vector without a manual
 `reindex`, and a conflict found late is visible in `recall` and `ingatan conflicts`.
-
-## 3. Usage and time decay in `recall`
-
-**Problem.** `use_count` orders the brief but plays no part in `recall`.
-
-**Idea.** A bounded factor on the fused score from how often and how recently a fact was
-used, in the same style as the freshness factor for volatile facts (a few percent, never
-enough to lift an off-topic fact). OpenViking scores "hotness" this way.
-
-**Risk.** Facts that are recalled often get recalled more, and a new, correct fact loses
-to an old popular one. `recall` itself raises `use_count`, which feeds the loop.
-
-**Constraints.** Scenarios come first: one where the popular fact is the wrong answer, one
-where usage rightly breaks a tie. The factor ships only if both pass and no existing
-scenario regresses. The bound and the half-life are named constants with the eval numbers
-recorded next to them.
-
-**Done when.** The new scenarios are in `evals/scenarios/` and the report shows them
-passing with the factor on.
 
 ## 5. Tombstones for wrong values
 

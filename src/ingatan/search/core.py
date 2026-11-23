@@ -55,6 +55,24 @@ EXPANDED_WEIGHT = 0.25
 # default review interval, so a fact starts to lose ground about when it is due for review.
 RECENCY_BOOST = 0.04
 RECENCY_HALF_LIFE_DAYS = 30.0
+# Usage: a fact that `recall` returned often and recently gains up to USAGE_BOOST. The score
+# is multiplied by 1 + USAGE_BOOST * often * recent, where `often` is
+# 1 - 0.5 ** (use_count / USAGE_COUNT_SATURATION) and `recent` is
+# 0.5 ** (days_since_last_used / USAGE_HALF_LIFE_DAYS). A fact never recalled keeps its score.
+# The bound is 1%: smaller than the gap between two neighbouring ranks among the first forty
+# under rank fusion (1/100 against 1/101), so usage decides between matches that are
+# otherwise level and cannot carry a fact past a better match; and half of what freshness
+# gives, so a new volatile fact keeps its lead over an old popular one. The count saturates
+# (five recalls give half the effect, twenty give 94%) and the effect halves every 30 days
+# without use, because `recall` itself raises the count: without both, what was returned
+# once would be returned more and more. A fact in an open conflict gets no boost at all: its
+# popularity is exactly what is in doubt, and the fact that corrects it is the newer one.
+# Measured with `python -m evals` (48 scenarios, 2026-11-23): with these values
+# `usage-02-pemakaian-memecah-seri` passes (xfail before), `usage-01-fakta-populer-yang-salah`
+# still passes, and no other scenario changes; recall@5 100.0% over 55 checks.
+USAGE_BOOST = 0.01
+USAGE_HALF_LIFE_DAYS = 30.0
+USAGE_COUNT_SATURATION = 5
 # A lexical hit this far below the best hit of its own index and file is a weak tail hit.
 LEXICAL_TAIL_RATIO = 0.25
 NOTE_TAIL_RATIO = 0.35
@@ -361,6 +379,33 @@ def _freshness_factor(row: sqlite3.Row, reference: datetime) -> float:
     return 1.0 + RECENCY_BOOST * (freshness - 0.5)
 
 
+def _usage_factor(row: sqlite3.Row, reference: datetime) -> float:
+    """Score multiplier between 1 and 1 + USAGE_BOOST (see the constants). Never used: 1."""
+    count = int(row["use_count"] or 0)
+    last_used = row["last_used"]
+    if count <= 0 or not last_used:
+        return 1.0
+    try:
+        used = timeutil.parse(str(last_used))
+    except ValidationError:
+        return 1.0
+    idle_days = max(0.0, (reference - used).total_seconds() / 86400.0)
+    often = 1.0 - 0.5 ** (count / USAGE_COUNT_SATURATION)
+    recent = 0.5 ** (idle_days / USAGE_HALF_LIFE_DAYS)
+    return 1.0 + USAGE_BOOST * often * recent
+
+
+def _open_conflict_ids(ctx: Context) -> set[str]:
+    """Every fact id named by an unresolved conflict pair (pairs live in the business file)."""
+    ids: set[str] = set()
+    for row in ctx.business.execute(
+        "SELECT fact_a, fact_b FROM conflicts WHERE resolved_at IS NULL"
+    ):
+        ids.add(str(row["fact_a"]))
+        ids.add(str(row["fact_b"]))
+    return ids
+
+
 def _row_blob(row: sqlite3.Row) -> str:
     ents = " ".join(_json_list(row["entities"]))
     kws = " ".join(_json_list(row["keywords"]))
@@ -619,6 +664,15 @@ def recall(
     reference = timeutil.parse(time_param)
     for fact_id, cand in pool.items():
         scores[fact_id] *= _freshness_factor(cand.row, reference)
+
+    # Usage: a bounded boost for what was recalled often and recently (see USAGE_BOOST). Not
+    # for a look into the past, where today's usage says nothing, and not for a fact whose
+    # truth is in doubt.
+    if resolved_as_of is None and any(int(c.row["use_count"] or 0) > 0 for c in pool.values()):
+        doubted = _open_conflict_ids(ctx)
+        for fact_id, cand in pool.items():
+            if fact_id not in doubted:
+                scores[fact_id] *= _usage_factor(cand.row, reference)
 
     # ISO strings sort as text, so map them to ordinals for the tie-break below.
     stamps = sorted({c.row["valid_from"] for c in pool.values()})
