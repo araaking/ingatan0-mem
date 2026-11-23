@@ -328,7 +328,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 - `capture-errors.log` di folder data mendapat satu baris saat hook atau plugin gagal. Hook tidak pernah menghentikan sesi agen.
 - Penyamaran rahasia memakai pencocokan pola dan bisa meleset.
 - Server tidak melakukan panggilan jaringan, kecuali kamu memilih penyedia embedding jarak jauh (`ollama`, `openai`, `gemini`): saat itu teks fakta dan query dikirim ke endpoint tersebut. Model lokal hanya diunduh ketika kamu menjalankan `ingatan embeddings pull`.
-- `ingatan extract` bersifat opsional dan mati secara bawaan. Kalau kamu mengisi `[llm]`, teks episode (percakapan yang ditangkap, setelah disamarkan) dikirim ke model yang kamu tunjuk: Ollama di mesinmu, atau endpoint yang kamu tulis di `api_base`. Server dan `remember` tidak pernah memanggil model itu.
+- `ingatan extract` bersifat opsional dan mati secara bawaan. Kalau kamu mengisi `[llm]`, teks episode (percakapan yang ditangkap, setelah disamarkan) dan paling banyak lima fakta terkait yang sudah tersimpan dikirim ke model yang kamu tunjuk: Ollama di mesinmu, atau endpoint yang kamu tulis di `api_base`. Server dan `remember` tidak pernah memanggil model itu.
 
 <a id="id-angka"></a>
 
@@ -707,7 +707,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 - `capture-errors.log` in the data folder gets one line when a hook or plugin fails. Hooks never stop the agent session.
 - Redaction is pattern matching and can miss secrets.
 - The server makes no network call, unless you choose a remote embedding provider (`ollama`, `openai`, `gemini`): then the text of facts and queries is sent to that endpoint. The local model is downloaded only when you run `ingatan embeddings pull`.
-- `ingatan extract` is optional and off by default. If you fill in `[llm]`, the text of episodes (captured conversations, after redaction) is sent to the model you name: Ollama on your machine, or the endpoint you put in `api_base`. The server and `remember` never call that model.
+- `ingatan extract` is optional and off by default. If you fill in `[llm]`, the text of episodes (captured conversations, after redaction) and of at most five related facts already in memory is sent to the model you name: Ollama on your machine, or the endpoint you put in `api_base`. The server and `remember` never call that model.
 
 <a id="en-numbers"></a>
 

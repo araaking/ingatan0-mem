@@ -536,6 +536,11 @@ def proposals_list(business: BusinessOption = None, agent: AgentOption = None) -
             if isinstance(source, dict) and source.get("extracted_by"):  # pyright: ignore[reportUnknownMemberType]
                 by = source["extracted_by"]  # pyright: ignore[reportUnknownVariableType]
                 typer.echo(f"    extracted by {by}: a model read this out of a text, check it")
+            for link in p.payload.get("links") or []:
+                target = str(link.get("to"))
+                found = find_fact(ctx, target)
+                shown = f': "{shorten(str(found[1]["text"]), 80)}"' if found else " (gone)"
+                typer.echo(f"    would link to {target} ({link.get('relation')}){shown}")
             if p.supersedes:
                 old = _replaced_text(ctx, p.supersedes)
                 shown = f': "{shorten(old, 80)}"' if old is not None else " (no longer exists)"

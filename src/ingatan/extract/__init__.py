@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ingatan import episodes, facts, timeutil
+from ingatan import episodes, facts, search, timeutil
 from ingatan.db import fact_text_key, transaction
 from ingatan.errors import IngatanError
 from ingatan.extract import llm, prompt
@@ -40,6 +40,9 @@ __all__ = ["MAX_FACTS_PER_EPISODE", "MAX_FACT_CHARS", "ExtractReport", "extract_
 MAX_FACTS_PER_EPISODE = 8
 # A fact is one statement. Longer than this is a summary of the episode, not a fact.
 MAX_FACT_CHARS = 400
+# How many facts already in memory the model is shown, to relate a new fact to.
+MAX_KNOWN_FACTS = 5
+_RELATIONS = ("related_to", "part_of")
 
 _NUMBER = re.compile(r"\d[\d.,]*")
 _KINDS = ("stable", "volatile")
@@ -62,6 +65,7 @@ class ExtractReport:
     texts: tuple[str, ...] = ()
     model: str = ""
     notes_read: int = 0
+    relations: int = 0
 
 
 def _numbers(text: str) -> set[str]:
@@ -99,6 +103,36 @@ def _is_stored(ctx: Context, key: str) -> bool:
         if row is not None:
             return True
     return False
+
+
+def _known_facts(ctx: Context, text: str) -> list[tuple[str, str]]:
+    """Facts in memory about what `text` talks about, as `(id, text)`, for the model to
+    relate a new fact to. Not counted as use: nobody asked for them."""
+    hits = search.recall(
+        ctx, text, limit=MAX_KNOWN_FACTS, notes_limit=0, touch=False, include_related=False
+    ).facts
+    return [(hit.id, redact(hit.text)) for hit in hits]
+
+
+def _links(relations: list[Any], count: int, offered: set[str]) -> dict[int, list[tuple[str, str]]]:
+    """The model's relations that can be used, by the position of the fact they belong to.
+
+    A relation is kept only when it names a fact of this answer, an id the model was shown,
+    and one of the two relations there are. One link per target: the first one stands.
+    """
+    links: dict[int, list[tuple[str, str]]] = {}
+    for item in relations:
+        if not isinstance(item, dict):
+            continue
+        index, target, relation = item.get("fact"), item.get("to"), item.get("relation")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < count:
+            continue
+        if target not in offered or relation not in _RELATIONS:
+            continue
+        chosen = links.setdefault(index, [])
+        if all(target != linked for linked, _ in chosen):
+            chosen.append((str(target), str(relation)))  # pyright: ignore[reportUnknownArgumentType]
+    return links
 
 
 @dataclass(frozen=True)
@@ -183,16 +217,17 @@ def extract_pending(
     cfg = ctx.scope.llm
     llm.ensure_configured(cfg)
     label = llm.model_label(cfg)
-    proposed = rejected = errors = known = 0
+    proposed = rejected = errors = known = linked = 0
     last_error = ""
     texts: list[str] = []
     seen = _known_keys(ctx)
     readings = _note_readings(ctx, limit) if documents else _episode_readings(ctx, limit)
 
     for reading in readings:
+        offered = _known_facts(ctx, reading.stated_text)
         try:
             # Outside any transaction: nothing is locked while the model thinks.
-            answer = llm.chat(cfg, prompt.SYSTEM, reading.message)
+            answer = llm.chat(cfg, prompt.SYSTEM, reading.message + prompt.known_block(offered))
             items = prompt.parse_answer(answer)
         except (IngatanError, ValueError) as exc:
             errors += 1
@@ -200,9 +235,10 @@ def extract_pending(
             continue
 
         stated = _numbers(reading.stated_text)
+        links = _links(prompt.parse_relations(answer), len(items), {fid for fid, _ in offered})
         kept = 0
         marked = False
-        for item in items:
+        for index, item in enumerate(items):
             text = item.get("text") if isinstance(item, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             if not isinstance(text, str) or not text.strip() or len(text) > MAX_FACT_CHARS:
                 rejected += 1
@@ -220,6 +256,7 @@ def extract_pending(
                 continue
             seen.add(key)
             kind = item.get("kind")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            item_links = links.get(index, [])
             if not dry_run:
                 try:
                     facts.remember(
@@ -232,6 +269,10 @@ def extract_pending(
                         as_proposal=True,
                         episode=reading.episode,
                         source={**reading.source, "extracted_by": label},
+                        # A relation is reviewed like the fact it rides on: it becomes an
+                        # edge only when the proposal is approved.
+                        related_to=[t for t, r in item_links if r == "related_to"],
+                        part_of=[t for t, r in item_links if r == "part_of"],
                     )
                 except IngatanError:
                     rejected += 1
@@ -240,6 +281,7 @@ def extract_pending(
                 marked = marked or reading.episode is not None
             kept += 1
             proposed += 1
+            linked += len(item_links)
             texts.append(clean)
         if not dry_run and not marked:
             # Read: do not send it to the model again, whether or not it held a fact.
@@ -255,4 +297,5 @@ def extract_pending(
         texts=tuple(texts),
         model=label,
         notes_read=len(readings) if documents else 0,
+        relations=linked,
     )

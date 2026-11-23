@@ -505,3 +505,136 @@ def test_extract_command_reads_documents_when_asked(
     result = invoke("extract", "--documents")
     assert result.exit_code == 0, result.output
     assert "1 note(s)" in result.output and "1 fact(s) proposed" in result.output
+
+
+# ---- relations to facts that are already known ---------------------------------------------
+
+SCHEDULE = {"text": "Toko-a mengantar gula pasir tiap Senin.", "entities": ["jadwal antar"]}
+
+
+def with_relations(relations: list[dict[str, Any]], *items: dict[str, Any]) -> str:
+    return json.dumps({"facts": list(items), "relations": relations}, ensure_ascii=False)
+
+
+@pytest.fixture
+def supplier(ctx: Context) -> str:
+    """A fact that is already known, about the same supplier the episode mentions."""
+    saved = facts.remember(
+        ctx, "Supplier gula pasir adalah toko-a.", entities=["toko-a"], tier="business"
+    )
+    assert saved.fact_id is not None
+    episodes.record(ctx, "Toko-a mengantar gula pasir tiap Senin ya.", "Baik, dicatat.")
+    return saved.fact_id
+
+
+def test_known_facts_are_offered_to_the_model_with_their_ids(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = Model(monkeypatch, answer())
+    extract.extract_pending(ctx)
+    sent = model.asked[0][1]
+    assert "FACTS ALREADY KNOWN" in sent
+    assert f"{supplier}: Supplier gula pasir adalah toko-a." in sent
+    # Looking facts up for the prompt is not the user using them.
+    row = ctx.business.execute("SELECT use_count FROM facts WHERE id = ?", (supplier,))
+    assert row.fetchone()["use_count"] == 0
+
+
+def test_nothing_known_means_no_such_block(ctx: Context, monkeypatch: pytest.MonkeyPatch) -> None:
+    episodes.record(ctx, USER, ASSISTANT)
+    model = Model(monkeypatch, answer())
+    extract.extract_pending(ctx)
+    assert "FACTS ALREADY KNOWN" not in model.asked[0][1]
+
+
+def test_relation_is_stored_in_the_proposal_payload(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    relation = {"fact": 0, "to": supplier, "relation": "related_to"}
+    Model(monkeypatch, with_relations([relation], SCHEDULE))
+    report = extract.extract_pending(ctx)
+    assert (report.proposed, report.relations) == (1, 1)
+    (pending,) = proposals.pending(ctx)
+    assert pending.payload["links"] == [{"to": supplier, "relation": "related_to"}]
+    # The relation is reviewed with the fact: it exists only once the proposal is approved.
+    assert count(ctx.business, "edges") == 0
+    fact_id = proposals.approve(ctx, pending.id)
+    edge = ctx.business.execute("SELECT src_id, dst_id, relation FROM edges").fetchone()
+    assert tuple(edge) == (fact_id, supplier, "related_to")
+
+
+def test_relation_to_an_unknown_id_is_dropped(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An id the model was not shown: made up, or from another business. Never linked.
+    relation = {"fact": 0, "to": "f_000000000000", "relation": "related_to"}
+    Model(monkeypatch, with_relations([relation], SCHEDULE))
+    report = extract.extract_pending(ctx)
+    assert (report.proposed, report.relations) == (1, 0)
+    assert "links" not in proposals.pending(ctx)[0].payload
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        {"fact": 7, "to": "KNOWN", "relation": "related_to"},
+        {"fact": -1, "to": "KNOWN", "relation": "related_to"},
+        {"fact": "0", "to": "KNOWN", "relation": "related_to"},
+        {"fact": 0, "to": "KNOWN", "relation": "owns"},
+        {"fact": 0, "to": 12, "relation": "related_to"},
+        "bukan objek",
+    ],
+)
+def test_a_malformed_relation_is_dropped_and_the_fact_kept(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch, relation: Any
+) -> None:
+    if isinstance(relation, dict) and relation.get("to") == "KNOWN":
+        relation = {**relation, "to": supplier}
+    Model(monkeypatch, with_relations([relation], SCHEDULE))
+    report = extract.extract_pending(ctx)
+    assert (report.proposed, report.relations) == (1, 0)
+    assert "links" not in proposals.pending(ctx)[0].payload
+
+
+def test_part_of_and_two_relations_on_one_fact(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = facts.remember(
+        ctx, "Gula pasir disimpan di gudang utama toko.", entities=["gudang utama"], tier="business"
+    )
+    assert other.fact_id is not None
+    relations = [
+        {"fact": 0, "to": supplier, "relation": "related_to"},
+        {"fact": 0, "to": other.fact_id, "relation": "part_of"},
+        {"fact": 0, "to": supplier, "relation": "part_of"},  # one link per target: the first
+    ]
+    Model(monkeypatch, with_relations(relations, SCHEDULE))
+    report = extract.extract_pending(ctx)
+    assert report.relations == 2
+    assert proposals.pending(ctx)[0].payload["links"] == [
+        {"to": supplier, "relation": "related_to"},
+        {"to": other.fact_id, "relation": "part_of"},
+    ]
+
+
+@pytest.mark.parametrize("raw", ['{"facts": []}', '{"facts": [], "relations": "banyak"}', "x"])
+def test_an_answer_without_a_relations_list_has_none(raw: str) -> None:
+    assert prompt.parse_relations(raw) == []
+
+
+def test_proposals_list_shows_the_links_of_an_extracted_fact(
+    invoke: Invoke, cli_ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("INGATAN_LLM_MODEL", "local-model")
+    known = facts.remember(
+        cli_ctx, "Supplier gula pasir adalah toko-a.", entities=["toko-a"], tier="business"
+    )
+    episodes.record(cli_ctx, "Toko-a mengantar gula pasir tiap Senin ya.", "Baik, dicatat.")
+    relation = {"fact": 0, "to": known.fact_id, "relation": "related_to"}
+    Model(monkeypatch, with_relations([relation], SCHEDULE))
+    assert invoke("extract").exit_code == 0
+    listed = invoke("proposals", "list")
+    assert listed.exit_code == 0, listed.output
+    assert f"would link to {known.fact_id} (related_to)" in listed.output
+    assert "Supplier gula pasir adalah toko-a." in listed.output
