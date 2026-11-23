@@ -14,9 +14,9 @@ from typing import Any
 from ingatan import audit
 from ingatan.db import transaction
 from ingatan.errors import NotFoundError, ValidationError
-from ingatan.facts import create_fact
-from ingatan.facts._util import new_id, now_iso, resolve_conflicts
-from ingatan.scope import Context
+from ingatan.facts import RELATIONS, create_fact, link_facts
+from ingatan.facts._util import is_closed, new_id, now_iso, resolve_conflicts
+from ingatan.scope import Context, find_fact
 from ingatan.search import embed as embed_store
 from ingatan.search import similar_facts
 
@@ -126,9 +126,22 @@ def approve(ctx: Context, proposal_id: str) -> str:
         if fid != proposal.supersedes
     ]
 
+    # Links the proposal carries (`remember(related_to=..., part_of=...)`). A target that was
+    # closed or forgotten since then is skipped, and the log entry says which.
+    wanted_links: list[tuple[str, str]] = []
+    skipped_links: list[str] = []
+    for item in proposal.payload.get("links") or []:
+        target_id, relation = str(item.get("to") or ""), str(item.get("relation") or "")
+        found = find_fact(ctx, target_id) if relation in RELATIONS else None
+        if found is None or is_closed(found[1]):
+            skipped_links.append(target_id)
+        else:
+            wanted_links.append((target_id, relation))
+
     with transaction(ctx.business), transaction(conn):
         fields: dict[str, Any] = dict(proposal.payload)
         fields.pop("origin_fact", None)
+        fields.pop("links", None)
         fields.update(tier=proposal.tier, agent=proposal.agent, similar=merged_similar)
         source = dict(fields.get("source") or {})
         source["agent"] = proposal.agent
@@ -172,8 +185,15 @@ def approve(ctx: Context, proposal_id: str) -> str:
                 conn.execute("UPDATE facts SET pending_proposal = NULL WHERE id = ?", (target,))
         if affects:
             extra["affects"] = affects
+        if wanted_links or skipped_links:
+            extra["links"] = {
+                "created": [[target_id, relation] for target_id, relation in wanted_links],
+                "skipped": skipped_links,
+            }
         fields["_extra"] = extra
         create_fact(conn, ctx, fields, op="approve")
+        for target_id, relation in wanted_links:
+            link_facts(ctx, new_fact_id, target_id, relation=relation)
         if embeddings_on:
             embed_store.store_fact_embedding(
                 conn, new_fact_id, text, ctx.scope.embeddings, vector=vector or []

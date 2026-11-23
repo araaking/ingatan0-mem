@@ -569,3 +569,24 @@ def test_extracted_by_is_redacted_and_absent_unless_given(ctx: Context) -> None:
     )
     row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (secret.fact_id,))
     assert "sk-abcdefghijklmnop" not in row.fetchone()["source"]
+
+
+# ---- part_of, beside related_to -------------------------------------------------------------
+
+
+def test_remember_links_part_of_at_once(ctx: Context) -> None:
+    whole = facts.remember(ctx, "Gudang utama ada di cabang dua.", entities=["gudang"])
+    part = facts.remember(
+        ctx,
+        "Rak gula ada di sisi kiri gudang utama.",
+        entities=["rak gula"],
+        part_of=[whole.fact_id],
+    )
+    rows = ctx.business.execute("SELECT src_id, dst_id, relation FROM edges").fetchall()
+    assert [tuple(r) for r in rows] == [(part.fact_id, whole.fact_id, "part_of")]
+
+
+def test_a_part_of_target_must_exist(ctx: Context) -> None:
+    with pytest.raises(NotFoundError, match="f_000000000000"):
+        facts.remember(ctx, "Rak gula ada di gudang.", entities=["rak"], part_of=["f_000000000000"])
+    assert count(ctx.business, "facts") == 0

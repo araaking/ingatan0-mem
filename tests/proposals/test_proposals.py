@@ -288,3 +288,95 @@ def test_reject_leaves_a_fact_with_another_pending_mark_alone(ctx: Context) -> N
 def test_reject_unknown_proposal_fails(ctx: Context) -> None:
     with pytest.raises(NotFoundError):
         proposals.reject(ctx, "p_000000000000")
+
+
+# ---- relations that ride on a proposal ------------------------------------------------------
+
+
+def edges(ctx: Context) -> list[tuple[str, str, str]]:
+    return [
+        (str(r["src_id"]), str(r["dst_id"]), str(r["relation"]))
+        for r in ctx.business.execute("SELECT src_id, dst_id, relation FROM edges ORDER BY id")
+    ]
+
+
+def existing(make_ctx: MakeContext, text: str, **kw: Any) -> str:
+    """A valid business fact, written without the approval queue."""
+    result = facts.remember(make_ctx(), text, keywords=["x"], tier="business", **kw)
+    assert result.fact_id is not None
+    return result.fact_id
+
+
+def test_links_are_kept_in_the_proposal_and_created_on_approval(
+    ctx: Context, make_ctx: MakeContext
+) -> None:
+    supplier = existing(make_ctx, "Supplier gula pasir adalah toko-a.", entities=["toko-a"])
+    gudang = existing(make_ctx, "Gudang utama ada di cabang dua.", entities=["gudang"])
+    proposal_id = propose(
+        ctx,
+        "Toko-a mengantar gula tiap Senin ke gudang utama.",
+        entities=["jadwal antar"],
+        related_to=[supplier],
+        part_of=[gudang],
+    )
+    assert edges(ctx) == []  # nothing is linked while it is only proposed
+    (pending,) = proposals.pending(ctx)
+    assert pending.payload["links"] == [
+        {"to": supplier, "relation": "related_to"},
+        {"to": gudang, "relation": "part_of"},
+    ]
+    fact_id = proposals.approve(ctx, proposal_id)
+    assert edges(ctx) == [(fact_id, supplier, "related_to"), (fact_id, gudang, "part_of")]
+    entry = next(e for e in audit.entries(ctx) if e.op == "approve")
+    assert entry.change is not None
+    assert entry.change["after"]["links"] == {
+        "created": [[supplier, "related_to"], [gudang, "part_of"]],
+        "skipped": [],
+    }
+    # The warehouse fact shares no word with the query: it is reached through the link alone.
+    found = search.recall(ctx, "toko-a mengantar gula")
+    assert gudang in {hit.id for hit in found.related}
+    assert {supplier, gudang} <= {hit.id for hit in [*found.facts, *found.related]}
+
+
+def test_link_to_a_fact_closed_or_forgotten_meanwhile_is_skipped(
+    ctx: Context, make_ctx: MakeContext
+) -> None:
+    kept = existing(make_ctx, "Supplier gula pasir adalah toko-a.", entities=["toko-a"])
+    closed = existing(make_ctx, "Gudang utama ada di cabang dua.", entities=["gudang"])
+    gone = existing(make_ctx, "Kasir cabang dua dipegang Budi.", entities=["kasir"])
+    proposal_id = propose(
+        ctx,
+        "Toko-a mengantar gula tiap Senin.",
+        entities=["jadwal antar"],
+        related_to=[kept, closed, gone],
+    )
+    direct = make_ctx()
+    replacement = existing(make_ctx, "Gudang utama pindah ke cabang tiga.", entities=["gudang"])
+    facts.supersede(direct, closed, replacement)
+    facts.forget(direct, gone, by_user=True)
+
+    fact_id = proposals.approve(ctx, proposal_id)  # approval itself must not fail
+    assert edges(ctx) == [(fact_id, kept, "related_to")]
+    entry = next(e for e in audit.entries(ctx) if e.op == "approve")
+    assert entry.change is not None
+    assert entry.change["after"]["links"]["skipped"] == [closed, gone]
+
+
+def test_rejected_proposal_creates_no_edge(ctx: Context, make_ctx: MakeContext) -> None:
+    supplier = existing(make_ctx, "Supplier gula pasir adalah toko-a.", entities=["toko-a"])
+    proposal_id = propose(
+        ctx, "Toko-a mengantar gula tiap Senin.", entities=["jadwal"], related_to=[supplier]
+    )
+    proposals.reject(ctx, proposal_id)
+    assert edges(ctx) == []
+
+
+def test_a_proposal_without_links_has_no_links_key(ctx: Context) -> None:
+    propose(ctx, "Retur maksimal 7 hari.")
+    (pending,) = proposals.pending(ctx)
+    assert "links" not in pending.payload
+    fact_id = proposals.approve(ctx, pending.id)
+    entry = next(e for e in audit.entries(ctx) if e.op == "approve")
+    assert entry.change is not None and "links" not in entry.change["after"]
+    assert row(ctx, fact_id)["text"] == "Retur maksimal 7 hari."
