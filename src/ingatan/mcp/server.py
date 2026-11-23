@@ -263,7 +263,7 @@ def build_server(ctx: Context) -> MCPServer:
         ] = None,
         include_related: Annotated[
             bool,
-            Field(description="Include 1-hop related facts linked via edges."),
+            Field(description="Include related facts, up to two links away."),
         ] = True,
     ) -> str:
         try:
@@ -503,7 +503,7 @@ def build_multi_server(
         ] = None,
         include_related: Annotated[
             bool,
-            Field(description="Include 1-hop related facts linked via edges."),
+            Field(description="Include related facts, up to two links away."),
         ] = True,
     ) -> str:
         try:

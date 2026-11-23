@@ -1,7 +1,7 @@
 # Ingatan eval report
 
 Date: 2026-11-23  
-Result: 48 scenarios: 47 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
+Result: 49 scenarios: 48 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
 Embeddings: none (FTS5 only)  
 Network attempts during the run: 0
 
@@ -10,8 +10,8 @@ Network attempts during the run: 0
 | Metric | Value | Target |
 |---|---|---|
 | recall@5 | 100.0% (55 checks) | over 80% |
-| stale rate | 0.0% (76 recall checks) | under 5% |
-| leak rate | 0.0% (0 of 101 results) | 0 |
+| stale rate | 0.0% (77 recall checks) | under 5% |
+| leak rate | 0.0% (0 of 104 results) | 0 |
 | tokens per brief | mean 64, max 256 (20 briefs) | about 1,000 |
 
 Definitions are in `evals/README.md`.
@@ -32,6 +32,7 @@ Definitions are in `evals/README.md`.
 | forget-01-fakta-agen-sendiri | forget | pattern | PASS |  |
 | forget-02-fakta-bisnis-tidak-bisa-dihapus-agen | forget | pattern | PASS |  |
 | forget-03-fakta-bisnis-dihapus-oleh-user | forget | pattern | PASS |  |
+| graph-01-dua-lompatan | graph | pattern | PASS |  |
 | inflection-01-kirim-vs-pengiriman | inflection | pattern | PASS |  |
 | inflection-02-pesan-vs-pemesanan | inflection | pattern | PASS |  |
 | inflection-03-tagih-vs-penagihan | inflection | pattern | PASS |  |

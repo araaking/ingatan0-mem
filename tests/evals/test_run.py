@@ -417,3 +417,62 @@ def test_repeat_recalls_that_many_times_and_judges_once(tmp_path: Path) -> None:
     assert result.status == PASS, result.failures
     assert calls == ["supplier gula pasir"] * 4
     assert len([r for r in result.records if r.kind == "recall"]) == 1
+
+
+# ---- links and related facts ---------------------------------------------------------------------
+
+GRAPH = "graph-01-dua-lompatan"
+
+
+def test_the_graph_scenario_passes_with_its_links_and_fails_without(tmp_path: Path) -> None:
+    path = SCENARIO_DIR / f"{GRAPH}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    with_links = run_scenario(parse_scenario(data), tmp_path / "with")
+    assert with_links.status == PASS, with_links.failures
+    # The same scenario without its `link` steps: the fact two hops away is out of reach.
+    data["steps"] = [step for step in data["steps"] if step["op"] != "link"]
+    without = run_scenario(parse_scenario(data), tmp_path / "without")
+    assert without.status == FAIL
+    assert "expected among the related facts" in without.failures[0]
+
+
+def test_a_related_fact_is_judged_for_leaks_like_any_result(tmp_path: Path) -> None:
+    class LeakyRelated(InProcessDriver):
+        """Hands back, as "related", a private fact of another agent."""
+
+        def recall(
+            self, actor: Actor, query: str, *, limit: int, include_closed: bool
+        ) -> list[Hit]:
+            hits = super().recall(actor, query, limit=limit, include_closed=include_closed)
+            other = Actor("tokoku", "seo-agent")
+            rows = self.ctx(other).business.execute(
+                "SELECT id, text, tier FROM facts WHERE agent = 'seo-agent'"
+            )
+            self.last_related = [Hit(r["id"], r["text"], "valid", r["tier"]) for r in rows]
+            return hits
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return LeakyRelated(home, token_budget=scenario.token_budget)
+
+    data = {
+        "id": "leak-related-fake",
+        "title": "fakta terkait milik agen lain",
+        "category": "leak-agent",
+        "source": "pattern",
+        "actors": {"asisten": TOKO, "seo": SEO},
+        "steps": [
+            {"op": "remember", "key": "mine", "text": "Harga kaos Rp 65.000.", "keywords": ["x"]},
+            {
+                "op": "remember",
+                "key": "theirs",
+                "actor": "seo",
+                "text": "Catatan pribadi agen SEO.",
+                "keywords": ["y"],
+            },
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["mine"]},
+        ],
+    }
+    result = run_scenario(parse_scenario(data), tmp_path / "home", factory)
+    assert result.status == FAIL
+    assert any("LEAK" in failure for failure in result.failures)
+    assert sum(r.leaked for r in result.records) == 1

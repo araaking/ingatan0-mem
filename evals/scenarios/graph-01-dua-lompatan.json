@@ -1,0 +1,79 @@
+{
+  "id": "graph-01-dua-lompatan",
+  "title": "Jawaban ada dua tautan jauhnya: pesanan, vendor yang mencetaknya, lalu hari tutup vendor itu",
+  "category": "graph",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "pesanan",
+      "text": "Pesanan besar minggu ini memakai kaos sablon.",
+      "keywords": [
+        "order",
+        "borongan"
+      ],
+      "entities": [
+        "pesanan besar"
+      ],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "vendor_cetak",
+      "text": "Kaos sablon dicetak oleh toko-b.",
+      "keywords": [
+        "percetakan",
+        "produksi"
+      ],
+      "entities": [
+        "toko-b"
+      ],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "vendor_tutup",
+      "text": "Toko-b tutup tiap tanggal 25.",
+      "keywords": [
+        "libur",
+        "jadwal"
+      ],
+      "entities": [
+        "jadwal toko-b"
+      ],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "link",
+      "from": "pesanan",
+      "to": "vendor_cetak"
+    },
+    {
+      "op": "link",
+      "from": "vendor_cetak",
+      "to": "vendor_tutup"
+    },
+    {
+      "op": "recall",
+      "query": "pesanan besar minggu ini",
+      "expect_first": "pesanan",
+      "expect_absent": [
+        "vendor_cetak",
+        "vendor_tutup"
+      ],
+      "expect_related": [
+        "vendor_cetak",
+        "vendor_tutup"
+      ]
+    }
+  ]
+}

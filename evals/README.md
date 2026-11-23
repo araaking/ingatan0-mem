@@ -77,7 +77,7 @@ One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-fol
 }
 ```
 
-- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold), `semantic` (what only an embedding model can do) or `usage` (how often and how recently a fact was recalled, and what that may and may not change in the order of results).
+- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold), `semantic` (what only an embedding model can do) `usage` (how often and how recently a fact was recalled, and what that may and may not change in the order of results) or `graph` (facts reached through links, not through the words of the query).
 - `source`: `pattern` (written from a known pattern) or `incident` (a real incident from the project owner).
 - `needs` (optional): `keywords` means the scenario must depend on the agent-supplied keywords (the query shares no word or fragment with the expected fact's text or entities). `trigram` means it must depend on the trigram index (the query is only a fragment of a word, with no keyword help). `tests/evals` lints these two statically so a scenario cannot pass for the wrong reason. `embeddings` means it needs an embedding model: it is skipped without one, and `tests/evals` runs it without one to prove that it then fails.
 - `actors`: named callers, each a business and an agent. The first one is the default. The clock is frozen at 2026-11-11 09:00 UTC at the start of each scenario.
@@ -93,16 +93,17 @@ Steps run in order. Common fields: `op`, `actor` (default: the first actor), `ex
 | `forget` | `key`, optional `by_user` (the user's CLI forget) |
 | `approve`, `reject` | `key` of a proposal (the user's decision) |
 | `advance_days` | `days` |
-| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all), `expect_first` (one key: that fact must be result number one). Optional `repeat` (1 to 50): the query is run that many times and only the last result is judged, which is how a scenario makes a fact used, since every recall raises the use count of what it returns |
+| `link` | `from`, `to` (keys of facts), optional `relation` (`related_to`, the default, or `part_of`) |
+| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all), `expect_first` (one key: that fact must be result number one), `expect_related` (keys that must be among the related facts returned beside the results, which is where a fact reached through a link appears). Optional `repeat` (1 to 50): the query is run that many times and only the last result is judged, which is how a scenario makes a fact used, since every recall raises the use count of what it returns |
 | `brief` | optional `expect_in_section` (section to keys), `expect_not_in` (a list of keys that must be nowhere in the brief, or a section to keys map), `max_tokens`, `expect_pending` (the pending-proposals count the brief states) |
 
 Brief sections are `check first`, `global`, `business` and `agent`.
 
-Every `recall` and `brief` step is also judged for leaks and stale results, whatever its own expectations say.
+Every `recall` and `brief` step is also judged for leaks and stale results, whatever its own expectations say. The related facts of a `recall` are judged with its results: they reach the caller all the same.
 
 ## Driver
 
-`evals/driver.py` defines `MemoryDriver`, a small protocol (remember, supersede, confirm, forget, approve, reject, recall, brief, plus the oracle calls `inspect` and `pending_texts`). `InProcessDriver` calls `facts`, `search`, `proposals` and `brief` directly. A driver that goes through the MCP server only has to implement the same protocol. Pass it with `run_all(..., driver_factory)` or `main(argv, driver_factory=...)`.
+`evals/driver.py` defines `MemoryDriver`, a small protocol (remember, supersede, confirm, forget, approve, reject, recall, link, brief, plus the oracle calls `inspect` and `pending_texts`). A driver that returns related facts beside its recall results leaves them in `last_related` after each `recall`. `InProcessDriver` calls `facts`, `search`, `proposals` and `brief` directly. A driver that goes through the MCP server only has to implement the same protocol. Pass it with `run_all(..., driver_factory)` or `main(argv, driver_factory=...)`.
 
 ## Adding a scenario
 

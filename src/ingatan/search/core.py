@@ -87,6 +87,9 @@ ROLE_BOOST = 0.25 / (RRF_K + 1)
 # Default maximum number of document excerpts and 1-hop related facts returned alongside hits.
 DEFAULT_NOTES_LIMIT = 2
 MAX_RELATED = 3
+# How many links away a related fact may be. Two reaches the fact behind a neighbour (an
+# order, its vendor, the vendor's closing day); more would return what nobody asked about.
+MAX_HOPS = 2
 
 # Conflict detection tuning (prevents false positives on generic entities and noisy overlaps).
 GENERIC_ENTITY_MIN_FACTS = 10
@@ -433,6 +436,16 @@ def _matched_term_count(blob: str, terms: Sequence[str], extra: Sequence[str]) -
     return hits
 
 
+def _neighbor_ids(ctx: Context, fact_id: str) -> list[str]:
+    """The facts linked to `fact_id` in either direction, in the order they were linked."""
+    rows = ctx.business.execute(
+        "SELECT CASE WHEN src_id = :id THEN dst_id ELSE src_id END AS other "
+        "FROM edges WHERE src_id = :id OR dst_id = :id ORDER BY id ASC",
+        {"id": fact_id},
+    ).fetchall()
+    return [str(row["other"]) for row in rows]
+
+
 def _related_hits(
     ctx: Context,
     hits: Sequence[FactHit],
@@ -442,40 +455,39 @@ def _related_hits(
     as_of: str | None = None,
     limit: int = MAX_RELATED,
 ) -> list[FactHit]:
-    """1-hop traversal over `edges` for valid visible facts linked to the top `hits`."""
+    """Valid visible facts linked to the top `hits`, up to `MAX_HOPS` links away.
+
+    Breadth first: every direct neighbour comes before anything behind it, so a second hop
+    is shown only in the room the first hop leaves under `limit`. A fact that is closed, or
+    that the caller cannot see, is not shown and is not walked through either: nothing is
+    reached by way of a fact one may not read.
+    """
     if not hits or limit <= 0:
         return []
     seen = {h.id for h in hits}
-    neighbor_ids: list[str] = []
-    for hit in hits:
-        rows = ctx.business.execute(
-            "SELECT CASE WHEN src_id = :id THEN dst_id ELSE src_id END AS other "
-            "FROM edges WHERE src_id = :id OR dst_id = :id ORDER BY id ASC",
-            {"id": hit.id},
-        ).fetchall()
-        for r in rows:
-            other = str(r["other"])
-            if other not in seen:
-                seen.add(other)
-                neighbor_ids.append(other)
-                if len(neighbor_ids) >= limit * 2:
-                    break
-        if len(neighbor_ids) >= limit * 2:
-            break
-    if not neighbor_ids:
-        return []
     related: list[FactHit] = []
-    for fid in neighbor_ids:
-        for conn in ctx.connections():
-            row = conn.execute(
-                f"SELECT f.* FROM facts f WHERE f.id = :id AND {validity_sql} "
-                f"AND {ctx.visible_sql(conn, alias='f')}",
-                {"id": fid, "now": time_param, **ctx.params},
-            ).fetchone()
-            if row is not None:
-                related.append(_hit(ctx, _Candidate(row, conn), as_of=as_of))
-                break
-        if len(related) >= limit:
+    frontier = [h.id for h in hits]
+    for _hop in range(MAX_HOPS):
+        reached: list[str] = []
+        for fact_id in frontier:
+            for other in _neighbor_ids(ctx, fact_id):
+                if other in seen:
+                    continue
+                seen.add(other)
+                for conn in ctx.connections():
+                    row = conn.execute(
+                        f"SELECT f.* FROM facts f WHERE f.id = :id AND {validity_sql} "
+                        f"AND {ctx.visible_sql(conn, alias='f')}",
+                        {"id": other, "now": time_param, **ctx.params},
+                    ).fetchone()
+                    if row is not None:
+                        related.append(_hit(ctx, _Candidate(row, conn), as_of=as_of))
+                        reached.append(other)
+                        break
+                if len(related) >= limit:
+                    return related
+        frontier = reached
+        if not frontier:
             break
     return related
 
@@ -492,7 +504,7 @@ def recall(
     category: str | None = None,
     include_related: bool = True,
 ) -> RecallResult:
-    """Facts (both files, visibility applied), document notes, and 1-hop related facts."""
+    """Facts (both files, visibility applied), document notes, and related facts."""
     if category is not None and category not in CATEGORIES:
         raise ValidationError(
             f"Unknown category '{category}'. Use one of: {', '.join(CATEGORIES)}."

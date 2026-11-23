@@ -24,7 +24,6 @@ this roadmap most:
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
 | 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | Built; the share of correct and invented facts still has to be measured with a real model |
-| 7 | [Light knowledge graph](#8-light-knowledge-graph-optional) | Reuses the extraction pass |
 | 8 | [Tombstones](#5-tombstones-for-wrong-values) | Needs a design that cannot collide with `forget` |
 | 9 | [Static embedding model](#6-static-embedding-model) | Only if 275 MB is still too much after items 2 and 3 |
 
@@ -114,25 +113,6 @@ an extracted fact may ever be written directly.
 
 **Done when.** An eval measures how many extracted facts are correct and how many are
 invented, on scenarios with a known answer, and the README states that number.
-
-## 8. Light knowledge graph (optional)
-
-**Idea.** No graph database. The extraction pass of item 7 also proposes relations between
-facts, stored in the existing `edges` table (`related_to`, `part_of`), and `recall` follows
-them for one or two hops.
-
-**What exists already.** `edges`, `ingatan link` and `unlink`, and `recall` returning facts
-one hop away.
-
-**Why not a full graph.** Entity and relation extraction on every write, plus a graph
-engine, is what graphiti and cognee do. It needs a model for every `remember` and would
-make the offline core depend on one.
-
-**Constraints.** A proposed relation is reviewed like a proposed fact. A relation never
-crosses a business file.
-
-**Done when.** An eval scenario needs a fact two hops away to answer, fails without the
-relations and passes with them.
 
 ## 9. Easier installation
 
