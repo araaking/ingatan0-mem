@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ingatan import db, tokens
-from ingatan.errors import ConfigError
+from ingatan.errors import ConfigError, IngatanError
 from ingatan.scope import (
     GLOBAL_NAME,
+    Scope,
     data_home,
     db_path,
     find_config,
@@ -102,13 +103,17 @@ def _sources(
     return notes, values
 
 
-def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
-    """The config check, and the business name to look for a database under (if any)."""
+def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]:
+    """The config check, business name to inspect, and resolved Scope (if valid)."""
     notes, values = _sources(env)
     try:
         scope = resolve_scope(env=env)
     except ConfigError as exc:
-        return Check("config", "FAIL", exc.message, notes), _valid_business(values["business"])
+        return (
+            Check("config", "FAIL", exc.message, notes),
+            _valid_business(values["business"]),
+            None,
+        )
     notes.append(f"token budget: {scope.token_budget}")
     mode = "required (proposal queue)" if scope.require_approval else "write-then-undo (immediate)"
     notes.append(f"approval mode: {mode}")
@@ -116,14 +121,10 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
     if emb.provider == "none":
         notes.append("embeddings: none (FTS5 only)")
     else:
-        from ingatan.search.embed import effective_model, local_runtime_available
+        from ingatan.search.embed import effective_model
 
         model_name = effective_model(emb)
-        if emb.provider == "local" and not local_runtime_available():
-            notes.append(
-                f"embeddings: local ({model_name}; fastembed not installed, using FTS5 fallback)"
-            )
-        elif emb.provider == "local":
+        if emb.provider == "local":
             idle_label = (
                 f"idle unload {emb.idle_unload_seconds}s"
                 if emb.idle_unload_seconds > 0
@@ -134,7 +135,34 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
             notes.append(f"embeddings: {emb.provider} ({model_name})")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
-    return Check("config", "pass", detail, notes), scope.business
+    return Check("config", "pass", detail, notes), scope.business, scope
+
+
+def _check_embeddings(scope: Scope | None, *, probe: bool = True) -> Check:
+    """Verify the configured embedding provider by embedding one short test sentence."""
+    if scope is None:
+        return Check("embeddings", "skip", "no valid config (see config)")
+    emb = scope.embeddings
+    if emb.provider == "none":
+        return Check("embeddings", "pass", "none (FTS5 only)")
+    from ingatan.search.embed import effective_model, probe_embedding
+
+    model_name = effective_model(emb)
+    if not probe:
+        return Check("embeddings", "pass", f"{emb.provider} ({model_name}; probe skipped)")
+    try:
+        dims = probe_embedding(emb)
+    except IngatanError as exc:
+        return Check(
+            "embeddings",
+            "FAIL",
+            exc.message,
+            [
+                "Recall will fall back to FTS5 only until this is resolved "
+                "(or set [embeddings] provider = 'none' / INGATAN_EMBED_PROVIDER=none)."
+            ],
+        )
+    return Check("embeddings", "pass", f"{emb.provider} ({model_name}, {dims} dims; probe OK)")
 
 
 def _valid_business(name: str | None) -> str | None:
@@ -202,7 +230,12 @@ def _check_tokens(home: Path) -> Check:
     return Check("tokens", "pass", f"{count} HTTP access token(s) in {tokens.tokens_path(home)}")
 
 
-def run_checks(*, business: str | None = None, agent: str | None = None) -> list[Check]:
+def run_checks(
+    *,
+    business: str | None = None,
+    agent: str | None = None,
+    probe_embeddings: bool = True,
+) -> list[Check]:
     env = dict(os.environ)
     if business is not None:
         env["INGATAN_BUSINESS"] = business
@@ -232,8 +265,9 @@ def run_checks(*, business: str | None = None, agent: str | None = None) -> list
             "It needs SQLite 3.42 or newer, and `forget` relies on it.",
         ),
     ]
-    config, resolved_business = _check_config(env)
+    config, resolved_business, scope = _check_config(env)
     checks.append(config)
+    checks.append(_check_embeddings(scope, probe=probe_embeddings))
     home = data_home(env)
     if resolved_business is not None:
         checks.append(_check_database(resolved_business, db_path(home, resolved_business)))

@@ -40,6 +40,7 @@ def test_a_healthy_setup_passes_every_check_and_exits_zero(invoke: Invoke, healt
         "trigram",
         "fts secure-delete",
         "config",
+        "embeddings",
         "database tokoku",
         "database global",
         "data folder",

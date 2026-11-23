@@ -314,7 +314,7 @@ Eval berisi 43 skenario berbahasa Indonesia (40 berbasis pola + 3 skenario insid
 | recall@5 | 100,0% dari 48 pemeriksaan | di atas 80% |
 | Stale rate | 0,0% dari 66 pemeriksaan recall | di bawah 5% |
 | Leak rate | 0,0% (0 dari 91 hasil) | 0 |
-| Token per brief | rata-rata 64, maksimum 258 dari 20 brief | sekitar 1.000 |
+| Token per brief | rata-rata 65, maksimum 261 dari 20 brief | sekitar 1.000 |
 
 Pemakaian memori satu proses server stdio: 70,2 MB saat diam dan 73,6 MB setelah 500 fakta disimpan. Diukur sekali, di satu laptop Windows 11, Python 3.11.16, mcp 2.3.0.
 
@@ -653,7 +653,7 @@ The eval contains 43 scenarios in Indonesian (40 pattern-based + 3 anonymized in
 | recall@5 | 100.0% over 48 checks | over 80% |
 | Stale rate | 0.0% over 66 recall checks | under 5% |
 | Leak rate | 0.0% (0 of 91 results) | 0 |
-| Tokens per brief | mean 64, max 258 over 20 briefs | about 1,000 |
+| Tokens per brief | mean 65, max 261 over 20 briefs | about 1,000 |
 
 Memory use of one stdio server process: 70.2 MB idle and 73.6 MB after 500 facts were saved. Measured once, on one Windows 11 laptop, Python 3.11.16, mcp 2.3.0.
 

@@ -249,9 +249,23 @@ def init(
 
 
 @app.command()
-def doctor(business: BusinessOption = None, agent: AgentOption = None) -> None:
-    """Check Python, SQLite features, the resolved config and the databases."""
-    checks = doctor_checks.run_checks(business=_pick_business(business), agent=agent)
+def doctor(
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+    probe_embeddings: Annotated[
+        bool,
+        typer.Option(
+            "--probe-embeddings/--no-probe-embeddings",
+            help="Test embedding one short sentence when embeddings are enabled.",
+        ),
+    ] = True,
+) -> None:
+    """Check Python, SQLite features, config, embeddings, and the databases."""
+    checks = doctor_checks.run_checks(
+        business=_pick_business(business),
+        agent=agent,
+        probe_embeddings=probe_embeddings,
+    )
     typer.echo(doctor_checks.render(checks))
     if any(check.failed for check in checks):
         raise typer.Exit(1)
@@ -722,6 +736,10 @@ def reindex(
         f"notes indexed={report.notes_indexed} skipped={report.notes_skipped}"
         + (f", errors={report.errors}" if report.errors else "")
     )
+    if report.errors > 0:
+        if report.last_error:
+            typer.echo(f"ingatan: embedding error: {report.last_error}", err=True)
+        raise typer.Exit(1)
 
 
 @alias_app.command("add")

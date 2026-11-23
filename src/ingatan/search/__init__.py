@@ -18,7 +18,13 @@ from ingatan.search.core import (
     similar_facts,
     status_of,
 )
-from ingatan.search.embed import ReindexReport, reindex, unload_local_models
+from ingatan.search.embed import (
+    ReindexReport,
+    last_embed_error,
+    probe_embedding,
+    reindex,
+    unload_local_models,
+)
 
 __all__ = [
     "CATEGORIES",
@@ -29,7 +35,9 @@ __all__ = [
     "add_alias",
     "expand_query_with_aliases",
     "is_valid_sql",
+    "last_embed_error",
     "list_aliases",
+    "probe_embedding",
     "recall",
     "reindex",
     "remove_alias",

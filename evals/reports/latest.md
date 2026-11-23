@@ -11,7 +11,7 @@ Network attempts during the run: 0
 | recall@5 | 100.0% (48 checks) | over 80% |
 | stale rate | 0.0% (66 recall checks) | under 5% |
 | leak rate | 0.0% (0 of 91 results) | 0 |
-| tokens per brief | mean 64, max 258 (20 briefs) | about 1,000 |
+| tokens per brief | mean 65, max 261 (20 briefs) | about 1,000 |
 
 Definitions are in `evals/README.md`.
 
@@ -73,7 +73,7 @@ None.
 | brief-01-check-first-terpisah | tokoku/asisten | 137 | 1000 |
 | brief-02-confirm-keluar-dari-check-first | tokoku/asisten | 95 | 1000 |
 | brief-02-confirm-keluar-dari-check-first | tokoku/asisten | 45 | 1000 |
-| brief-03-anggaran-token-dan-pemangkasan | tokoku/asisten | 258 | 300 |
+| brief-03-anggaran-token-dan-pemangkasan | tokoku/asisten | 261 | 300 |
 | brief-04-urutan-bagian-global-bisnis-agen | tokoku/seo-agent | 99 | 1000 |
 | brief-incident-01-fakta-stabil-prioritas-cold-start | proyekku/asisten | 75 | 120 |
 | forget-01-fakta-agen-sendiri | tokoku/asisten | 19 | 1000 |

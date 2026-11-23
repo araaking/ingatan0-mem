@@ -37,6 +37,7 @@ from typing import Any, TypeVar
 
 from ingatan import timeutil
 from ingatan.db import transaction
+from ingatan.errors import IngatanError
 from ingatan.scope import Context, EmbeddingConfig
 
 try:
@@ -55,8 +56,10 @@ __all__ = [
     "embed_batch",
     "embed_text",
     "is_enabled",
+    "last_embed_error",
     "local_runtime_available",
     "pack_vector",
+    "probe_embedding",
     "reindex",
     "score_blobs",
     "semantic_fact_scores",
@@ -96,11 +99,38 @@ _QUERY_CACHE_MAX = 128
 
 _K = TypeVar("_K")
 
+# Models not in fastembed's built-in catalog, registered automatically via add_custom_model.
+_CUSTOM_LOCAL_MODELS: dict[str, dict[str, Any]] = {
+    "intfloat/multilingual-e5-small": {
+        "model": "intfloat/multilingual-e5-small",
+        "hf": "intfloat/multilingual-e5-small",
+        "model_file": "onnx/model.onnx",
+        "dim": 384,
+        "size_in_gb": 0.47,
+        "license": "mit",
+        "description": (
+            "Multilingual E5 small (100+ languages, 384 dims, mean pooling, L2 normalized)."
+        ),
+    },
+    "xenova/multilingual-e5-small": {
+        "model": "Xenova/multilingual-e5-small",
+        "hf": "Xenova/multilingual-e5-small",
+        "model_file": "onnx/model_quantized.onnx",
+        "dim": 384,
+        "size_in_gb": 0.12,
+        "license": "mit",
+        "description": (
+            "Quantized int8 Multilingual E5 small (100+ languages, 384 dims, mean pooling)."
+        ),
+    },
+}
+
 _local_lock = threading.Lock()
 _local_models: dict[tuple[str, int], Any] = {}
 _local_last_used: dict[tuple[str, int], float] = {}
 _local_timers: dict[tuple[str, int], threading.Timer] = {}
 _query_cache: OrderedDict[tuple[int, str, str, str], list[float]] = OrderedDict()
+_last_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -111,6 +141,19 @@ class ReindexReport:
     notes_indexed: int
     notes_skipped: int
     errors: int
+    last_error: str = ""
+
+
+def last_embed_error() -> str:
+    """Most recent embedding failure message (empty if the last call succeeded)."""
+    with _local_lock:
+        return _last_error
+
+
+def _set_last_error(message: str) -> None:
+    global _last_error
+    with _local_lock:
+        _last_error = message
 
 
 def is_enabled(cfg: EmbeddingConfig) -> bool:
@@ -278,12 +321,51 @@ def unload_local_models() -> int:
     return count
 
 
+def _ensure_custom_local_model(text_embedding_cls: Any, model_name: str) -> None:
+    """Register known models absent from fastembed's built-in list via `add_custom_model`."""
+    spec = _CUSTOM_LOCAL_MODELS.get(model_name.casefold())
+    if spec is None or not hasattr(text_embedding_cls, "add_custom_model"):
+        return
+    try:
+        supported = {
+            str(m.get("model", "")).casefold()
+            for m in text_embedding_cls.list_supported_models()
+            if isinstance(m, dict)
+        }
+    except Exception:
+        supported = set()
+    if spec["model"].casefold() in supported:
+        return
+    from fastembed.common.model_description import (  # type: ignore[import-not-found]
+        ModelSource,
+        PoolingType,
+    )
+
+    try:
+        text_embedding_cls.add_custom_model(
+            model=spec["model"],
+            pooling=PoolingType.MEAN,
+            normalization=True,
+            sources=ModelSource(hf=spec["hf"]),
+            dim=int(spec["dim"]),
+            model_file=spec["model_file"],
+            description=spec["description"],
+            license=spec["license"],
+            size_in_gb=float(spec["size_in_gb"]),
+        )
+    except ValueError as exc:
+        if "already registered" not in str(exc).casefold():
+            raise
+
+
 def _get_local_model(model_name: str, *, threads: int = 2, idle_unload_seconds: int = 300) -> Any:
     key = (model_name, max(1, threads))
     with _local_lock:
         found = _local_models.get(key)
         if found is None:
             from fastembed import TextEmbedding  # type: ignore[import-not-found]
+
+            _ensure_custom_local_model(TextEmbedding, model_name)
 
             # Evict stale thread-count instances of the same model before loading.
             for existing_key in [k for k in _local_models if k[0] == model_name]:
@@ -446,10 +528,13 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
         ValueError,
         urllib.error.URLError,
         RuntimeError,
-    ):
+    ) as exc:
+        _set_last_error(f"{type(exc).__name__}: {exc}")
         return None
     if not vec:
+        _set_last_error(f"Provider '{cfg.provider}' returned an empty embedding vector.")
         return None
+    _set_last_error("")
     if is_query:
         with _local_lock:
             _query_cache[cache_key] = list(vec)
@@ -457,6 +542,27 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
             while len(_query_cache) > _QUERY_CACHE_MAX:
                 _query_cache.popitem(last=False)
     return vec
+
+
+def probe_embedding(cfg: EmbeddingConfig) -> int:
+    """Embed one test sentence and return its vector dimensions, or raise `IngatanError`."""
+    if not is_enabled(cfg):
+        return 0
+    model_name = effective_model(cfg)
+    try:
+        vec = _embed_raw(cfg, "ingatan embedding health check", is_query=True)
+    except Exception as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        _set_last_error(msg)
+        raise IngatanError(
+            f"Embedding probe failed for {cfg.provider} ({model_name}): {msg}"
+        ) from exc
+    if not vec:
+        msg = f"Provider '{cfg.provider}' ({model_name}) returned an empty embedding vector."
+        _set_last_error(msg)
+        raise IngatanError(msg)
+    _set_last_error("")
+    return len(vec)
 
 
 def embed_batch(
@@ -470,9 +576,12 @@ def embed_batch(
     model_name = effective_model(cfg)
     if cfg.provider == "local" and model_name and _embed_raw is _DEFAULT_EMBED_RAW:
         try:
-            return _embed_local_batch(cfg, model_name, texts, is_query=is_query)
-        except (ImportError, OSError, ValueError, RuntimeError):
+            vecs = _embed_local_batch(cfg, model_name, texts, is_query=is_query)
+        except (ImportError, OSError, ValueError, RuntimeError) as exc:
+            _set_last_error(f"{type(exc).__name__}: {exc}")
             return [None for _ in texts]
+        _set_last_error("")
+        return vecs
     return [embed_text(cfg, t, is_query=is_query) for t in texts]
 
 
@@ -652,8 +761,10 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
     if not is_enabled(cfg) or not model:
         return ReindexReport("", 0, 0, 0, 0, 0)
 
+    _set_last_error("")
     now = timeutil.iso(timeutil.now())
     facts_indexed = facts_skipped = notes_indexed = notes_skipped = errors = 0
+    error_reason = ""
     valid_clause = (
         "(valid_from <= :now AND (valid_to IS NULL OR valid_to > :now) AND superseded_by IS NULL)"
     )
@@ -685,6 +796,8 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
                     blob = pack_vector(vec) if vec else b""
                     if not blob or not vec:
                         errors += 1
+                        if not error_reason:
+                            error_reason = last_embed_error()
                         continue
                     conn.execute(
                         "INSERT INTO fact_embeddings (fact_id, model, dims, vec, updated_at) "
@@ -738,4 +851,5 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
         notes_indexed=notes_indexed,
         notes_skipped=notes_skipped,
         errors=errors,
+        last_error=error_reason or last_embed_error() if errors else "",
     )

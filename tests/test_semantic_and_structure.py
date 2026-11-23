@@ -932,3 +932,89 @@ def test_http_app_reloads_scope_on_config_change_and_evicts_revoked(
             assert http_app._servers == {}
 
     asyncio.run(exercise())
+
+
+def test_custom_e5_small_registration_doctor_probe_and_reindex_exit_code(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    import types
+
+    # 1. Verify _ensure_custom_local_model registers intfloat/multilingual-e5-small idempotently
+    registered: list[dict[str, Any]] = []
+
+    class FakeTextEmbedding:
+        @classmethod
+        def list_supported_models(cls) -> list[dict[str, Any]]:
+            return [{"model": m["model"]} for m in registered]
+
+        @classmethod
+        def add_custom_model(cls, **kwargs: Any) -> None:
+            registered.append(kwargs)
+
+    fake_md = types.ModuleType("fastembed.common.model_description")
+    fake_md.PoolingType = types.SimpleNamespace(MEAN="MEAN")  # type: ignore[attr-defined]
+    fake_md.ModelSource = lambda **kw: kw  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fastembed", types.ModuleType("fastembed"))
+    monkeypatch.setitem(sys.modules, "fastembed.common", types.ModuleType("fastembed.common"))
+    monkeypatch.setitem(sys.modules, "fastembed.common.model_description", fake_md)
+
+    embed_store._ensure_custom_local_model(FakeTextEmbedding, "intfloat/multilingual-e5-small")
+    embed_store._ensure_custom_local_model(FakeTextEmbedding, "intfloat/multilingual-e5-small")
+    assert len(registered) == 1
+    assert registered[0]["model"] == "intfloat/multilingual-e5-small"
+    assert registered[0]["dim"] == 384
+    assert registered[0]["model_file"] == "onnx/model.onnx"
+    assert registered[0]["normalization"] is True
+    assert registered[0]["sources"] == {"hf": "intfloat/multilingual-e5-small"}
+
+    # 2. Initialize a business with 1 fact, then test doctor probe & reindex error handling
+    assert (
+        runner.invoke(app, ["init", "--business", "tokoku", "--agent", "claude-code"]).exit_code
+        == 0
+    )
+    ctx = open_context(
+        Scope(
+            business="tokoku",
+            agent="claude-code",
+            home=ingatan_home,
+            embeddings=EmbeddingConfig(provider="none"),
+        )
+    )
+    try:
+        facts.remember(ctx, "Tarif paket pro Rp 49.000.", keywords=["tarif"], tier="business")
+    finally:
+        ctx.close()
+
+    # Enable local embeddings and force _embed_raw to fail
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+
+    def failing_embed(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        raise ValueError("Model unsupported in runtime")
+
+    monkeypatch.setattr(embed_store, "_embed_raw", failing_embed)
+
+    # Doctor must FAIL with exit code 1 and surface the real error
+    res_doc_fail = runner.invoke(app, ["doctor", "--business", "tokoku"])
+    assert res_doc_fail.exit_code == 1
+    assert "[FAIL] embeddings:" in res_doc_fail.stdout
+    assert "Model unsupported in runtime" in res_doc_fail.stdout
+
+    # Reindex must exit 1 and report the embedding error clearly (not silent exit 0!)
+    res_re_fail = runner.invoke(app, ["reindex", "--business", "tokoku"])
+    assert res_re_fail.exit_code == 1
+    assert "errors=1" in res_re_fail.stdout
+    assert "Model unsupported in runtime" in res_re_fail.output
+
+    # Once embedder succeeds, both doctor probe and reindex exit 0
+    monkeypatch.setattr(
+        embed_store, "_embed_raw", lambda cfg, text, *, is_query: _unit(1.0, 0.0, 0.0)
+    )
+    res_doc_ok = runner.invoke(app, ["doctor", "--business", "tokoku"])
+    assert res_doc_ok.exit_code == 0
+    assert "[pass] embeddings: local (intfloat/multilingual-e5-small, 3 dims; probe OK)" in (
+        res_doc_ok.stdout
+    )
+    res_re_ok = runner.invoke(app, ["reindex", "--business", "tokoku"])
+    assert res_re_ok.exit_code == 0
+    assert "facts indexed=1" in res_re_ok.stdout
