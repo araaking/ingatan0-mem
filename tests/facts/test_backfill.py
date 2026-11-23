@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -416,3 +417,160 @@ def test_forget_during_the_late_check_leaves_no_pair_and_no_log_entry(
     assert [e for e in audit.entries(plain) if e.op == "conflict"] == []
     assert vectors(plain) == {old}
     assert queued(plain) == set()
+
+
+# ---- minor findings of the final review ---------------------------------------------------
+
+OTHER_MODEL = EmbeddingConfig(provider="local", model="intfloat/multilingual-e5-small")
+
+
+def stock(n: int) -> str:
+    return f"Stok barang nomor {n} tinggal sedikit."
+
+
+def test_a_pass_ends_between_batches_when_asked_to_stop(
+    plain: Context, embed_ctx: Context, model: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(embed, "REINDEX_BATCH_SIZE", 1)
+    for n in range(3):
+        save(plain, stock(n), entities=[f"barang {n}"])
+    report = backfill.fill_pending(embed_ctx, should_stop=lambda: len(model) >= 1)
+    assert report.embedded == 1
+    assert len(queued(embed_ctx)) == 2  # nothing is lost: the rest waits in the file
+
+
+def test_a_worker_told_to_stop_ends_and_does_not_run_beside_its_successor(
+    make_ctx: MakeContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    monkeypatch.setattr(embed, "REINDEX_BATCH_SIZE", 1)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        entered.set()
+        release.wait(5)
+        return [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(embed, "_embed_raw", slow)
+    backfill.start_worker()
+    try:
+        old = worker_threads()[0]
+        for n in range(3):
+            facts.remember(ctx, stock(n), entities=[f"barang {n}"])
+        assert entered.wait(3)
+        backfill.stop_worker(timeout=0.05)  # gives up waiting: the thread is inside the model
+        assert old.is_alive()
+        backfill.start_worker()
+        release.set()
+        old.join(3)
+        assert not old.is_alive(), "a stopped thread ends after the batch it was in"
+        assert len(worker_threads()) == 1
+        assert len(vectors(ctx)) + len(queued(ctx)) == 3
+    finally:
+        release.set()
+        backfill.stop_worker()
+
+
+def test_a_pass_that_fails_is_tried_again_without_another_notify(
+    make_ctx: MakeContext, model: list[str], monkeypatch: pytest.MonkeyPatch, worker: None
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    real = backfill.fill_pending
+    calls = 0
+
+    def locked_once(inner: Context, **kwargs: Any) -> backfill.FillReport:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(inner, **kwargs)
+
+    monkeypatch.setattr(backfill, "fill_pending", locked_once)
+    monkeypatch.setattr(backfill, "RETRY_SECONDS", 0.05, raising=False)
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])  # the only notify
+    assert wait_for(lambda: vectors(ctx) == {result.fact_id})
+    assert wait_for(lambda: backfill.last_worker_error() == "")
+
+
+def test_a_provider_that_answers_nothing_is_asked_again_without_another_notify(
+    make_ctx: MakeContext, monkeypatch: pytest.MonkeyPatch, worker: None
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    calls = 0
+
+    def down_once(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("the model process is still starting")
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed, "_embed_raw", down_once)
+    monkeypatch.setattr(backfill, "RETRY_SECONDS", 0.05, raising=False)
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])
+    assert wait_for(lambda: vectors(ctx) == {result.fact_id})
+
+
+def test_a_scope_that_keeps_failing_is_given_up_after_a_few_tries(
+    make_ctx: MakeContext, model: list[str], monkeypatch: pytest.MonkeyPatch, worker: None
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    calls = 0
+
+    def always_locked(inner: Context, **kwargs: Any) -> backfill.FillReport:
+        nonlocal calls
+        calls += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(backfill, "fill_pending", always_locked)
+    monkeypatch.setattr(backfill, "RETRY_SECONDS", 0.02, raising=False)
+    backfill.notify(ctx.scope)
+    tries = 1 + backfill.MAX_RETRIES
+    assert wait_for(lambda: calls == tries)
+    time.sleep(0.3)
+    assert calls == tries  # and then it waits for the next notify
+    assert "locked" in backfill.last_worker_error()
+    assert len(worker_threads()) == 1
+
+
+def test_the_late_check_sees_what_the_writer_of_the_fact_sees(
+    make_ctx: MakeContext, embed_ctx: Context, model: list[str]
+) -> None:
+    """Another agent's server does the fill; the check is the one `remember` would have run."""
+    writer = make_ctx(agent="hermes")
+    old = save(writer, OLD_RATE, queue=None)  # private to the writer
+    embed.store_fact_embedding(writer.business, old, OLD_RATE, EMBED, vector=[1.0, 0.0, 0.0])
+    new = save(writer, NEW_RATE, tier="business")
+    report = backfill.fill_pending(embed_ctx)
+    assert report.conflicts_opened == 1
+    as_writer = make_ctx(agent="hermes", embeddings=EMBED)
+    assert [{p.fact_a, p.fact_b} for p in open_conflicts(as_writer)] == [{old, new}]
+    entry = next(e for e in audit.entries(as_writer) if e.op == "conflict")
+    assert (entry.agent, entry.fact_id) == ("hermes", new)
+
+
+def test_the_late_check_does_not_pair_a_shared_fact_with_a_private_fact_of_the_filling_agent(
+    make_ctx: MakeContext, plain: Context, embed_ctx: Context, model: list[str]
+) -> None:
+    mine = save(plain, OLD_RATE, queue=None)  # private to the agent whose server fills
+    embed.store_fact_embedding(plain.business, mine, OLD_RATE, EMBED, vector=[1.0, 0.0, 0.0])
+    writer = make_ctx(agent="hermes")
+    save(writer, NEW_RATE, tier="business")
+    report = backfill.fill_pending(embed_ctx)
+    assert (report.embedded, report.conflicts_opened) == (1, 0)
+    assert plain.business.execute("SELECT count(*) FROM conflicts").fetchone()[0] == 0
+    assert [e for e in audit.entries(plain) if e.op == "conflict"] == []
+
+
+def test_a_vector_of_another_model_is_left_for_reindex(
+    plain: Context, embed_ctx: Context, model: list[str]
+) -> None:
+    """The catch-up gives a vector to a fact that has none. Replacing one is `reindex`."""
+    fact_id = save(plain, OLD_RATE, queue=None)
+    embed.store_fact_embedding(plain.business, fact_id, OLD_RATE, OTHER_MODEL, vector=[1.0, 0.0])
+    assert backfill.fill_pending(embed_ctx) == backfill.FillReport(0, 0, 0)
+    assert model == []
+    stored = plain.business.execute(
+        "SELECT model FROM fact_embeddings WHERE fact_id = ?", (fact_id,)
+    ).fetchone()
+    assert stored[0] == "intfloat/multilingual-e5-small"

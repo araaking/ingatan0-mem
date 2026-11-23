@@ -240,15 +240,27 @@ def _vector_notes(scope: Scope, model_name: str) -> list[str]:
         note = f"{missing} of {total} valid fact(s) have no vector for this model"
         if replaced:
             note += f" ({replaced} of them have one from another model)"
-        if scope.embeddings.defer:
-            notes.append(
-                note + ". With `defer` on, the server embeds them in the background; "
-                "`ingatan reindex` does it now. Until then those facts are found by words only."
+        bare = missing - replaced
+        until = " Until then those facts are found by words only."
+        if not scope.embeddings.defer:
+            note += ". Run `ingatan reindex`; until then those facts are found by words only."
+        elif not replaced:
+            note += (
+                ". With `defer` on, the server embeds them in the background; "
+                "`ingatan reindex` does it now." + until
+            )
+        elif bare:
+            note += (
+                f". With `defer` on, the server embeds the facts without any vector ({bare}) "
+                f"in the background. A vector of another model ({replaced}) is never replaced "
+                "that way: run `ingatan reindex`." + until
             )
         else:
-            notes.append(
-                note + ". Run `ingatan reindex`; until then those facts are found by words only."
+            note += (
+                ". A vector of another model is never replaced in the background, also with "
+                "`defer` on: run `ingatan reindex`." + until
             )
+        notes.append(note)
     if others:
         notes.append(
             f"{others} private fact(s) of other agents have no vector either. "

@@ -205,13 +205,26 @@ The rest of what is worth knowing:
 
 - `remember(check_conflicts=false)` is remembered too: such a fact gets its vector and no
   check.
-- A fact the server finds without a vector for any other reason (saved while the provider
-  was `none`, imported, the model changed) is embedded as well, so `ingatan reindex` is no
-  longer needed after switching `defer` on. Those facts get no conflict scan; that is still
-  `ingatan conflicts scan`. Mind what that means after a change of model: the next server
-  start embeds every valid fact again, without being asked, and with a paid provider that
-  is a bill. Two servers of one data folder that are configured for different models would
-  each redo the other's vectors on every pass: give them the same model.
+- A fact the server finds with no vector at all for any other reason (saved while the
+  provider was `none`, imported) is embedded as well, so `ingatan reindex` is no longer
+  needed after switching `defer` on. Those facts get no conflict scan; that is still
+  `ingatan conflicts scan`.
+- A fact that holds a vector of another model is left as it is. After a change of model
+  nothing is embedded again unasked (with a paid provider that would be a bill): `ingatan
+  reindex` replaces those vectors when you decide to, and `ingatan doctor` counts them.
+  Two servers of one data folder that are configured for different models each give the
+  facts they fill their own model's vector, and a search reads only vectors of its own
+  model: give them the same model.
+- The late conflict check looks with the eyes of the agent that wrote the fact, whichever
+  agent's server does the fill: it sees the writer's private facts and nobody else's, as the
+  check inside `remember` does.
+- A pass that fails as a whole (the database is locked, the provider gives no answer) is run
+  again 5 seconds later, at most three times. After that the rows wait for the next
+  `remember` or the next server start. A server that is shutting down ends its pass after
+  the batch it is in.
+- A queued `global` fact is filled by whichever server of the data folder gets to it first,
+  and its late check then compares it with that server's business and the global facts. A
+  contradicting fact in another business is found by `ingatan conflicts scan` there.
 - A process that runs no server (a CLI command) leaves the row queued. Nothing is lost: the
   fact is found by words in the meantime, and the next server start picks the row up.
 - A vector is stored only while its fact still exists. A `forget` that lands between the

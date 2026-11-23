@@ -352,6 +352,34 @@ def test_doctor_says_the_server_fills_missing_vectors_when_defer_is_on(
     assert "defer: on" in result.stdout
 
 
+def test_doctor_sends_vectors_of_another_model_to_reindex_even_with_defer_on(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+    monkeypatch.setenv("INGATAN_EMBED_DEFER", "1")
+    monkeypatch.setattr(doctor_module, "_local_setup_problem", lambda emb: None)
+
+    def notes() -> str:
+        result = invoke("doctor", "--no-probe-embeddings")
+        assert result.exit_code == 0, result.output
+        return " ".join(result.stdout.split())
+
+    # The server never replaces a vector of another model: with only such facts, it does
+    # nothing, and the note must not promise otherwise.
+    _add_fact(healthy, "f_switched", vector_of="some/older-model")
+    out = notes()
+    assert "1 of 1 valid fact(s) have no vector for this model" in out
+    assert "in the background" not in out.replace("never replaced in the background", "")
+    assert "never replaced in the background" in out
+    assert "run `ingatan reindex`" in out
+
+    _add_fact(healthy, "f_new")
+    out = notes()
+    assert "2 of 2 valid fact(s) have no vector for this model" in out
+    assert "the server embeds the facts without any vector (1) in the background" in out
+    assert "A vector of another model (1) is never replaced that way: run `ingatan reindex`" in out
+
+
 def test_doctor_reports_the_shared_model_process(
     invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch, ingatan_home: Path
 ) -> None:

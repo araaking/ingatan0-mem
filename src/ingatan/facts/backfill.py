@@ -7,9 +7,11 @@ have run with the vector in hand. A pair found this way is recorded like any oth
 a `conflict` log entry of its own, so it shows in `recall`, in `ingatan conflicts` and in
 the conflict report.
 
-Facts that lack a vector for another reason (saved while embeddings were off, imported, the
-model changed) are embedded as well, the way `ingatan reindex` does it: without a conflict
-scan, which stays the job of `ingatan conflicts scan`.
+Facts that have no vector at all for another reason (saved while embeddings were off,
+imported) are embedded as well, the way `ingatan reindex` does it: without a conflict scan,
+which stays the job of `ingatan conflicts scan`. A fact that holds a vector of another model
+is left as it is. Replacing vectors after a change of model is a decision, and with a paid
+provider a bill: that stays `ingatan reindex`.
 
 The model is never called inside a transaction, and a vector is stored only while its fact
 still exists, so a `forget` that lands between the model call and the write leaves nothing.
@@ -17,10 +19,12 @@ still exists, so a `forget` that lands between the model call and the write leav
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from ingatan import audit
@@ -41,6 +45,11 @@ __all__ = [
 ]
 
 WORKER_NAME = "ingatan-backfill"
+# A pass that failed as a whole (the database was locked, the provider gave no answer) is
+# run again this many seconds later, at most this many times. After that its rows wait in
+# the file for the next `notify` or the next server start.
+RETRY_SECONDS = 5.0
+MAX_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -77,17 +86,16 @@ def _drop_dead_rows(ctx: Context, conn: sqlite3.Connection) -> None:
         )
 
 
-def _batch(
-    ctx: Context, conn: sqlite3.Connection, model: str, size: int, skip: set[str]
-) -> list[sqlite3.Row]:
+def _batch(ctx: Context, conn: sqlite3.Connection, size: int, skip: set[str]) -> list[sqlite3.Row]:
     """The next facts to embed in this file: queued ones first, then any without a vector.
 
     Each row is a fact row plus `queued_check`: the queue's flag, or NULL for a fact that
-    was never queued.
+    was never queued. A fact that was never queued and holds a vector, of whatever model, is
+    not taken.
     """
     where = f"{is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')}"
     not_skipped = "f.id NOT IN (SELECT value FROM json_each(:skip))"
-    params = {"now": now_iso(), "model": model, "skip": json.dumps(sorted(skip)), **ctx.params}
+    params = {"now": now_iso(), "skip": json.dumps(sorted(skip)), **ctx.params}
     rows = conn.execute(
         "SELECT f.*, q.check_conflicts AS queued_check FROM embed_queue q "
         f"JOIN facts f ON f.id = q.fact_id WHERE {where} AND {not_skipped} "
@@ -97,8 +105,7 @@ def _batch(
     if len(rows) < size:
         rows += conn.execute(
             f"SELECT f.*, NULL AS queued_check FROM facts f WHERE {where} AND {not_skipped} "
-            "AND NOT EXISTS (SELECT 1 FROM fact_embeddings e "
-            "WHERE e.fact_id = f.id AND e.model = :model) "
+            "AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = f.id) "
             "AND NOT EXISTS (SELECT 1 FROM embed_queue q WHERE q.fact_id = f.id) "
             "ORDER BY f.seq ASC LIMIT :n",
             {**params, "n": size - len(rows)},
@@ -109,8 +116,14 @@ def _batch(
 def _late_conflicts(
     ctx: Context, conn: sqlite3.Connection, row: sqlite3.Row, vector: Sequence[float]
 ) -> int:
-    """Run the conflict check for a fact whose vector just arrived. Returns pairs opened."""
+    """Run the conflict check for a fact whose vector just arrived. Returns pairs opened.
+
+    It is the check `remember` would have run, so it looks with the eyes of the fact's
+    writer. The server that does the fill may belong to another agent: that agent's private
+    facts are no business of this fact, and the writer's own are.
+    """
     fact_id = str(row["id"])
+    ctx = Context(dataclasses.replace(ctx.scope, agent=str(row["agent"])), ctx.business, ctx.glob)
     hits = similar_facts(
         ctx,
         str(row["text"]),
@@ -148,12 +161,16 @@ def _late_conflicts(
     return len(added)
 
 
-def fill_pending(ctx: Context, *, limit: int | None = None) -> FillReport:
-    """Embed the facts this caller can see that have no vector of the current model.
+def fill_pending(
+    ctx: Context, *, limit: int | None = None, should_stop: Callable[[], bool] | None = None
+) -> FillReport:
+    """Embed the facts this caller can see that are owed a vector.
 
-    Queued facts come first, oldest first, and get their conflict check; then the rest.
-    `limit` caps how many facts one call takes on. A provider that answers nothing for a
-    whole batch ends the pass: the rows stay queued for the next one.
+    Queued facts come first, oldest first, and get their conflict check; then the facts
+    that have no vector at all. `limit` caps how many facts one call takes on. A provider
+    that answers nothing for a whole batch ends the pass: the rows stay queued for the next
+    one. `should_stop` is asked before every batch, and a true answer ends the pass the same
+    way.
     """
     cfg = ctx.scope.embeddings
     model = embed_store.effective_model(cfg)
@@ -165,10 +182,12 @@ def fill_pending(ctx: Context, *, limit: int | None = None) -> FillReport:
         _drop_dead_rows(ctx, conn)
         skip: set[str] = set()
         while budget is None or budget > 0:
+            if should_stop is not None and should_stop():
+                return FillReport(embedded, opened, errors)
             size = embed_store.REINDEX_BATCH_SIZE
             if budget is not None:
                 size = min(size, budget)
-            rows = _batch(ctx, conn, model, size, skip)
+            rows = _batch(ctx, conn, size, skip)
             if not rows:
                 break
             # The model runs before any write lock is taken, never inside one.
@@ -207,12 +226,55 @@ def fill_pending(ctx: Context, *, limit: int | None = None) -> FillReport:
 # thread that opened it, and runs `fill_pending`. A process without a worker (a CLI command,
 # a test) loses nothing: `notify` does nothing there, the queue row stays in the file, and
 # the next server to start picks it up.
+#
+# Each worker has its own stop flag and its own list of scopes. A thread that was told to
+# stop while it was inside a model call ends after that batch, whatever was started since:
+# it never works beside its successor.
+
+
+class _Worker:
+    def __init__(self) -> None:
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+        self.pending: set[Scope] = set()  # guarded by `_lock`
+        self.thread = threading.Thread(target=self._run, name=WORKER_NAME, daemon=True)
+
+    def _run(self) -> None:
+        global _last_error
+        tries: dict[Scope, int] = {}
+        retry_at: dict[Scope, float] = {}
+        while not self.stop.is_set():
+            due = min(retry_at.values(), default=None)
+            self.wake.wait(None if due is None else max(0.0, due - time.monotonic()))
+            self.wake.clear()
+            now = time.monotonic()
+            with _lock:
+                ready = self.pending | {scope for scope, at in retry_at.items() if at <= now}
+                self.pending.clear()
+            for scope in ready:
+                if self.stop.is_set():
+                    return
+                retry_at.pop(scope, None)
+                try:
+                    with open_context(scope) as ctx:
+                        report = fill_pending(ctx, should_stop=self.stop.is_set)
+                except Exception as exc:  # one bad scope must not end the worker
+                    message = f"{type(exc).__name__}: {exc}"
+                    failed = True
+                else:
+                    message = ""
+                    failed = report.embedded == 0 and report.errors > 0
+                if failed and tries.get(scope, 0) < MAX_RETRIES:
+                    tries[scope] = tries.get(scope, 0) + 1
+                    retry_at[scope] = time.monotonic() + RETRY_SECONDS
+                else:
+                    tries.pop(scope, None)
+                with _lock:
+                    _last_error = message
+
 
 _lock = threading.Lock()
-_wake = threading.Event()
-_stop = threading.Event()
-_pending: set[Scope] = set()
-_thread: threading.Thread | None = None
+_worker: _Worker | None = None
 _last_error = ""
 
 
@@ -225,59 +287,36 @@ def last_worker_error() -> str:
 def notify(scope: Scope) -> None:
     """Ask the worker to fill what `scope` can see. Does nothing when no worker runs."""
     with _lock:
-        if _thread is None or not _thread.is_alive():
+        worker = _worker
+        if worker is None or not worker.thread.is_alive():
             return
-        _pending.add(scope)
-    _wake.set()
+        worker.pending.add(scope)
+    worker.wake.set()
 
 
 def start_worker() -> None:
     """Start the worker thread of this process. Safe to call when it already runs."""
-    global _thread
+    global _worker
     with _lock:
-        if _thread is not None and _thread.is_alive():
+        if _worker is not None and _worker.thread.is_alive():
             return
-        _stop.clear()
-        _wake.clear()
-        _pending.clear()
-        _thread = threading.Thread(target=_run, name=WORKER_NAME, daemon=True)
-        _thread.start()
+        _worker = _Worker()
+        _worker.thread.start()
 
 
 def stop_worker(timeout: float = 2.0) -> None:
     """Ask the worker to end and wait up to `timeout` seconds for it.
 
-    A pass that is inside a model call finishes that call first. Whatever it did not reach
-    stays queued in the database.
+    A pass that is inside a model call finishes that call and the batch it belongs to, then
+    ends, also when the wait here was over sooner. Whatever it did not reach stays queued
+    in the database.
     """
-    global _thread
+    global _worker
     with _lock:
-        thread = _thread
-        _thread = None
-        _pending.clear()
-    if thread is None:
+        worker = _worker
+        _worker = None
+    if worker is None:
         return
-    _stop.set()
-    _wake.set()
-    thread.join(timeout)
-
-
-def _run() -> None:
-    global _last_error
-    while not _stop.is_set():
-        _wake.wait()
-        _wake.clear()
-        while not _stop.is_set():
-            with _lock:
-                if not _pending:
-                    break
-                scope = _pending.pop()
-            try:
-                with open_context(scope) as ctx:
-                    fill_pending(ctx)
-            except Exception as exc:  # one bad scope must not end the worker
-                message = f"{type(exc).__name__}: {exc}"
-            else:
-                message = ""
-            with _lock:
-                _last_error = message
+    worker.stop.set()
+    worker.wake.set()
+    worker.thread.join(timeout)
