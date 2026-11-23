@@ -1032,7 +1032,7 @@ def conflicts_review(
                 f"on. Pass --apply ACTION --all ({', '.join(review_logic.ACTIONS)})."
             )
         for_the_rest = apply
-        resolved = 0
+        resolved = failed = 0
         if for_the_rest is None:
             typer.echo(review_ui.MENU)
         for position, pair in enumerate(pairs, start=1):
@@ -1049,25 +1049,37 @@ def conflicts_review(
                     break
                 if answer.letter == "s":
                     continue
-                if answer.letter == "f":
+                if answer.letter != "f":
+                    action = review_ui.ANSWERS[answer.letter]
+                    if answer.for_all:
+                        for_the_rest = action
+            # One pair that cannot be changed (a fact that is not the caller's to replace,
+            # one that was closed a moment ago) is said and left open. The rest of the pass
+            # goes on: the pairs behind it have nothing to do with it.
+            try:
+                if action is None:
                     _review_forget(ctx, pair)
                     continue
-                action = review_ui.ANSWERS[answer.letter]
-                if answer.for_all:
-                    for_the_rest = action
-            outcome = review_logic.resolve_pair(ctx, pair, action)
-            if outcome.proposal_id is not None:
-                # Approval mode queues the change. The person at this terminal is the
-                # approver, so asking again in `proposals approve` would be asking twice.
-                proposals.approve(ctx, outcome.proposal_id)
-                typer.echo(f"  {outcome.message} Approved here.")
-            else:
-                typer.echo(f"  {outcome.message}")
+                outcome = review_logic.resolve_pair(ctx, pair, action)
+                if outcome.proposal_id is not None:
+                    # Approval mode queues the change. The person at this terminal is the
+                    # approver, so asking again in `proposals approve` would be asking twice.
+                    proposals.approve(ctx, outcome.proposal_id)
+                    typer.echo(f"  {outcome.message} Approved here.")
+                else:
+                    typer.echo(f"  {outcome.message}")
+            except IngatanError as exc:
+                failed += 1
+                typer.echo(f"  Not changed: {exc.message}")
+                continue
             if not outcome.message.startswith("Skipped"):
                 resolved += 1
         left = len(review_logic.open_pairs(ctx))
     typer.echo("")
     typer.echo(f"{resolved} pair(s) resolved, {left} still open.")
+    if failed:
+        typer.echo(f"ingatan: {failed} pair(s) could not be changed (see above).", err=True)
+        raise typer.Exit(1)
 
 
 # ---- reindex, alias, link, pin -------------------------------------------------------

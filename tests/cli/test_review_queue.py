@@ -9,6 +9,7 @@ import pytest
 from typer.testing import Result
 
 from ingatan import facts, proposals
+from ingatan.errors import IngatanError
 from ingatan.facts import review
 from ingatan.scope import Context
 
@@ -228,3 +229,48 @@ def test_review_with_nothing_open_says_so(invoke: Invoke, cli_ctx: Context) -> N
     result = invoke("conflicts", "review")
     assert result.exit_code == 0, result.output
     assert "No open conflicts." in result.output
+
+
+# ---- one pair that cannot be changed ------------------------------------------------------
+
+
+@pytest.fixture
+def first_pair_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first pair that is answered cannot be changed; the others can."""
+    real = review.resolve_pair
+    seen: list[int] = []
+
+    def flaky(ctx: Context, pair: review.OpenConflict, action: str) -> review.ReviewOutcome:
+        seen.append(pair.id)
+        if len(seen) == 1:
+            raise IngatanError("That fact belongs to another agent and cannot be replaced.")
+        return real(ctx, pair, action)
+
+    monkeypatch.setattr(review, "resolve_pair", flaky)
+
+
+def test_a_pair_that_cannot_be_changed_does_not_end_the_pass(
+    invoke: Invoke,
+    terminal: None,
+    cli_ctx: Context,
+    three_pairs: list[tuple[str, str]],
+    first_pair_fails: None,
+) -> None:
+    result = invoke("conflicts", "review", input="n\nn\nn\n")
+    assert "Not changed: That fact belongs to another agent" in result.output
+    assert "2 pair(s) resolved, 1 still open." in result.output
+    assert "1 pair(s) could not be changed" in result.output
+    assert result.exit_code == 1  # a script must be able to tell
+    (first_old, _), (roti_old, roti_new), (teh_old, teh_new) = three_pairs
+    assert superseded_by(cli_ctx, first_old) is None
+    assert superseded_by(cli_ctx, roti_old) == roti_new
+    assert superseded_by(cli_ctx, teh_old) == teh_new
+
+
+def test_apply_all_goes_on_after_a_pair_that_cannot_be_changed(
+    invoke: Invoke, cli_ctx: Context, three_pairs: list[tuple[str, str]], first_pair_fails: None
+) -> None:
+    result = invoke("conflicts", "review", "--apply", "keep_newer", "--all")
+    assert result.exit_code == 1, result.output
+    assert "2 pair(s) resolved, 1 still open." in result.output
+    assert len(review.open_pairs(cli_ctx)) == 1
