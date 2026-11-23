@@ -153,9 +153,7 @@ def test_an_agent_fact_cannot_be_superseded_by_a_proposal(approval_ctx: Context)
 
 
 @pytest.mark.parametrize("tier", ["business", "global"])
-def test_supersede_of_a_shared_fact_closes_immediately_by_default(
-    ctx: Context, tier: str
-) -> None:
+def test_supersede_of_a_shared_fact_closes_immediately_by_default(ctx: Context, tier: str) -> None:
     old = approved(ctx, "Jam buka 09.00", tier, keywords=["jam"])
     new = approved(ctx, "Jam buka 08.00", tier, keywords=["jam"])
     result = facts.supersede(ctx, old, new)

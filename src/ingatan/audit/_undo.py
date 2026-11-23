@@ -257,9 +257,7 @@ def _undo_approve(
                 ),
             )
             reopened = {"fact_id": target_id, **old}
-            reopened_conflicts = _reopen_pairs(
-                ctx, expected.get("resolved_conflicts"), "supersede"
-            )
+            reopened_conflicts = _reopen_pairs(ctx, expected.get("resolved_conflicts"), "supersede")
 
     retire_only = bool(after.get("retire_only"))
     if not retire_only:

@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from ingatan import episodes, facts, proposals
+from ingatan import episodes, facts
 from ingatan.scope import Context
 
 MakeContext = Callable[..., Context]

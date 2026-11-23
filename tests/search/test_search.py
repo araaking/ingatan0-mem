@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ingatan import facts, proposals, search, timeutil
+from ingatan import facts, search, timeutil
 from ingatan.scope import Context
 
 MakeContext = Callable[..., Context]
@@ -164,7 +164,7 @@ def test_entity_names_match_case_insensitively(ctx: Context) -> None:
 def test_newer_fact_wins_when_everything_else_is_equal(ctx: Context, frozen_clock: Any) -> None:
     older = rem(ctx, "Jadwal rapat mingguan", ["rapat"])
     frozen_clock.advance(days=3)
-    newer = rem(ctx, "Jadwal rapat mingguan", ["rapat"])
+    newer = rem(ctx, "Jadwal rapat mingguan", ["rapat"], dedup=False)
     assert ids(search.recall(ctx, "jadwal rapat")) == [newer, older]
 
 

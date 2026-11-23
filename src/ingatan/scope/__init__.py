@@ -24,12 +24,14 @@ else:  # pragma: no cover - exercised on Python 3.10 only
 __all__ = [
     "CONFIG_NAME",
     "DEFAULT_TOKEN_BUDGET",
+    "EMBED_PROVIDERS",
     "GLOBAL_NAME",
     "HOME_CONFIG_NAME",
     "NAME_PATTERN",
     "VISIBLE_SQL",
     "VISIBLE_SQL_GLOBAL",
     "Context",
+    "EmbeddingConfig",
     "Scope",
     "data_home",
     "db_path",
@@ -38,6 +40,7 @@ __all__ = [
     "load_home_config",
     "open_context",
     "parse_bool",
+    "parse_embeddings",
     "resolve_allowed_businesses",
     "resolve_scope",
     "validate_agent",
@@ -50,11 +53,21 @@ HOME_CONFIG_NAME = "config.toml"
 GLOBAL_NAME = "global"
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_TOKEN_BUDGET = 1000
+EMBED_PROVIDERS = ("none", "local", "ollama", "openai", "gemini")
 
 # WHERE clause for facts in the business file. Bind `:agent` to the caller's agent name.
 VISIBLE_SQL = "(tier = 'business' OR (tier = 'agent' AND agent = :agent))"
 # WHERE clause for the global file.
 VISIBLE_SQL_GLOBAL = "tier = 'global'"
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    provider: str = "none"
+    model: str = ""
+    api_base: str = ""
+    api_key_env: str = ""
+    timeout: float = 15.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,7 @@ class Scope:
     home: Path
     token_budget: int = DEFAULT_TOKEN_BUDGET
     require_approval: bool = False
+    embeddings: EmbeddingConfig = EmbeddingConfig()
 
 
 def _check_name(kind: str, value: object) -> str:
@@ -174,10 +188,55 @@ def _parse_approval(
     return False
 
 
+def parse_embeddings(
+    source: Mapping[str, str],
+    project_cfg: Mapping[str, Any],
+    home_cfg: Mapping[str, Any],
+) -> EmbeddingConfig:
+    """Resolve `[embeddings]` config: env > `.ingatan.toml` > `<home>/config.toml` > default."""
+    home_sec = home_cfg.get("embeddings")
+    proj_sec = project_cfg.get("embeddings")
+    merged: dict[str, Any] = {}
+    if isinstance(home_sec, dict):
+        merged.update(home_sec)  # pyright: ignore[reportUnknownArgumentType]
+    if isinstance(proj_sec, dict):
+        merged.update(proj_sec)  # pyright: ignore[reportUnknownArgumentType]
+
+    def pick_str(key: str, env_name: str) -> str:
+        from_env = (source.get(env_name) or "").strip()
+        if from_env:
+            return from_env
+        val = merged.get(key)
+        return val.strip() if isinstance(val, str) else ""
+
+    provider = (pick_str("provider", "INGATAN_EMBED_PROVIDER") or "none").casefold()
+    if provider not in EMBED_PROVIDERS:
+        raise ConfigError(
+            f"Unknown embeddings provider {provider!r}. Use one of: {', '.join(EMBED_PROVIDERS)}."
+        )
+    model = pick_str("model", "INGATAN_EMBED_MODEL")
+    api_base = pick_str("api_base", "INGATAN_EMBED_API_BASE")
+    api_key_env = pick_str("api_key_env", "INGATAN_EMBED_API_KEY_ENV")
+    raw_timeout = merged.get("timeout", 15.0)
+    if (
+        isinstance(raw_timeout, bool)
+        or not isinstance(raw_timeout, (int, float))
+        or raw_timeout <= 0
+    ):
+        raise ConfigError("[embeddings] timeout must be a positive number.")
+    return EmbeddingConfig(
+        provider=provider,
+        model=model,
+        api_base=api_base,
+        api_key_env=api_key_env,
+        timeout=float(raw_timeout),
+    )
+
+
 def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = None) -> Scope:
     """Business and agent from `INGATAN_BUSINESS` / `INGATAN_AGENT`, else `.ingatan.toml`,
     falling back to `<INGATAN_HOME>/config.toml` for defaults (`default_agent`, `token_budget`,
-    `require_approval`).
+    `require_approval`, `[embeddings]`).
 
     Each setting is resolved on its own: environment wins over `.ingatan.toml`, which wins over
     `<INGATAN_HOME>/config.toml`.
@@ -223,6 +282,7 @@ def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = Non
         budget = DEFAULT_TOKEN_BUDGET
 
     require_approval = _parse_approval(source, config, project_origin, home_cfg, home_origin)
+    embeddings = parse_embeddings(source, config, home_cfg)
 
     return Scope(
         business=validate_business(business),
@@ -230,6 +290,7 @@ def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = Non
         home=home,
         token_budget=budget,
         require_approval=require_approval,
+        embeddings=embeddings,
     )
 
 
@@ -275,7 +336,11 @@ def resolve_allowed_businesses(
 
     agent = (source.get("INGATAN_AGENT") or "").strip()
     if not agent:
-        for candidate in (config.get("agent"), home_cfg.get("default_agent"), home_cfg.get("agent")):
+        for candidate in (
+            config.get("agent"),
+            home_cfg.get("default_agent"),
+            home_cfg.get("agent"),
+        ):
             if isinstance(candidate, str) and candidate.strip():
                 agent = candidate.strip()
                 break

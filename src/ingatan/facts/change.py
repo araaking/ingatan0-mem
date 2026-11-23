@@ -101,7 +101,8 @@ def _close_old(
     now = now_iso()
     with transaction(ctx.business), transaction(conn):
         conn.execute(
-            "UPDATE facts SET valid_to = ?, superseded_by = ?, pending_proposal = NULL WHERE id = ?",
+            "UPDATE facts SET valid_to = ?, superseded_by = ?, pending_proposal = NULL "
+            "WHERE id = ?",
             (now, new_id, old["id"]),
         )
         resolved = resolve_conflicts(ctx, old["id"], "supersede")
@@ -164,7 +165,9 @@ def _queue_change(
                 # Already-approved shared fact: queue a retire-only proposal without duplicating.
                 content: dict[str, Any] = {
                     "retire_to": new_id,
-                    "text": f"Retire {old_id} in favour of existing {source_row['tier']} fact {new_id}",
+                    "text": (
+                        f"Retire {old_id} in favour of existing {source_row['tier']} fact {new_id}"
+                    ),
                 }
                 proposal_id = insert_proposal(
                     conn, ctx, tier=old["tier"], payload=content, similar=[], supersedes=old_id

@@ -101,7 +101,9 @@ def test_missing_keywords_are_auto_extracted_from_text_and_entities(
         entities=["Kasir Utama"],
     )
     assert result.fact_id is not None
-    row = ctx.business.execute("SELECT keywords FROM facts WHERE id = ?", (result.fact_id,)).fetchone()
+    row = ctx.business.execute(
+        "SELECT keywords FROM facts WHERE id = ?", (result.fact_id,)
+    ).fetchone()
     stored = json.loads(row["keywords"])
     assert stored
     assert "pelanggan" in stored or "bayar" in stored
@@ -162,9 +164,7 @@ def test_a_secret_is_absent_from_facts_and_log_tables(ctx: Context) -> None:
 
 
 @pytest.mark.parametrize("tier", ["business", "global"])
-def test_a_secret_is_absent_from_proposals_and_their_log(
-    approval_ctx: Context, tier: str
-) -> None:
+def test_a_secret_is_absent_from_proposals_and_their_log(approval_ctx: Context, tier: str) -> None:
     ctx = approval_ctx
     result = facts.remember(
         ctx, f"Token {SECRET}", keywords=["token", f"password={PASSWORD}"], tier=tier

@@ -110,9 +110,15 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
     except ConfigError as exc:
         return Check("config", "FAIL", exc.message, notes), _valid_business(values["business"])
     notes.append(f"token budget: {scope.token_budget}")
-    notes.append(
-        f"approval mode: {'required (proposal queue)' if scope.require_approval else 'write-then-undo (immediate)'}"
-    )
+    mode = "required (proposal queue)" if scope.require_approval else "write-then-undo (immediate)"
+    notes.append(f"approval mode: {mode}")
+    emb = scope.embeddings
+    if emb.provider == "none":
+        notes.append("embeddings: none (FTS5 only)")
+    else:
+        from ingatan.search.embed import effective_model
+
+        notes.append(f"embeddings: {emb.provider} ({effective_model(emb)})")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business
@@ -183,9 +189,7 @@ def _check_tokens(home: Path) -> Check:
     return Check("tokens", "pass", f"{count} HTTP access token(s) in {tokens.tokens_path(home)}")
 
 
-def run_checks(
-    *, business: str | None = None, agent: str | None = None
-) -> list[Check]:
+def run_checks(*, business: str | None = None, agent: str | None = None) -> list[Check]:
     env = dict(os.environ)
     if business is not None:
         env["INGATAN_BUSINESS"] = business

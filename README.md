@@ -7,8 +7,8 @@
 **Memory for AI agents that knows when to doubt itself.**<br>
 **Memori untuk agen AI yang tahu kapan harus meragukan dirinya sendiri.**
 
-A local MCP server backed by plain SQLite files. No LLM, no embedding model, no API key, no network.<br>
-Server MCP lokal di atas berkas SQLite biasa. Tanpa LLM, tanpa model embedding, tanpa API key, tanpa jaringan.
+A local MCP server backed by plain SQLite files. Zero-dependency FTS5 by default, with optional offline semantic vector search.<br>
+Server MCP lokal di atas berkas SQLite biasa. FTS5 tanpa dependensi secara bawaan, dengan pencarian semantik vektor offline opsional.
 
 <p>
 <img src="https://img.shields.io/badge/status-pre--release-b45309" alt="Status: pre-release">
@@ -85,8 +85,9 @@ Ingatan dibuat untuk orang yang memakai beberapa agen (asisten umum, agen SEO, a
 | | Yang dilakukan Ingatan |
 |---|---|
 | **Fakta punya tanggal tinjau** | Fakta `volatile` punya tanggal tinjau (bawaan 30 hari, bisa diatur per fakta). Setelah lewat, fakta itu tampil di bagian "check first", bukan sebagai kebenaran. |
-| **Tanpa LLM di server** | Pencarian memakai SQLite FTS5 (BM25 dan indeks trigram), kecocokan entitas, dan kebaruan, digabung dengan reciprocal rank fusion. Agen sendiri yang memberi keywords dan entitas saat menyimpan. |
-| **Paham imbuhan Indonesia** | Pelepas imbuhan ringan memperluas query, sehingga "dikirim" menemukan fakta yang tertulis "pengiriman". |
+| **Tanpa LLM di server (hybrid opsional)** | Pencarian bawaan memakai SQLite FTS5 (BM25 + trigram), kecocokan entitas, kamus alias proyek, dan kebaruan, digabung lewat RRF. Bila butuh pencarian berbasis makna lintas istilah, aktifkan `[embeddings]` (ONNX lokal offline lewat `ingatan[vector]`, Ollama, OpenAI, atau Gemini) — vektor disimpan langsung di berkas SQLite yang sama. |
+| **Paham imbuhan Indonesia & alias** | Pelepas imbuhan ringan memperluas query ("dikirim" -> "pengiriman"), ditambah kamus alias per proyek (`ingatan alias add LP "landing page"`) untuk ekspansi dua arah. |
+| **Kategori memori, pin, relasi, & time-travel** | Fakta mendukung kategori (`fact`, `rule`, `procedure`, `preference`), `pinned`, deduplikasi otomatis, relasi antar-fakta (`related_to`, `part_of`), serta pencarian historis `recall(..., as_of="YYYY-MM-DD")`. |
 | **Scope dikunci server** | Bisnis dan agen ditentukan dari berkas konfigurasi atau variabel lingkungan saat server menyala. Tidak ada tool yang menerima nama bisnis, dan tidak ada pencarian lintas bisnis. |
 | **Langsung simpan, bisa di-undo** | Bawaan memakai pola *write-then-undo* (fakta `business`/`global` langsung tersimpan dan selalu bisa dibatalkan lewat `ingatan undo`). Bila ingin antrean persetujuan manual, set `require_approval = true` di config. |
 | **Bisa diaudit dan dibatalkan** | Setiap perubahan masuk log append-only. Kamu bisa membaca, membandingkan, dan membatalkannya. |
@@ -112,6 +113,8 @@ Ingatan belum dirilis ke PyPI, jadi pasang secara editable dari hasil clone (aga
 
 ```bash
 uv tool install --editable /path/to/ingatan
+# Atau dengan pencarian semantik lokal offline (ONNX / fastembed):
+uv tool install --editable "/path/to/ingatan[vector]"
 ```
 
 Setelah rilis PyPI nanti, cukup satu perintah (saat ini **belum berfungsi**):
@@ -181,6 +184,11 @@ agent = "claude-code"
 
 [brief]
 token_budget = 1000
+
+# Opsional: aktifkan pencarian semantik hybrid (bawaan: provider = "none")
+# [embeddings]
+# provider = "local"   # none | local | ollama | openai | gemini
+# model = "intfloat/multilingual-e5-small"
 ```
 
 | Variabel lingkungan | Fungsi |
@@ -188,6 +196,8 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Menimpa `business` dari berkas konfigurasi |
 | `INGATAN_AGENT` | Menimpa `agent` dari berkas konfigurasi |
 | `INGATAN_HOME` | Folder data. Bawaan: `~/.ingatan/` |
+| `INGATAN_EMBED_PROVIDER` | Menimpa `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_MODEL` | Menimpa `[embeddings].model` |
 
 <a id="id-tool"></a>
 
@@ -196,8 +206,8 @@ token_budget = 1000
 | Tool | Fungsi |
 |---|---|
 | `brief()` | Ringkasan awal sesi dalam anggaran token (bawaan 1.000): fakta "check first", lalu fakta global, bisnis, dan agen, jumlah proposal yang menunggu, dan paling banyak tiga episode untuk dicerna. |
-| `recall(query)` | Fakta valid yang cocok, masing-masing dengan id, sumber, tanggal, dan status. Fakta yang sudah ditutup hanya muncul dengan `include_closed`. |
-| `remember(text, ...)` | Menyimpan fakta (`keywords` opsional — otomatis diekstrak jika kosong, tetapi sinonim/alias tetap disarankan). Mengembalikan fakta serupa yang berpotensi konflik. |
+| `recall(query)` | Fakta valid yang cocok (leksikal + alias + semantik opsional), mendukung `as_of` (time-travel), filter `category`, `include_related` (1-hop), `include_closed`, dan `compact`. |
+| `remember(text, ...)` | Menyimpan fakta (`keywords` opsional, `category`, `pinned`, `related_to`, deduplikasi otomatis `dedup=true`). Mengembalikan fakta serupa yang berpotensi konflik. |
 | `supersede(old, new)` | Menutup fakta lama dan menautkannya ke yang baru (langsung berlaku secara bawaan, atau jadi proposal jika `require_approval = true`). |
 | `confirm(id, reason)` | Menyatakan fakta yang diragukan masih benar dan memajukan tanggal tinjaunya. Alasan wajib dan dicatat. |
 | `forget(id)` | Menghapus isi fakta untuk selamanya. Agen hanya boleh menghapus tier `agent`; `business`/`global` lewat CLI. |
@@ -270,6 +280,10 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
+| `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
+| `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Mengelola kamus alias per proyek untuk ekspansi query dua arah |
+| `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Menautkan fakta yang saling melengkapi (juga menyelesaikan konflik terbuka di antara keduanya) |
+| `ingatan pin <fact_id>`, `unpin <fact_id>` | Menyematkan fakta agar diprioritaskan di `brief` dan `recall` |
 | `ingatan hook <event>` | Titik masuk hook Claude Code; selalu keluar dengan kode 0 |
 
 <a id="id-data"></a>
@@ -295,8 +309,8 @@ Eval berisi 43 skenario berbahasa Indonesia (40 berbasis pola + 3 skenario insid
 | Skenario | 43 dijalankan, 43 lulus | tidak ada |
 | recall@5 | 100,0% dari 48 pemeriksaan | di atas 80% |
 | Stale rate | 0,0% dari 66 pemeriksaan recall | di bawah 5% |
-| Leak rate | 0,0% (0 dari 90 hasil) | 0 |
-| Token per brief | rata-rata 64, maksimum 242 dari 20 brief | sekitar 1.000 |
+| Leak rate | 0,0% (0 dari 91 hasil) | 0 |
+| Token per brief | rata-rata 65, maksimum 259 dari 20 brief | sekitar 1.000 |
 
 Pemakaian memori satu proses server stdio: 70,2 MB saat diam dan 73,6 MB setelah 500 fakta disimpan. Diukur sekali, di satu laptop Windows 11, Python 3.11.16, mcp 2.3.0.
 
@@ -406,10 +420,11 @@ It is built for people who use several agents (a general assistant, an SEO agent
 | | What Ingatan does |
 |---|---|
 | **Facts carry a review date** | A `volatile` fact has a review date (30 days by default, settable per fact). Once it passes, the fact is shown under "check first" instead of as truth. |
-| **No LLM on the server** | Search uses SQLite FTS5 (BM25 and a trigram index), entity match and recency, fused by reciprocal rank. The agent supplies keywords and entities when it saves a fact. |
-| **Understands Indonesian affixes** | A small affix stripper widens the query, so "dikirim" finds a fact that says "pengiriman". |
-| **Scope fixed by the server** | The business and the agent come from a config file or environment variables at start-up. No tool takes a business name, and there is no cross-business search. |
-| **Sharing needs approval** | Writes to the `business` and `global` tiers stay proposals until you approve them in the terminal. |
+| **No LLM on the server (optional hybrid)** | Default search uses SQLite FTS5 (BM25 + trigram), entity match, project aliases, and recency fused via RRF. For cross-vocabulary semantic search, enable `[embeddings]` (offline local ONNX via `ingatan[vector]`, Ollama, OpenAI, or Gemini) — vectors live inside the same SQLite file. |
+| **Understands Indonesian affixes & aliases** | A lightweight affix stripper widens queries ("dikirim" -> "pengiriman"), paired with a project-scoped alias glossary (`ingatan alias add LP "landing page"`) for bidirectional expansion. |
+| **Memory categories, pinning, links & time-travel** | Facts support categories (`fact`, `rule`, `procedure`, `preference`), `pinned`, automatic deduplication, relation edges (`related_to`, `part_of`), and historical queries via `recall(..., as_of="YYYY-MM-DD")`. |
+| **Scope fixed by the server** | The business and the agent come from a config file or environment variables at start-up (or an explicit `allowed_businesses` allowlist in multi-business mode). No cross-business search. |
+| **Write-then-undo by default** | Shared writes apply immediately and stay undoable via `ingatan undo`; set `require_approval = true` for a manual CLI proposal queue. |
 | **Auditable and reversible** | Every change goes to an append-only log. You can read it, diff it and undo it. |
 | **Forget means gone** | `forget` removes a fact's content down to the bytes in the database file and its WAL file. |
 | **Secrets are redacted** | Text that looks like an API key, password or token is replaced with `[redacted]` before it is stored. |
@@ -433,6 +448,8 @@ Ingatan is not on PyPI yet, so install in editable mode from a checkout (so `git
 
 ```bash
 uv tool install --editable /path/to/ingatan
+# Or with offline local semantic search (ONNX / fastembed):
+uv tool install --editable "/path/to/ingatan[vector]"
 ```
 
 After the PyPI release it will be one command (this **does not work yet**):
@@ -502,6 +519,11 @@ agent = "claude-code"
 
 [brief]
 token_budget = 1000
+
+# Optional: enable hybrid semantic search (default: provider = "none")
+# [embeddings]
+# provider = "local"   # none | local | ollama | openai | gemini
+# model = "intfloat/multilingual-e5-small"
 ```
 
 | Environment variable | Purpose |
@@ -509,6 +531,8 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Overrides `business` from the config file |
 | `INGATAN_AGENT` | Overrides `agent` from the config file |
 | `INGATAN_HOME` | Data folder. Default: `~/.ingatan/` |
+| `INGATAN_EMBED_PROVIDER` | Overrides `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_MODEL` | Overrides `[embeddings].model` |
 
 <a id="en-tools"></a>
 
@@ -517,8 +541,8 @@ token_budget = 1000
 | Tool | What it does |
 |---|---|
 | `brief()` | Session-start summary within a token budget (default 1,000): "check first" facts, then global, business and agent facts, the number of proposals waiting, and up to three captured episodes to digest. |
-| `recall(query)` | Valid facts matching the query, each with id, source, date and status. Closed facts appear only with `include_closed`. |
-| `remember(text, ...)` | Saves a fact (`keywords` optional — auto-extracted if omitted, though synonyms/aliases are encouraged). Returns similar existing facts. |
+| `recall(query)` | Valid facts matching the query (lexical + aliases + optional semantic), supporting `as_of` (time-travel), `category` filter, `include_related` (1-hop), `include_closed`, and `compact`. |
+| `remember(text, ...)` | Saves a fact (`keywords` optional, `category`, `pinned`, `related_to`, automatic deduplication `dedup=true`). Returns similar existing facts. |
 | `supersede(old, new)` | Closes the old fact and links it to the new one (applied immediately by default, or queued as a proposal when `require_approval = true`). |
 | `confirm(id, reason)` | Says a doubtful fact is still true and moves its review date forward. A reason is required and logged. |
 | `forget(id)` | Deletes a fact's content for good. Agents can forget `agent`-tier facts only; `business`/`global` require the CLI. |
@@ -591,6 +615,10 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
+| `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
+| `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Manage project-scoped glossary aliases for bidirectional recall expansion |
+| `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Link complementary facts (also resolves open conflicts between them) |
+| `ingatan pin <fact_id>`, `unpin <fact_id>` | Pin a fact so it stays prioritized in `brief` and `recall` |
 | `ingatan hook <event>` | Claude Code hook entry point; always exits 0 |
 
 <a id="en-data"></a>
@@ -616,8 +644,8 @@ The eval contains 43 scenarios in Indonesian (40 pattern-based + 3 anonymized in
 | Scenarios | 43 run, 43 pass | none |
 | recall@5 | 100.0% over 48 checks | over 80% |
 | Stale rate | 0.0% over 66 recall checks | under 5% |
-| Leak rate | 0.0% (0 of 90 results) | 0 |
-| Tokens per brief | mean 64, max 242 over 20 briefs | about 1,000 |
+| Leak rate | 0.0% (0 of 91 results) | 0 |
+| Tokens per brief | mean 65, max 259 over 20 briefs | about 1,000 |
 
 Memory use of one stdio server process: 70.2 MB idle and 73.6 MB after 500 facts were saved. Measured once, on one Windows 11 laptop, Python 3.11.16, mcp 2.3.0.
 

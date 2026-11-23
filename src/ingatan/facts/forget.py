@@ -58,10 +58,12 @@ def forget(ctx: Context, fact_id: str, *, by_user: bool = False) -> None:
         ctx.business.execute(
             "DELETE FROM conflicts WHERE fact_a = ? OR fact_b = ?", (fact_id, fact_id)
         )
+        ctx.business.execute("DELETE FROM edges WHERE src_id = ? OR dst_id = ?", (fact_id, fact_id))
         episodes_gone = _delete_episodes(ctx, row, by_user)
     with transaction(conn):
         _scrub_proposals(conn, fact_id)
         audit.scrub(conn, fact_id)
+        conn.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (fact_id,))
         conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
         audit.write(
             conn,

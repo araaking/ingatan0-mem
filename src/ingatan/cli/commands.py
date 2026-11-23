@@ -20,7 +20,7 @@ from typing import Annotated, Any, TypeVar
 
 import typer
 
-from ingatan import __version__, audit, facts, proposals
+from ingatan import __version__, audit, facts, proposals, search
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
 from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
@@ -71,6 +71,13 @@ conflicts_app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 app.add_typer(conflicts_app, name="conflicts")
+alias_app = typer.Typer(
+    help="Manage project-scoped glossary aliases for bidirectional recall expansion.",
+    no_args_is_help=True,
+    add_completion=False,
+    pretty_exceptions_enable=False,
+)
+app.add_typer(alias_app, name="alias")
 
 AgentOption = Annotated[
     str | None,
@@ -504,7 +511,9 @@ def import_facts(
     ] = "business",
     scan: Annotated[
         bool,
-        typer.Option("--scan-conflicts", help="Scan for conflicts across imported facts at the end."),
+        typer.Option(
+            "--scan-conflicts", help="Scan for conflicts across imported facts at the end."
+        ),
     ] = False,
     check_conflicts: Annotated[
         bool,
@@ -527,8 +536,10 @@ def import_facts(
             if not text:
                 raise ValidationError(f"Record #{idx} has empty `text`.")
             src = rec.get("source")
-            source_dict: dict[str, Any] = dict(src) if isinstance(src, dict) else (
-                {"document": src} if isinstance(src, str) and src else {}
+            source_dict: dict[str, Any] = (
+                dict(src)
+                if isinstance(src, dict)
+                else ({"document": src} if isinstance(src, str) and src else {})
             )
             raw_date = rec.get("date") or source_dict.get("date")
             if isinstance(raw_date, str) and raw_date.strip():
@@ -543,10 +554,14 @@ def import_facts(
                 entities=rec.get("entities"),
                 tier=str(rec.get("tier") or default_tier),
                 kind=rec.get("kind"),
+                category=str(rec.get("category") or "fact"),
+                pinned=bool(rec.get("pinned", False)),
                 review_after=rec.get("review_after"),
                 source=source_dict or None,
                 valid_from=valid_from,
                 check_conflicts=check_conflicts and not scan,
+                related_to=rec.get("related_to"),
+                dedup=bool(rec.get("dedup", True)),
             )
             imported += 1
         typer.echo(f"Imported {imported} fact(s) into {ctx.scope.business}.")
@@ -598,6 +613,7 @@ def move(
             home=src_ctx.scope.home,
             token_budget=src_ctx.scope.token_budget,
             require_approval=False,
+            embeddings=src_ctx.scope.embeddings,
         )
         with open_context(dest_scope) as dst_ctx:
             saved = facts.remember(
@@ -607,14 +623,15 @@ def move(
                 entities=data["entities"],
                 tier=dest_tier,
                 kind=str(data["kind"]),
+                category=str(data.get("category") or "fact"),
+                pinned=bool(data.get("pinned", False)),
                 review_after=data["review_after"],
                 source=data["source"],
                 valid_from=str(data["valid_from"]),
+                dedup=False,
             )
         facts.forget(src_ctx, fact_id, by_user=True)
-    typer.echo(
-        f"Moved {fact_id} from {src_ctx.scope.business} to {dest_name} as {saved.fact_id}."
-    )
+    typer.echo(f"Moved {fact_id} from {src_ctx.scope.business} to {dest_name} as {saved.fact_id}.")
 
 
 @conflicts_app.callback()
@@ -661,7 +678,8 @@ def conflicts_scan(
         res = scan_conflicts(ctx, dry_run=dry_run)
         if dry_run:
             typer.echo(
-                f"Scanned {res.facts_scanned} fact(s): found {res.pairs_found} candidate pair(s) (dry run)."
+                f"Scanned {res.facts_scanned} fact(s): "
+                f"found {res.pairs_found} candidate pair(s) (dry run)."
             )
         else:
             typer.echo(
@@ -670,6 +688,152 @@ def conflicts_scan(
             )
         for a, b in res.pairs:
             typer.echo(f"  {a} <-> {b}")
+
+
+# ---- reindex, alias, link, pin -------------------------------------------------------
+
+
+@app.command()
+@cli_command
+def reindex(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force", help="Recompute embeddings even if already indexed for this model."
+        ),
+    ] = False,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Compute or refresh semantic embeddings for all valid facts and ingested notes."""
+    with _open(agent, business) as ctx:
+        provider = ctx.scope.embeddings.provider
+        if provider == "none":
+            typer.echo(
+                "Embeddings are disabled (provider = 'none'). "
+                "Enable [embeddings] in .ingatan.toml or ~/.ingatan/config.toml "
+                "(or set INGATAN_EMBED_PROVIDER) first."
+            )
+            return
+        report = search.reindex(ctx, force=force)
+    typer.echo(
+        f"Reindex ({provider} / {report.model}): "
+        f"facts indexed={report.facts_indexed} skipped={report.facts_skipped}, "
+        f"notes indexed={report.notes_indexed} skipped={report.notes_skipped}"
+        + (f", errors={report.errors}" if report.errors else "")
+    )
+
+
+@alias_app.command("add")
+@cli_command
+def alias_add(
+    term: Annotated[str, typer.Argument(help="Short alias, acronym, or local term (e.g. 'LP').")],
+    canonical: Annotated[str, typer.Argument(help="Canonical phrase (e.g. 'landing page').")],
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Register a project-scoped alias pair for bidirectional recall expansion."""
+    with _open(agent, business) as ctx:
+        t, c = search.add_alias(ctx, term, canonical)
+        typer.echo(f"Saved alias in {ctx.scope.business}: {t} <-> {c}")
+
+
+@alias_app.command("list")
+@cli_command
+def alias_list(business: BusinessOption = None, agent: AgentOption = None) -> None:
+    """List all glossary aliases in the configured business."""
+    with _open(agent, business) as ctx:
+        items = search.list_aliases(ctx)
+        if not items:
+            typer.echo("No aliases configured.")
+            return
+        for term, canonical in items:
+            typer.echo(f"{term}  <->  {canonical}")
+
+
+@alias_app.command("remove")
+@cli_command
+def alias_remove(
+    term: Annotated[str, typer.Argument(help="Alias term to remove.")],
+    canonical: Annotated[
+        str | None, typer.Argument(help="Optional specific canonical phrase to remove.")
+    ] = None,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Remove one or all alias mappings for a term."""
+    with _open(agent, business) as ctx:
+        removed = search.remove_alias(ctx, term, canonical)
+    if removed == 0:
+        typer.echo(f"No matching alias for '{term}'.")
+    else:
+        typer.echo(f"Removed {removed} alias mapping(s) for '{term}'.")
+
+
+@app.command()
+@cli_command
+def link(
+    src_id: Annotated[str, typer.Argument(help="Source fact id.")],
+    dst_id: Annotated[str, typer.Argument(help="Target fact id.")],
+    relation: Annotated[
+        str, typer.Option("--relation", "-r", help="Edge relation: related_to or part_of.")
+    ] = "related_to",
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Link two complementary facts (also resolves any open conflict between them)."""
+    with _open(agent, business) as ctx:
+        created = facts.link_facts(ctx, src_id, dst_id, relation=relation)
+    if created:
+        typer.echo(f"Linked {src_id} -[{relation}]-> {dst_id}.")
+    else:
+        typer.echo(f"Link already exists: {src_id} -[{relation}]-> {dst_id}.")
+
+
+@app.command()
+@cli_command
+def unlink(
+    src_id: Annotated[str, typer.Argument(help="Source fact id.")],
+    dst_id: Annotated[str, typer.Argument(help="Target fact id.")],
+    relation: Annotated[
+        str | None, typer.Option("--relation", "-r", help="Only remove this relation type.")
+    ] = None,
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Remove relation edges between two facts."""
+    with _open(agent, business) as ctx:
+        removed = facts.unlink_facts(ctx, src_id, dst_id, relation=relation)
+    if removed == 0:
+        typer.echo(f"No edge found between {src_id} and {dst_id}.")
+    else:
+        typer.echo(f"Removed {removed} edge(s) between {src_id} and {dst_id}.")
+
+
+@app.command()
+@cli_command
+def pin(
+    fact_id: Annotated[str, typer.Argument(help="Fact id to pin.")],
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Pin a fact so it stays prioritized in `brief` and boosted in `recall`."""
+    with _open(agent, business) as ctx:
+        facts.set_pinned(ctx, fact_id, True)
+    typer.echo(f"Pinned {fact_id}.")
+
+
+@app.command()
+@cli_command
+def unpin(
+    fact_id: Annotated[str, typer.Argument(help="Fact id to unpin.")],
+    business: BusinessOption = None,
+    agent: AgentOption = None,
+) -> None:
+    """Remove the pin from a fact."""
+    with _open(agent, business) as ctx:
+        facts.set_pinned(ctx, fact_id, False)
+    typer.echo(f"Unpinned {fact_id}.")
 
 
 def _log_hook_failure(event: str, exc: BaseException) -> None:

@@ -16,6 +16,7 @@ from ingatan.errors import NotFoundError
 from ingatan.ingest.markdown import split_sections
 from ingatan.redact import redact
 from ingatan.scope import Context
+from ingatan.search import embed as embed_store
 
 __all__ = ["IngestReport", "Skipped", "ingest_path"]
 
@@ -94,6 +95,11 @@ def ingest_path(ctx: Context, path: str | Path) -> IngestReport:
         sections = split_sections(content, file.name)
         now = timeutil.iso(timeutil.now())
         with transaction(ctx.business):
+            ctx.business.execute(
+                "DELETE FROM note_embeddings WHERE note_id IN "
+                "(SELECT id FROM notes WHERE path = ?)",
+                (stored,),
+            )
             removed = ctx.business.execute("DELETE FROM notes WHERE path = ?", (stored,)).rowcount
             for section in sections:
                 heading = redact(section.heading)
@@ -103,6 +109,10 @@ def ingest_path(ctx: Context, path: str | Path) -> IngestReport:
                     "VALUES (?, ?, ?, ?, ?)",
                     (stored, heading, text, digest, now),
                 ).lastrowid
+                if note_id is not None and embed_store.is_enabled(ctx.scope.embeddings):
+                    embed_store.store_note_embedding(
+                        ctx.business, int(note_id), heading, text, ctx.scope.embeddings
+                    )
                 audit.write(
                     ctx.business,
                     agent=ctx.scope.agent,

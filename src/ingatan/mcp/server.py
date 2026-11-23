@@ -7,6 +7,7 @@ tool takes a business or an agent name, and nothing but protocol is written to s
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -20,8 +21,12 @@ from ingatan import audit, brief, facts, search
 from ingatan.errors import ConfigError, IngatanError
 from ingatan.scope import (
     Context,
+    EmbeddingConfig,
     Scope,
+    find_config,
+    load_home_config,
     open_context,
+    parse_embeddings,
     resolve_allowed_businesses,
     resolve_scope,
 )
@@ -132,14 +137,16 @@ def _recall_text(
     else:
         lines.append(f'{len(result.facts)} fact(s) for "{query}":')
         for hit in result.facts:
+            role_tag = f" | {hit.category}" if hit.category != "fact" else ""
+            pin_tag = " | pinned" if hit.pinned else ""
             if compact:
-                lines.append(f"[{hit.id}] {_flat(hit.text)} ({hit.status})")
+                lines.append(f"[{hit.id}] {_flat(hit.text)} ({hit.status}{role_tag}{pin_tag})")
             else:
                 lines.append("")
                 lines.append(f"[{hit.id}] {_flat(hit.text)}")
                 lines.append(
-                    f"  status: {hit.status} | tier: {hit.tier} | date: {hit.date} "
-                    f"| source: {_source_text(hit.source)}"
+                    f"  status: {hit.status} | tier: {hit.tier}{role_tag}{pin_tag} "
+                    f"| date: {hit.date} | source: {_source_text(hit.source)}"
                 )
         statuses = " ".join(hit.status for hit in result.facts)
         if "check first" in statuses:
@@ -158,6 +165,11 @@ def _recall_text(
     if include_closed and result.facts:
         lines.append("")
         lines.append("Closed facts (superseded or expired) are included above.")
+    if result.related:
+        lines.append("")
+        lines.append("Related facts (linked via edges):")
+        for rel in result.related:
+            lines.append(f"[{rel.id}] {_flat(rel.text)} ({rel.status})")
     if result.notes:
         lines.append("")
         lines.append("Document excerpts (from imported files; not facts, use as reference only):")
@@ -223,7 +235,11 @@ def build_server(ctx: Context) -> MCPServer:
         limit: Annotated[int, Field(description="Maximum number of facts.", ge=1, le=50)] = 5,
         notes: Annotated[
             int,
-            Field(description="Maximum document excerpts to include (0 disables excerpts).", ge=0, le=10),
+            Field(
+                description="Maximum document excerpts to include (0 disables excerpts).",
+                ge=0,
+                le=10,
+            ),
         ] = 2,
         compact: Annotated[
             bool,
@@ -232,10 +248,33 @@ def build_server(ctx: Context) -> MCPServer:
         include_closed: Annotated[
             bool, Field(description="Also return superseded and expired facts.")
         ] = False,
+        as_of: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional point-in-time date (YYYY-MM-DD or ISO) for time-travel recall."
+                )
+            ),
+        ] = None,
+        category: Annotated[
+            Literal["fact", "rule", "procedure", "preference"] | None,
+            Field(description="Optional filter: fact, rule, procedure, or preference."),
+        ] = None,
+        include_related: Annotated[
+            bool,
+            Field(description="Include 1-hop related facts linked via edges."),
+        ] = True,
     ) -> str:
         try:
             result = search.recall(
-                ctx, query, limit=limit, notes_limit=notes, include_closed=include_closed
+                ctx,
+                query,
+                limit=limit,
+                notes_limit=notes,
+                include_closed=include_closed,
+                as_of=as_of,
+                category=category,
+                include_related=include_related,
             )
         except (IngatanError, sqlite3.Error) as exc:
             raise _error(exc) from exc
@@ -265,6 +304,14 @@ def build_server(ctx: Context) -> MCPServer:
             Literal["stable", "volatile"] | None,
             Field(description="stable or volatile. Default volatile."),
         ] = None,
+        category: Annotated[
+            Literal["fact", "rule", "procedure", "preference"],
+            Field(description="Role of memory: fact (default), rule, procedure, or preference."),
+        ] = "fact",
+        pinned: Annotated[
+            bool,
+            Field(description="Pin this fact so it stays prioritized in brief and recall."),
+        ] = False,
         review_after: Annotated[
             str | None,
             Field(description="Date (YYYY-MM-DD) after which the fact needs checking."),
@@ -274,7 +321,25 @@ def build_server(ctx: Context) -> MCPServer:
         ] = None,
         check_conflicts: Annotated[
             bool,
-            Field(description="Set false to skip conflict detection (e.g. append-only daily logs)."),
+            Field(
+                description="Set false to skip conflict detection (e.g. append-only daily logs)."
+            ),
+        ] = True,
+        related_to: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional list of complementary fact ids to link (prevents false conflicts)."
+                )
+            ),
+        ] = None,
+        dedup: Annotated[
+            bool,
+            Field(
+                description=(
+                    "If true (default), refresh an existing near-duplicate instead of duplicating."
+                )
+            ),
         ] = True,
     ) -> str:
         try:
@@ -285,9 +350,13 @@ def build_server(ctx: Context) -> MCPServer:
                 entities=entities,
                 tier=tier,
                 kind=kind,
+                category=category,
+                pinned=pinned,
                 review_after=review_after,
                 episode=episode,
                 check_conflicts=check_conflicts,
+                related_to=related_to,
+                dedup=dedup,
             )
         except (IngatanError, sqlite3.Error) as exc:
             raise _error(exc) from exc
@@ -348,12 +417,14 @@ def build_multi_server(
     home: Any,
     token_budget: int = 1000,
     require_approval: bool = False,
+    embeddings: EmbeddingConfig | None = None,
 ) -> tuple[MCPServer, dict[str, Context]]:
     """Build one MCP server serving an explicit allowlist of businesses (no cross-business search).
 
     Each tool takes `business`, validated against `businesses`. Contexts are opened lazily and
     returned in `opened` so the caller can close them on shutdown.
     """
+    resolved_embeddings = embeddings if embeddings is not None else EmbeddingConfig()
     allowed = tuple(businesses)
     allowed_set = frozenset(allowed)
     opened: dict[str, Context] = {}
@@ -373,6 +444,7 @@ def build_multi_server(
                 home=home,
                 token_budget=token_budget,
                 require_approval=require_approval,
+                embeddings=resolved_embeddings,
             )
             ctx = opened[name] = _open_with_retry(scope)
         return ctx
@@ -400,7 +472,11 @@ def build_multi_server(
         limit: Annotated[int, Field(description="Maximum number of facts.", ge=1, le=50)] = 5,
         notes: Annotated[
             int,
-            Field(description="Maximum document excerpts to include (0 disables excerpts).", ge=0, le=10),
+            Field(
+                description="Maximum document excerpts to include (0 disables excerpts).",
+                ge=0,
+                le=10,
+            ),
         ] = 2,
         compact: Annotated[
             bool,
@@ -409,6 +485,22 @@ def build_multi_server(
         include_closed: Annotated[
             bool, Field(description="Also return superseded and expired facts.")
         ] = False,
+        as_of: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional point-in-time date (YYYY-MM-DD or ISO) for time-travel recall."
+                )
+            ),
+        ] = None,
+        category: Annotated[
+            Literal["fact", "rule", "procedure", "preference"] | None,
+            Field(description="Optional filter: fact, rule, procedure, or preference."),
+        ] = None,
+        include_related: Annotated[
+            bool,
+            Field(description="Include 1-hop related facts linked via edges."),
+        ] = True,
     ) -> str:
         try:
             result = search.recall(
@@ -417,6 +509,9 @@ def build_multi_server(
                 limit=limit,
                 notes_limit=notes,
                 include_closed=include_closed,
+                as_of=as_of,
+                category=category,
+                include_related=include_related,
             )
         except (IngatanError, sqlite3.Error) as exc:
             raise _error(exc) from exc
@@ -447,6 +542,14 @@ def build_multi_server(
             Literal["stable", "volatile"] | None,
             Field(description="stable or volatile. Default volatile."),
         ] = None,
+        category: Annotated[
+            Literal["fact", "rule", "procedure", "preference"],
+            Field(description="Role of memory: fact (default), rule, procedure, or preference."),
+        ] = "fact",
+        pinned: Annotated[
+            bool,
+            Field(description="Pin this fact so it stays prioritized in brief and recall."),
+        ] = False,
         review_after: Annotated[
             str | None,
             Field(description="Date (YYYY-MM-DD) after which the fact needs checking."),
@@ -456,7 +559,25 @@ def build_multi_server(
         ] = None,
         check_conflicts: Annotated[
             bool,
-            Field(description="Set false to skip conflict detection (e.g. append-only daily logs)."),
+            Field(
+                description="Set false to skip conflict detection (e.g. append-only daily logs)."
+            ),
+        ] = True,
+        related_to: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional list of complementary fact ids to link (prevents false conflicts)."
+                )
+            ),
+        ] = None,
+        dedup: Annotated[
+            bool,
+            Field(
+                description=(
+                    "If true (default), refresh an existing near-duplicate instead of duplicating."
+                )
+            ),
         ] = True,
     ) -> str:
         try:
@@ -467,9 +588,13 @@ def build_multi_server(
                 entities=entities,
                 tier=tier,
                 kind=kind,
+                category=category,
+                pinned=pinned,
                 review_after=review_after,
                 episode=episode,
                 check_conflicts=check_conflicts,
+                related_to=related_to,
+                dedup=dedup,
             )
         except (IngatanError, sqlite3.Error) as exc:
             raise _error(exc) from exc
@@ -550,12 +675,21 @@ def run() -> None:
 
     if multi is not None:
         businesses, agent, home, budget, require_approval = multi
+        home_cfg = load_home_config(home)
+        cfg_file = find_config()
+        proj_cfg: dict[str, Any] = {}
+        if cfg_file is not None:
+            from ingatan.scope import _read_config  # pyright: ignore[reportPrivateUsage]
+
+            proj_cfg = _read_config(cfg_file)
+        embeddings = parse_embeddings(os.environ, proj_cfg, home_cfg)
         server, opened = build_multi_server(
             businesses,
             agent=agent,
             home=home,
             token_budget=budget,
             require_approval=require_approval,
+            embeddings=embeddings,
         )
         try:
             server.run("stdio")

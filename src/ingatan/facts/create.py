@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -17,19 +18,25 @@ from ingatan.facts._util import (
     DEFAULT_REVIEW_DAYS,
     clean_list,
     fact_dict,
+    loads_list,
     new_id,
     now_iso,
     record_conflicts,
 )
+from ingatan.facts.links import link_facts
 from ingatan.redact import redact
-from ingatan.scope import Context
-from ingatan.search import FactHit, similar_facts
+from ingatan.scope import Context, find_fact
+from ingatan.search import CATEGORIES, FactHit, is_valid_sql, similar_facts
+from ingatan.search import embed as embed_store
 from ingatan.search.stopwords import extract_auto_keywords
 
 __all__ = ["RememberResult", "create_fact", "insert_proposal", "remember"]
 
 TIERS = ("agent", "business", "global")
 KINDS = ("stable", "volatile")
+SEMANTIC_DEDUP_THRESHOLD = 0.94
+_NORM_WS = re.compile(r"\s+")
+_TRAIL_PUNCT = re.compile(r"[.!?,;:\s]+$")
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,8 @@ def create_fact(
             timeutil.now() + timedelta(days=interval)
         )
     valid_from = str(fields.get("valid_from") or now)
+    category = str(fields.get("category") or "fact")
+    pinned = 1 if fields.get("pinned") else 0
     row: dict[str, Any] = {
         "id": fact_id,
         "text": fields["text"],
@@ -69,6 +78,8 @@ def create_fact(
         "tier": fields["tier"],
         "agent": fields["agent"],
         "kind": kind,
+        "category": category,
+        "pinned": pinned,
         "valid_from": valid_from,
         "review_after": review_after,
         "review_interval_days": interval,
@@ -173,6 +184,111 @@ def _similar_view(hits: Sequence[FactHit]) -> list[dict[str, str]]:
     return [{"id": h.id, "text": h.text, "status": h.status} for h in hits]
 
 
+def _norm_text(text: str) -> str:
+    return _TRAIL_PUNCT.sub("", _NORM_WS.sub(" ", text).strip()).casefold()
+
+
+def _find_duplicate(
+    ctx: Context,
+    conn: sqlite3.Connection,
+    *,
+    tier: str,
+    category: str,
+    clean_text: str,
+    entities: list[str],
+    vector: list[float] | None,
+) -> sqlite3.Row | None:
+    """Return an existing open fact in the same tier/category that is a near-duplicate."""
+    now = now_iso()
+    norm_new = _norm_text(clean_text)
+    ent_set = {e.casefold() for e in entities}
+    where = f"tier = :tier AND category = :cat AND {is_valid_sql()} AND {ctx.visible_sql(conn)}"
+    params: dict[str, Any] = {"tier": tier, "cat": category, "now": now, **ctx.params}
+    if tier == "agent":
+        where += " AND agent = :agent"
+    rows = conn.execute(f"SELECT * FROM facts WHERE {where}", params).fetchall()
+    for row in rows:
+        row_ents = {e.casefold() for e in loads_list(str(row["entities"]))}
+        if _norm_text(str(row["text"])) == norm_new and row_ents == ent_set:
+            return row
+
+    if vector and len(clean_text.split()) >= 4 and embed_store.is_enabled(ctx.scope.embeddings):
+        model = embed_store.effective_model(ctx.scope.embeddings)
+        dims = len(vector)
+        best_row: sqlite3.Row | None = None
+        best_sim = SEMANTIC_DEDUP_THRESHOLD
+        emb_rows = conn.execute(
+            "SELECT f.*, e.dims AS _dims, e.vec AS _vec FROM fact_embeddings e "
+            "JOIN facts f ON f.id = e.fact_id "
+            f"WHERE e.model = :model AND e.dims = :dims AND f.tier = :tier "
+            f"AND f.category = :cat AND {is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')}",
+            {"model": model, "dims": dims, **params},
+        ).fetchall()
+        for row in emb_rows:
+            sim = embed_store.cosine_similarity(vector, row["_vec"], int(row["_dims"]))
+            if sim >= best_sim:
+                best_sim = sim
+                best_row = row
+        return best_row
+    return None
+
+
+def _refresh_duplicate(
+    ctx: Context,
+    conn: sqlite3.Connection,
+    existing: sqlite3.Row,
+    *,
+    keywords: list[str],
+    entities: list[str],
+    pinned: bool,
+    episode: int | None,
+) -> RememberResult:
+    """Refresh review_after & metadata on a near-duplicate fact instead of creating a second row."""
+    fact_id = str(existing["id"])
+    now = now_iso()
+    new_review = existing["review_after"]
+    if existing["kind"] == "volatile" and existing["review_interval_days"]:
+        new_review = timeutil.iso(
+            timeutil.now() + timedelta(days=int(existing["review_interval_days"]))
+        )
+    merged_kw = clean_list([*loads_list(str(existing["keywords"])), *keywords])
+    merged_ent = clean_list([*loads_list(str(existing["entities"])), *entities])
+    new_pinned = 1 if (pinned or existing["pinned"]) else 0
+    with transaction(ctx.business), transaction(conn):
+        conn.execute(
+            "UPDATE facts SET review_after = ?, last_used = ?, keywords = ?, entities = ?, "
+            "pinned = ? WHERE id = ?",
+            (
+                new_review,
+                now,
+                json.dumps(merged_kw, ensure_ascii=False),
+                json.dumps(merged_ent, ensure_ascii=False),
+                new_pinned,
+                fact_id,
+            ),
+        )
+        audit.write(
+            conn,
+            agent=ctx.scope.agent,
+            op="confirm",
+            fact_id=fact_id,
+            tier=str(existing["tier"]),
+            owner=str(existing["agent"]),
+            before={
+                "review_after": existing["review_after"],
+                "pending_proposal": existing["pending_proposal"],
+            },
+            after={
+                "review_after": new_review,
+                "pending_proposal": existing["pending_proposal"],
+                "reason": "dedup: refreshed existing near-duplicate fact",
+                "resolved_conflicts": [],
+            },
+        )
+        _mark_episode(ctx, episode)
+    return RememberResult(fact_id, None, [], f"Already remembered as {fact_id} (refreshed).")
+
+
 def remember(
     ctx: Context,
     text: str,
@@ -181,17 +297,25 @@ def remember(
     entities: Sequence[str] | None = None,
     tier: str = "agent",
     kind: str | None = None,
+    category: str = "fact",
+    pinned: bool = False,
     review_after: str | None = None,
     source: Mapping[str, Any] | str | None = None,
     episode: int | None = None,
     valid_from: str | None = None,
     check_conflicts: bool = True,
+    related_to: Sequence[str] | None = None,
+    dedup: bool = True,
 ) -> RememberResult:
-    """Save a fact immediately (write-then-undo), or queue a proposal when `require_approval` is on."""
+    """Save a fact immediately (write-then-undo), or queue a proposal if approval is required."""
     if tier not in TIERS:
         raise ValidationError(f"Unknown tier '{tier}'. Use agent, business or global.")
     if kind is not None and kind not in KINDS:
         raise ValidationError(f"Unknown kind '{kind}'. Use stable or volatile.")
+    if category not in CATEGORIES:
+        raise ValidationError(
+            f"Unknown category '{category}'. Use one of: {', '.join(CATEGORIES)}."
+        )
     clean_text = redact(text or "").strip()
     if not clean_text:
         raise ValidationError("The fact text is empty.")
@@ -211,8 +335,61 @@ def remember(
     _check_episode(ctx, episode)
     resolved_source = _source(ctx, source, episode)
 
+    link_targets: list[str] = []
+    for target_id in dict.fromkeys(related_to or []):
+        tid = str(target_id).strip()
+        if not tid:
+            continue
+        if find_fact(ctx, tid) is None:
+            raise NotFoundError(f"No related fact {tid}.")
+        link_targets.append(tid)
+
+    # Compute embedding once (if enabled) and reuse for dedup, conflict check, and storage.
+    new_vec: list[float] | None = (
+        embed_store.embed_text(ctx.scope.embeddings, clean_text, is_query=False)
+        if embed_store.is_enabled(ctx.scope.embeddings)
+        else None
+    )
+
+    needs_approval = tier != "agent" and ctx.scope.require_approval
+    conn = ctx.conn_for_tier(tier)
+
+    if dedup and not needs_approval and resolved_valid_from is None:
+        dup = _find_duplicate(
+            ctx,
+            conn,
+            tier=tier,
+            category=category,
+            clean_text=clean_text,
+            entities=entity_list,
+            vector=new_vec,
+        )
+        if dup is not None:
+            res = _refresh_duplicate(
+                ctx,
+                conn,
+                dup,
+                keywords=keyword_list,
+                entities=entity_list,
+                pinned=pinned,
+                episode=episode,
+            )
+            for tid in link_targets:
+                if tid != res.fact_id and res.fact_id is not None:
+                    link_facts(ctx, res.fact_id, tid, relation="related_to")
+            return res
+
     similar = (
-        similar_facts(ctx, clean_text, entity_list, keyword_list) if check_conflicts else []
+        similar_facts(
+            ctx,
+            clean_text,
+            entity_list,
+            keyword_list,
+            linked_ids=link_targets,
+            query_vec=new_vec,
+        )
+        if check_conflicts
+        else []
     )
     similar_ids = [h.id for h in similar]
     content: dict[str, Any] = {
@@ -220,6 +397,8 @@ def remember(
         "entities": entity_list,
         "keywords": keyword_list,
         "kind": resolved_kind,
+        "category": category,
+        "pinned": bool(pinned),
         "review_after": explicit_review if resolved_kind == "volatile" else None,
         "review_interval_days": interval,
         "source": resolved_source,
@@ -234,13 +413,17 @@ def remember(
             "that names the other fact id."
         )
 
-    needs_approval = tier != "agent" and ctx.scope.require_approval
-    conn = ctx.conn_for_tier(tier)
-
     if not needs_approval:
         fields = {**content, "tier": tier, "agent": ctx.scope.agent, "similar": similar_ids}
         with transaction(ctx.business), transaction(conn):
             fact_id = create_fact(conn, ctx, fields)
+            if new_vec:
+                embed_store.store_fact_embedding(
+                    conn, fact_id, clean_text, ctx.scope.embeddings, vector=new_vec
+                )
+            for tid in link_targets:
+                if tid != fact_id:
+                    link_facts(ctx, fact_id, tid, relation="related_to")
             _mark_episode(ctx, episode)
         return RememberResult(fact_id, None, _similar_view(similar), f"Saved as {fact_id}." + note)
 

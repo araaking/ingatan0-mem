@@ -25,13 +25,15 @@ MakeContext = Callable[..., Context]
 def test_unrelated_facts_with_common_entity_and_boilerplate_do_not_conflict(ctx: Context) -> None:
     facts.remember(
         ctx,
-        "Transaksi bank 10 Nov transfer Rp 500.000 untuk pembayaran listrik. Disimpan oleh asisten.",
+        "Transaksi bank 10 Nov transfer Rp 500.000 untuk pembayaran listrik. "
+        "Disimpan oleh asisten.",
         keywords=["bank", "transaksi", "listrik"],
         entities=["tokoku", "Budi"],
     )
     second = facts.remember(
         ctx,
-        "Postingan artikel soal pembaruan halaman utama bulan ini sudah tayang. Disimpan oleh asisten.",
+        "Postingan artikel soal pembaruan halaman utama bulan ini sudah tayang. "
+        "Disimpan oleh asisten.",
         keywords=["artikel", "pembaruan", "halaman"],
         entities=["tokoku", "Budi"],
     )
@@ -133,9 +135,9 @@ def test_approve_recomputes_similar_and_resolves_superseded_target_conflicts(
     assert q.proposal_id is not None
     kept = proposals.approve(ctx, q.proposal_id)
     assert kept == f2
-    assert [(h.id, h.status) for h in search.recall(ctx, "budget iklan Meta", touch=False).facts] == [
-        (f2, "valid")
-    ]
+    assert [
+        (h.id, h.status) for h in search.recall(ctx, "budget iklan Meta", touch=False).facts
+    ] == [(f2, "valid")]
     report = compute_report(audit.entries(ctx))
     assert report.candidates == 1 and report.resolved == 1
 
@@ -143,9 +145,7 @@ def test_approve_recomputes_similar_and_resolves_superseded_target_conflicts(
 # ---- 2. Recall precision, identifier matching, & notes token control -----------------
 
 
-def test_underscore_identifier_ranks_script_fact_first(
-    ctx: Context, frozen_clock: Any
-) -> None:
+def test_underscore_identifier_ranks_script_fact_first(ctx: Context, frozen_clock: Any) -> None:
     script = facts.remember(
         ctx,
         "Pipeline update Ads report memakai skrip sync_report.py.",
@@ -254,7 +254,9 @@ def test_remember_preserves_explicit_source_date_and_valid_from(ctx: Context) ->
     assert res.fact_id
     hit = search.recall(ctx, "harga awal", touch=False).facts[0]
     assert hit.date == "2025-08-15"
-    row = ctx.business.execute("SELECT valid_from FROM facts WHERE id = ?", (res.fact_id,)).fetchone()
+    row = ctx.business.execute(
+        "SELECT valid_from FROM facts WHERE id = ?", (res.fact_id,)
+    ).fetchone()
     assert row["valid_from"] == "2025-08-15T00:00:00Z"
 
 
@@ -288,7 +290,7 @@ def test_cli_business_flag_import_conflicts_scan_move_and_approve_all(
     ingatan_home: Path, tmp_path: Path
 ) -> None:
     runner = CliRunner()
-    # Set up global default_agent so `--business` alone works from any directory without .ingatan.toml.
+    # Set global default_agent so `--business` works from any folder without .ingatan.toml.
     ingatan_home.mkdir(parents=True, exist_ok=True)
     (ingatan_home / "config.toml").write_text('default_agent = "hermes"\n', encoding="utf-8")
 
@@ -403,14 +405,12 @@ def test_resolve_allowed_businesses_and_build_multi_server(
             hit_a = await client.call_tool(
                 "recall", {"business": "toko-a", "query": "harga paket pro"}
             )
-            assert "Rp49.000" in hit_a.content[0].text
+            assert "Rp49.000" in getattr(hit_a.content[0], "text", "")
             hit_b = await client.call_tool(
                 "recall", {"business": "toko-b", "query": "harga paket pro"}
             )
-            assert "No facts found" in hit_b.content[0].text
-            denied = await client.call_tool(
-                "recall", {"business": "rahasia", "query": "harga"}
-            )
+            assert "No facts found" in getattr(hit_b.content[0], "text", "")
+            denied = await client.call_tool("recall", {"business": "rahasia", "query": "harga"})
             assert denied.is_error
 
     try:

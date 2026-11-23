@@ -17,6 +17,7 @@ from ingatan.errors import NotFoundError, ValidationError
 from ingatan.facts import create_fact
 from ingatan.facts._util import new_id, now_iso, resolve_conflicts
 from ingatan.scope import Context
+from ingatan.search import embed as embed_store
 from ingatan.search import similar_facts
 
 __all__ = ["Proposal", "approve", "approve_all", "pending", "pending_count", "reject"]
@@ -163,6 +164,10 @@ def approve(ctx: Context, proposal_id: str) -> str:
             extra["affects"] = affects
         fields["_extra"] = extra
         create_fact(conn, ctx, fields, op="approve")
+        if embed_store.is_enabled(ctx.scope.embeddings):
+            embed_store.store_fact_embedding(
+                conn, new_fact_id, str(fields.get("text") or ""), ctx.scope.embeddings
+            )
         conn.execute(
             "UPDATE proposals SET status = 'approved', decided_at = ?, fact_id = ? WHERE id = ?",
             (now, new_fact_id, proposal_id),

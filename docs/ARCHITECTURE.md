@@ -53,6 +53,8 @@ facts(
   tier TEXT NOT NULL,             -- global | business | agent
   agent TEXT NOT NULL,            -- writing agent. Owner when tier = agent
   kind TEXT NOT NULL,             -- stable | volatile
+  category TEXT NOT NULL DEFAULT 'fact', -- fact | rule | procedure | preference
+  pinned INTEGER NOT NULL DEFAULT 0,     -- 1 = prioritized in brief and recall
   valid_from TEXT NOT NULL,
   valid_to TEXT,
   superseded_by TEXT,
@@ -100,6 +102,11 @@ notes(
   file_hash TEXT NOT NULL, created_at TEXT NOT NULL
 )
 notes_fts, notes_tri  -- FTS5 over (heading, text), same two tokenizers, rowid = notes.id
+-- Migration 0002_semantic_and_structure.sql:
+fact_embeddings(fact_id TEXT PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, text_hash TEXT, updated_at TEXT)
+note_embeddings(note_id INTEGER PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, text_hash TEXT, updated_at TEXT)
+aliases(id INTEGER PK, term TEXT, canonical TEXT, created_at TEXT, UNIQUE(term, canonical))
+edges(id INTEGER PK, src_id TEXT, dst_id TEXT, relation TEXT, created_at TEXT, UNIQUE(src_id, dst_id, relation))
 ```
 
 Log protection lives in the schema: a trigger aborts every `DELETE` on `log`, and aborts every `UPDATE` on `log` unless it only sets `change` to NULL. That is what makes FR-36 true whatever the Python code does.

@@ -26,6 +26,7 @@ from ingatan.scope import (
     Scope,
     load_home_config,
     parse_bool,
+    parse_embeddings,
     validate_agent,
     validate_business,
 )
@@ -217,12 +218,14 @@ class TokenStore:
                 require_approval = parse_bool(
                     home_cfg["require_approval"], label="require_approval"
                 )
+            embeddings = parse_embeddings(os.environ, {}, home_cfg)
             return Scope(
                 business=validate_business(match.business),
                 agent=validate_agent(match.agent),
                 home=self.home,
                 token_budget=budget,
                 require_approval=require_approval,
+                embeddings=embeddings,
             )
         except ConfigError:
             return None  # a hand-edited record with a bad name routes nowhere

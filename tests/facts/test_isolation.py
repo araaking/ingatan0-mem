@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from ingatan import facts, proposals, search
+from ingatan import facts, search
 from ingatan.errors import NotFoundError
 from ingatan.scope import Context
 

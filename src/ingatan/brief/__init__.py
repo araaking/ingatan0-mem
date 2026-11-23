@@ -44,8 +44,8 @@ def estimate_tokens(text: str) -> int:
 @dataclass(frozen=True)
 class _Item:
     # Smaller means dropped first when the brief is over budget:
-    # use_count -> last_used -> stable before volatile -> valid_from -> id.
-    rank: tuple[int, str, int, str, str]
+    # pinned -> use_count -> last_used -> rule/procedure -> stable -> valid_from -> id.
+    rank: tuple[int, int, str, int, int, str, str]
     line: str
 
 
@@ -54,10 +54,28 @@ def _flat(text: str) -> str:
 
 
 def _item(row: sqlite3.Row, tags: list[str]) -> _Item:
-    suffix = f" ({'; '.join(tags)})" if tags else ""
+    keys = row.keys()
+    is_pinned = bool(row["pinned"]) if "pinned" in keys else False
+    category = str(row["category"]) if "category" in keys and row["category"] else "fact"
+    all_tags = list(tags)
+    if is_pinned:
+        all_tags.insert(0, "pinned")
+    if category in ("rule", "procedure", "preference"):
+        all_tags.insert(0, category)
+    suffix = f" ({'; '.join(all_tags)})" if all_tags else ""
+    pinned_boost = 1 if is_pinned else 0
+    role_boost = 1 if category in ("rule", "procedure") else 0
     stable_boost = 1 if row["kind"] == "stable" else 0
     return _Item(
-        rank=(row["use_count"], row["last_used"] or "", stable_boost, row["valid_from"], row["id"]),
+        rank=(
+            pinned_boost,
+            row["use_count"],
+            row["last_used"] or "",
+            role_boost,
+            stable_boost,
+            row["valid_from"],
+            row["id"],
+        ),
         line=f"- [{row['id']}] {_flat(row['text'])}{suffix}",
     )
 
