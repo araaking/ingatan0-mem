@@ -32,7 +32,9 @@ jobs:
         run: uv run python -m evals
 
   # T-30: the built wheel installs and runs in an empty folder, with no Docker and no
-  # database service, using only what is inside the wheel.
+  # database service, using only what is inside the wheel. `setup` is the one command a new
+  # user runs after installing; the round trip proves that what it set up can remember and
+  # recall. A real client (Claude Code, Hermes) cannot run here.
   clean-install:
     name: clean install / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -45,7 +47,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Build the wheel
         run: uv build --wheel --out-dir dist
-      - name: Run init and doctor from the wheel in an empty folder
+      - name: Run setup, a remember and recall round trip, and doctor from the wheel
         shell: bash
         run: |
           WHEEL="$(uv run --no-project python -c 'import glob, os; print(os.path.abspath(glob.glob("dist/*.whl")[0]))')"
@@ -54,7 +56,9 @@ jobs:
           export INGATAN_HOME="$(mktemp -d)"
           cd "$WORK"
           uvx --from "$WHEEL" ingatan --version
-          uvx --from "$WHEEL" ingatan init --business demo --agent ci
+          uvx --from "$WHEEL" ingatan setup --business demo --agent ci --no-semantic --client none
+          uvx --from "$WHEEL" python "$GITHUB_WORKSPACE/scripts/smoke_round_trip.py"
+          uvx --from "$WHEEL" ingatan setup --business demo --agent ci --no-semantic --client none
           uvx --from "$WHEEL" ingatan doctor
           uvx --from "$WHEEL" ingatan log
           uvx --from "$WHEEL" ingatan proposals list

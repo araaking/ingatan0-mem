@@ -70,6 +70,16 @@ Nama bisnis dan nama agen dikunci saat server menyala (atau dibatasi ke daftar `
 
 **Daftar isi:** [Ringkasan](#id-ringkasan) · [Fitur utama](#id-fitur) · [Persyaratan](#id-persyaratan) · [Instalasi](#id-instalasi) · [Mulai cepat](#id-mulai-cepat) · [Mode HTTP](#id-http) · [Konfigurasi](#id-konfigurasi) · [Tujuh tool](#id-tool) · [Tier dan antrean proposal](#id-tier) · [Status fakta](#id-status-fakta) · [Forget dan batasannya](#id-forget) · [CLI](#id-cli) · [Data dan privasi](#id-data) · [Angka terukur](#id-angka) · [Status](#id-status) · [Struktur proyek](#id-struktur) · [Pengembangan](#id-pengembangan) · [Peta jalan](#id-peta-jalan) · [Masalah umum](#id-masalah) · [Lisensi dan kredit](#id-lisensi)
 
+**Mulai dalam tiga perintah:**
+
+```bash
+uv tool install ingatan
+cd proyek-kamu
+ingatan setup
+```
+
+Perintah pertama **belum berfungsi**: Ingatan belum ada di PyPI, jadi sampai rilis pasanglah dari hasil clone (lihat [Instalasi](#id-instalasi)). `ingatan setup` menanyakan nama bisnis dan agen, mau memakai pencarian semantik atau tidak, dan klien mana yang disambungkan, lalu menjalankan pemeriksaan `doctor`.
+
 <a id="id-ringkasan"></a>
 
 ### Ringkasan
@@ -114,13 +124,14 @@ Ingatan belum dirilis ke PyPI, jadi pasang secara editable dari hasil clone (aga
 ```bash
 uv tool install --editable /path/to/ingatan
 ```
-> Pencarian semantik bersifat opsional dan mati secara bawaan. Untuk menambahkan model offline: pasang dengan `--with numpy --with onnxruntime --with sentencepiece` (isi extra `ingatan[vector]`), jalankan `ingatan embeddings pull` sekali (unduhan 123 MB, satu-satunya perintah yang mengunduh sesuatu), lalu set `provider = "local"`. Rinciannya di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 Setelah rilis PyPI nanti, cukup satu perintah (saat ini **belum berfungsi**):
 
 ```bash
-uvx ingatan
+uv tool install ingatan
 ```
+
+> Pencarian semantik bersifat opsional dan mati secara bawaan. Untuk menyalakannya, pasang dengan extra `vector` (`uv tool install "ingatan[vector]"` setelah rilis; dari hasil clone tambahkan `--with numpy --with onnxruntime --with sentencepiece`), lalu jalankan `ingatan embeddings enable`. Satu perintah itu mengunduh model (123 MB, sekali saja), menulis `provider = "local"`, dan meng-embed fakta yang sudah ada. Server sendiri tidak pernah mengunduh apa pun. Rinciannya di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 <a id="id-mulai-cepat"></a>
 
@@ -128,11 +139,12 @@ uvx ingatan
 
 ```bash
 cd proyek-kamu
-ingatan init --business tokoku --agent claude-code   # menulis .ingatan.toml dan membuat database
-ingatan doctor                                       # memeriksa Python, fitur SQLite, konfigurasi, database
+ingatan setup   # nama bisnis dan agen, pencarian semantik (opsional), klien, lalu pemeriksaan doctor
 ```
 
-`init` aman dijalankan dua kali. Lalu sambungkan ke agen:
+`setup` aman dijalankan dua kali, dan setiap pertanyaannya punya opsi sehingga bisa dijalankan tanpa terminal: `ingatan setup --business tokoku --agent claude-code --no-semantic --client claude-code --yes`. Untuk Claude Code ia menambahkan server ke `.mcp.json` proyek: perubahannya ditampilkan dulu dan baru ditulis setelah kamu setuju. Untuk Hermes ia mencetak blok `mcp_servers` untuk ditempel dan tidak menulis berkas apa pun. Kalau hanya butuh berkas konfigurasi dan database, `ingatan init --business tokoku --agent claude-code` lalu `ingatan doctor` tetap ada.
+
+Panduan per agen, termasuk bagian yang tidak diurus `setup` (hook dan plugin):
 
 | Agen | Panduan | Isi |
 |---|---|---|
@@ -273,6 +285,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 |---|---|
 | `ingatan` / `ingatan serve` | Menjalankan server MCP lewat stdio (mendukung mode multi-bisnis via `INGATAN_BUSINESSES`) |
 | `ingatan serve --http [--host H] [--port P]` | Menjalankan server MCP lewat HTTP (bearer token) |
+| `ingatan setup [--business B] [--agent A] [--semantic\|--no-semantic] [--client claude-code\|hermes\|none] [--yes]` | Penyiapan terpandu: proyek, pencarian semantik opsional, klien, lalu pemeriksaan `doctor` |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Mengelola token mode HTTP |
 | `ingatan init [--business NAMA] [--agent NAMA]` | Membuat `.ingatan.toml` dan database |
 | `ingatan doctor [--business NAMA]` | Memeriksa Python, fitur SQLite, konfigurasi, embedding, database, dan folder data |
@@ -286,7 +299,8 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
 | `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
-| `ingatan embeddings pull [--model NAMA]` | Mengunduh dan memverifikasi model embedding lokal opsional (satu-satunya perintah yang mengunduh sesuatu) |
+| `ingatan embeddings enable [--model NAMA] [--global] [--no-reindex]` | Menyalakan pencarian semantik dalam satu langkah: unduh model bila belum ada, tulis `provider = "local"`, embed fakta yang sudah ada |
+| `ingatan embeddings pull [--model NAMA]` | Hanya mengunduh dan memverifikasi model embedding lokal. Pengunduhan hanya terjadi lewat perintah ini, `embeddings enable`, dan `setup` |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Mengelola kamus alias per proyek untuk ekspansi query dua arah |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Menautkan fakta yang saling melengkapi (juga menyelesaikan konflik terbuka di antara keduanya) |
 | `ingatan pin <fact_id>`, `unpin <fact_id>` | Menyematkan fakta agar diprioritaskan di `brief` dan `recall` |
@@ -419,6 +433,16 @@ Pemetaan tangkap dan suntik ke hook tiap agen (hook Claude Code, antarmuka memor
 
 **Contents:** [Overview](#en-overview) · [Key features](#en-features) · [Requirements](#en-requirements) · [Installation](#en-installation) · [Quick start](#en-quick-start) · [HTTP mode](#en-http) · [Configuration](#en-configuration) · [The seven tools](#en-tools) · [Tiers and the proposal queue](#en-tiers) · [Fact status](#en-fact-status) · [Forget and its limits](#en-forget) · [CLI](#en-cli) · [Data and privacy](#en-data) · [Measured numbers](#en-numbers) · [Status](#en-status) · [Project structure](#en-structure) · [Development](#en-development) · [Roadmap](#en-roadmap) · [Troubleshooting](#en-troubleshooting) · [License and credits](#en-license)
 
+**Start in three commands:**
+
+```bash
+uv tool install ingatan
+cd your-project
+ingatan setup
+```
+
+The first command **does not work yet**: Ingatan is not on PyPI, so until the release install from a checkout (see [Installation](#en-installation)). `ingatan setup` asks for a business and an agent name, whether to use semantic search, and which client to connect, then runs the `doctor` checks.
+
 <a id="en-overview"></a>
 
 ### Overview
@@ -463,13 +487,14 @@ Ingatan is not on PyPI yet, so install in editable mode from a checkout (so `git
 ```bash
 uv tool install --editable /path/to/ingatan
 ```
-> Semantic search is optional and off by default. To add the offline model: install with `--with numpy --with onnxruntime --with sentencepiece` (the contents of the `ingatan[vector]` extra), run `ingatan embeddings pull` once (a 123 MB download, the only command that downloads anything), then set `provider = "local"`. Details in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 After the PyPI release it will be one command (this **does not work yet**):
 
 ```bash
-uvx ingatan
+uv tool install ingatan
 ```
+
+> Semantic search is optional and off by default. To switch it on, install with the `vector` extra (`uv tool install "ingatan[vector]"` after the release; from a checkout add `--with numpy --with onnxruntime --with sentencepiece`), then run `ingatan embeddings enable`. That one command downloads the model (123 MB, once), writes `provider = "local"` and embeds the facts you already have. The server itself never downloads anything. Details in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 <a id="en-quick-start"></a>
 
@@ -477,11 +502,12 @@ uvx ingatan
 
 ```bash
 cd your-project
-ingatan init --business tokoku --agent claude-code   # writes .ingatan.toml and creates the databases
-ingatan doctor                                       # checks Python, SQLite features, config, databases
+ingatan setup   # business and agent name, semantic search (optional), your client, then the doctor checks
 ```
 
-`init` is safe to run twice. Then connect an agent:
+`setup` is safe to run twice, and every question has an option, so it runs without a terminal: `ingatan setup --business tokoku --agent claude-code --no-semantic --client claude-code --yes`. For Claude Code it adds the server to the project's `.mcp.json`: the change is shown first and written only after you agree. For Hermes it prints the `mcp_servers` block to paste and writes no file. If you only want the config file and the databases, `ingatan init --business tokoku --agent claude-code` followed by `ingatan doctor` is still there.
+
+The guide for each agent, including what `setup` leaves to you (hooks and the plugin):
 
 | Agent | Guide | Covers |
 |---|---|---|
@@ -622,6 +648,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 |---|---|
 | `ingatan` / `ingatan serve` | Start the MCP server on stdio (supports multi-business allowlist via `INGATAN_BUSINESSES`) |
 | `ingatan serve --http [--host H] [--port P]` | Start the MCP server over HTTP (bearer tokens) |
+| `ingatan setup [--business B] [--agent A] [--semantic\|--no-semantic] [--client claude-code\|hermes\|none] [--yes]` | Guided setup: project, optional semantic search, client, then the `doctor` checks |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Manage the HTTP-mode tokens |
 | `ingatan init [--business NAME] [--agent NAME]` | Create `.ingatan.toml` and the databases |
 | `ingatan doctor [--business NAME]` | Check Python, SQLite features, config, embeddings, databases and the data folder |
@@ -635,7 +662,8 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
 | `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
-| `ingatan embeddings pull [--model NAME]` | Download and verify the optional local embedding model (the only command that downloads anything) |
+| `ingatan embeddings enable [--model NAME] [--global] [--no-reindex]` | Switch semantic search on in one step: download the model if it is missing, write `provider = "local"`, embed the facts that already exist |
+| `ingatan embeddings pull [--model NAME]` | Only download and verify the local embedding model. Nothing is downloaded except by this command, `embeddings enable` and `setup` |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Manage project-scoped glossary aliases for bidirectional recall expansion |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Link complementary facts (also resolves open conflicts between them) |
 | `ingatan pin <fact_id>`, `unpin <fact_id>` | Pin a fact so it stays prioritized in `brief` and `recall` |

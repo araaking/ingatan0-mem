@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import runpy
 import sys
 from pathlib import Path
+
+import pytest
 
 import ingatan
 
@@ -56,3 +59,56 @@ def test_release_workflow_refuses_a_tag_that_is_not_the_package_version() -> Non
     assert "Tag matches the package version" in build
     assert "if: github.event_name == 'push'" in build
     assert '"v$VERSION" = "$GITHUB_REF_NAME"' in build
+
+
+# ---- the clean-install proof (CI runs it from the built wheel on three systems) -------
+
+SMOKE = ROOT / "scripts" / "smoke_round_trip.py"
+
+
+def test_clean_install_job_runs_setup_and_the_round_trip() -> None:
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = text.split("\n  clean-install:\n", 1)[1]
+    assert "ingatan setup --business demo --agent ci --no-semantic --client none" in job
+    assert "scripts/smoke_round_trip.py" in job
+
+
+def test_smoke_round_trip_saves_finds_and_removes_one_fact(
+    monkeypatch: pytest.MonkeyPatch, ingatan_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("INGATAN_BUSINESS", "demo")
+    monkeypatch.setenv("INGATAN_AGENT", "ci")
+    with pytest.raises(SystemExit) as stop:
+        runpy.run_path(str(SMOKE), run_name="__main__")
+    assert stop.value.code == 0
+    assert "round trip ok" in capsys.readouterr().out
+    from ingatan.scope import open_context, resolve_scope
+
+    with open_context(resolve_scope()) as ctx:
+        assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 0
+
+
+def test_smoke_round_trip_refuses_to_run_in_the_default_data_folder(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("INGATAN_HOME")
+    with pytest.raises(SystemExit) as stop:
+        runpy.run_path(str(SMOKE), run_name="__main__")
+    assert stop.value.code == 2
+    assert "INGATAN_HOME" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("anchor", "first_section"),
+    [
+        ('<a id="bahasa-indonesia"></a>', '<a id="id-ringkasan"></a>'),
+        ('<a id="english"></a>', '<a id="en-overview"></a>'),
+    ],
+)
+def test_readme_opens_each_language_with_the_three_commands(
+    anchor: str, first_section: str
+) -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    opening = text.split(anchor, 1)[1].split(first_section, 1)[0]
+    assert "uv tool install ingatan\n" in opening
+    assert "ingatan setup\n" in opening

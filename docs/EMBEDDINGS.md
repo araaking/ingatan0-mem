@@ -13,14 +13,24 @@ uv tool install --editable /path/to/ingatan \
   --with numpy --with onnxruntime --with sentencepiece
 # (in a plain virtual environment: pip install numpy onnxruntime sentencepiece)
 
-ingatan embeddings pull   # downloads the model once (123 MB) and verifies it
+ingatan embeddings enable   # model (123 MB, once), provider = "local", vectors, a check
 ```
 
 The three packages are the `vector` extra of the package (`pip install -e '.[vector]'` in a
-checkout does the same). Ingatan is not on PyPI yet, so `pip install 'ingatan[vector]'` does
-not work today.
+checkout does the same). Ingatan is not on PyPI yet, so `uv tool install "ingatan[vector]"`
+does not work today.
 
-Then, in `.ingatan.toml` or in `config.toml` of the data folder:
+`ingatan embeddings enable` does the rest in one step and stops at the first thing it cannot
+do: it refuses to start when a package is missing (nothing is downloaded or changed), downloads
+the model if it is not on disk, writes `provider = "local"` under `[embeddings]` in
+`.ingatan.toml` (in `config.toml` of the data folder with `--global`, or when the folder has
+no project file) without touching anything else in that file, embeds the facts that already
+exist (`--no-reindex` skips that), and embeds one sentence as a proof. It exits non-zero when
+an environment variable or another config file overrides what it wrote. `ingatan setup` runs
+the same steps when you answer yes to semantic search.
+
+By hand it is still three steps: `ingatan embeddings pull`, then in `.ingatan.toml` or in
+`config.toml` of the data folder
 
 ```toml
 [embeddings]
@@ -30,9 +40,9 @@ provider = "local"
 and `ingatan reindex` to embed the facts that already exist. `ingatan doctor` reports
 anything that is still missing, with the command that fixes it.
 
-`ingatan embeddings pull` is the only Ingatan command that downloads anything (a remote
-provider, if you configure one, sends text to the endpoint you name). The server
-never downloads anything: with the provider set to `local` and no model on disk it answers
+Only `ingatan embeddings pull` downloads anything, and the two commands that run it for you,
+`embeddings enable` and `setup` (a remote provider, if you configure one, sends text to the
+endpoint you name). The server never downloads anything: with the provider set to `local` and no model on disk it answers
 from the word index and `doctor` says why. Each file is pinned to a repository revision and
 a SHA-256 sum; a download that does not match is discarded. `HF_ENDPOINT` points the
 command at a mirror.

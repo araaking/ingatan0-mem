@@ -42,7 +42,7 @@ timeutil -> errors -> db -> redact -> scope -> audit -> search -> facts -> propo
   - `require_approval = true` (in `.ingatan.toml`, `~/.ingatan/config.toml`, or `INGATAN_REQUIRE_APPROVAL=1`) enables the manual CLI proposal queue.
   - `forget` on `business` and `global` tiers is always CLI-only (`by_user=True`) because `forget` permanently scrubs bytes and cannot be undone.
 - **Byte-level `forget` guarantee**: keep `PRAGMA secure_delete = ON`, FTS5 `secure-delete`, `optimize`, and `PRAGMA wal_checkpoint(TRUNCATE)` intact whenever touching DB schema or deletion paths.
-- **Semantic search stays optional**: the default provider is `none`. Nothing may import `numpy`, `onnxruntime` or `sentencepiece` at import time, the server must never download a model (only `ingatan embeddings pull` does), and an embedding must never be computed inside a write transaction.
+- **Semantic search stays optional**: the default provider is `none`. Nothing may import `numpy`, `onnxruntime` or `sentencepiece` at import time, the server must never download a model (only `ingatan embeddings pull` does, and the two commands that call it, `ingatan embeddings enable` and `ingatan setup`), and an embedding must never be computed inside a write transaction.
 - **No bare similarity constants**: cosine scores are not comparable between embedding models. Cut-offs live in a `SimilarityProfile` (`src/ingatan/search/embed.py`) and are changed only with numbers from `scripts/calibrate_embeddings.py`, recorded in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md). Two facts are never merged because they are similar.
 - **Python 3.10+ compatibility**: every `.py` file must begin with `from __future__ import annotations`.
 

@@ -1,8 +1,9 @@
 # Roadmap
 
-Status: planned. Nothing on this page is implemented yet. It records what was agreed as
-worth building next, why, and the constraints each item has to respect. An item becomes a
-changelog entry when it ships and is removed from this page.
+Status: planned, unless an item says otherwise. This page records what was agreed as worth
+building next, why, and the constraints each item has to respect. An item becomes a
+changelog entry when it ships and is removed from this page. The task-level plan for all of
+it is in [ROADMAP_PLAN.md](ROADMAP_PLAN.md).
 
 Every item is bound by the invariants in [AGENTS.md](../AGENTS.md). The ones that shape
 this roadmap most:
@@ -19,7 +20,7 @@ this roadmap most:
 
 | Order | Item | Why here |
 |---|---|---|
-| 1 | [Easier installation](#9-easier-installation) | Independent of everything else; decides whether people try the project at all |
+| 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Small, and the shared model process builds on it |
 | 3 | [Shared model process](#1-shared-model-process) | The largest memory saving left |
 | 4 | [Review queue for similar facts](#4-review-queue-for-similar-facts) | Mostly a CLI over data that already exists |
@@ -200,21 +201,20 @@ relations and passes with them.
 
 ## 9. Easier installation
 
-**Problem.** Installing means cloning the repository and installing it in editable mode,
-and switching semantic search on takes four separate steps.
+**Status.** Built, except the release itself. `ingatan setup`, `ingatan embeddings enable`,
+the three-command start in the README, a rehearsal path to TestPyPI and a tag guard in the
+release workflow are in (see the changelog). CI runs `setup` and a remember and recall round
+trip from the built wheel on Windows, macOS and Linux.
 
-**Parts.**
-1. **Publish to PyPI.** A release workflow that runs on a version tag and uses trusted
-   publishing, so no token is stored anywhere. Tried on TestPyPI first, because a
-   published version cannot be replaced. To check before anything else: that the package
-   name is free.
-2. **`ingatan setup`.** A guided command: business and agent name, whether to use semantic
-   search (and download the model if so), which client to configure, then `doctor`. Every
-   question has a flag, so a script can run it without prompts. Writing into another
-   application's configuration file shows the change and asks first.
-3. **One command for semantic search.** Download the model, set `provider = "local"` and
-   reindex in one step, instead of four.
-4. **A short start in the README.** Three commands at the top; the details move below.
+**What is left, all of it the owner's.**
+1. Check that the package name is free on PyPI and on TestPyPI. If it is not, choose a
+   distribution name; the import name and the command stay `ingatan`.
+2. Register the trusted publishers (this repository, workflow `release.yml`, environments
+   `pypi` and `testpypi`) and create both GitHub environments.
+3. Rehearse on TestPyPI with a pre-release number (Actions, Release, Run workflow), because
+   a published version cannot be replaced.
+4. Push the release tag. Then take "does not work yet" out of the README and move the
+   install from a checkout to its Development section.
 
 **Done when.** A new user goes from nothing to a working `recall` in a client with one
 install command and one setup command, on Windows, macOS and Linux.

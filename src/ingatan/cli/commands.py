@@ -895,8 +895,9 @@ def embeddings_pull(
 ) -> None:
     """Download the local embedding model once and verify its checksums.
 
-    This is the only Ingatan command that downloads anything. The server itself never
-    does: without the model it simply answers from the word index.
+    Nothing is downloaded except by this command and the two that run it for you
+    (`embeddings enable` and `setup`). The server itself never downloads anything: without
+    the model it simply answers from the word index.
     """
     cfg = load_embeddings()
     name = (model or (cfg.model if cfg.provider == "local" else "")).strip()
