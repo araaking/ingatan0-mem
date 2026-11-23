@@ -38,6 +38,9 @@ def _summary(entry: LogEntry) -> str:
             return f"superseded by {after['superseded_by']}"
         if after.get("pending_proposal"):
             return f"change waits for approval ({after['pending_proposal']})"
+    if entry.op == "conflict":
+        others = ", ".join(str(other) for other in after.get("conflicts_with") or [])
+        return f"possible conflict with {others} (found once the vector arrived)"
     if entry.op == "undo":
         return f"undoes entry {after.get('undoes')} ({after.get('undone_op')})"
     return ""

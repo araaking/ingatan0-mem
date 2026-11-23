@@ -509,6 +509,9 @@ def store_fact_embedding(
 
     Pass `vector` when calling inside a write transaction: without it the text is embedded
     here, and a model call must never run while the database is locked for writing.
+
+    Nothing is stored, and False is returned, when the fact row is gone: a vector that
+    arrives after `forget` must not bring a trace of the fact back.
     """
     if not is_enabled(cfg):
         return False
@@ -521,15 +524,15 @@ def store_fact_embedding(
     model = effective_model(cfg)
     now = timeutil.iso(timeutil.now())
     with transaction(conn):
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO fact_embeddings (fact_id, model, dims, vec, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM facts WHERE id = ?) "
             "ON CONFLICT(fact_id) DO UPDATE SET "
             "model = excluded.model, dims = excluded.dims, vec = excluded.vec, "
             "updated_at = excluded.updated_at",
-            (fact_id, model, len(vec), blob, now),
+            (fact_id, model, len(vec), blob, now, fact_id),
         )
-    return True
+    return cursor.rowcount > 0
 
 
 def store_note_embedding(

@@ -11,6 +11,7 @@ from typer.testing import Result
 from ingatan import audit, facts
 from ingatan.audit import LogEntry
 from ingatan.cli.conflicts import ConflictReport, compute_report, render_report
+from ingatan.cli.render import log_line
 from ingatan.scope import Context
 
 Invoke = Callable[..., Result]
@@ -177,3 +178,22 @@ def test_the_conflicts_command_accepts_the_agent_option(
 ) -> None:
     rem(cli_ctx, "Harga kopi 50 ribu")
     assert invoke("conflicts", *flag).exit_code == 0
+
+
+# ---- pairs found after the write (deferred embedding) ----------------------------------
+
+
+def test_a_pair_found_late_counts_as_a_candidate_and_can_be_resolved() -> None:
+    log = Log()
+    log.add("create", "f_1", {"text": "a", "conflicts_with": []})
+    log.add("create", "f_2", {"text": "b", "conflicts_with": []})
+    log.add("conflict", "f_2", {"conflicts_with": ["f_1"]})
+    assert compute_report(log.entries) == ConflictReport(candidates=1, resolved=0)
+    log.add("confirm", "f_2", {"reason": "both true, see f_1"})
+    assert compute_report(log.entries) == ConflictReport(candidates=1, resolved=1)
+
+
+def test_log_line_of_a_late_conflict_names_the_other_fact() -> None:
+    change = {"before": {"conflicts_with": []}, "after": {"conflicts_with": ["f_1", "f_3"]}}
+    entry = LogEntry(7, "2026-11-11T09:00:00Z", "a", "conflict", "f_2", "agent", "a", change)
+    assert "possible conflict with f_1, f_3" in log_line(entry)

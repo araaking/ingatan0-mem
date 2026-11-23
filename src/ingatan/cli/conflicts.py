@@ -68,7 +68,7 @@ def compute_report(log: Iterable[LogEntry]) -> ConflictReport:
         if entry.id in undone or entry.change is None or entry.fact_id is None:
             continue
         after = entry.change.get("after") or {}
-        if entry.op in ("create", "approve"):
+        if entry.op in ("create", "approve", "conflict"):
             for other in after.get("conflicts_with") or []:
                 pair = frozenset((entry.fact_id, str(other)))
                 if len(pair) == 2:

@@ -64,6 +64,7 @@ def forget(ctx: Context, fact_id: str, *, by_user: bool = False) -> None:
         _scrub_proposals(conn, fact_id)
         audit.scrub(conn, fact_id)
         conn.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (fact_id,))
+        conn.execute("DELETE FROM embed_queue WHERE fact_id = ?", (fact_id,))
         conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
         audit.write(
             conn,

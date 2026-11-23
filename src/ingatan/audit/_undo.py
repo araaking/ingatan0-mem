@@ -157,7 +157,11 @@ def _later_entries(
                 target = (json.loads(row["change"]).get("after") or {}).get("undoes")
                 if isinstance(target, int):
                     undone.add(target)
-    return sorted((e_id, op) for e_id, op, _ in found if op != "undo" and e_id not in undone)
+    # A `conflict` entry changes no fact: it only opened pairs, and undoing the entry it
+    # follows resolves those pairs anyway. So it never stands in the way.
+    return sorted(
+        (e_id, op) for e_id, op, _ in found if op not in ("undo", "conflict") and e_id not in undone
+    )
 
 
 # ---- one handler per operation ---------------------------------------------------------
@@ -371,7 +375,31 @@ def _undo_confirm(
     )
 
 
+def _undo_conflict(
+    ctx: Context, conn: sqlite3.Connection, entry: audit.LogEntry, before: Any, after: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve the pairs this entry opened (and no other pair of the fact)."""
+    assert entry.fact_id is not None
+    now = timeutil.iso(timeutil.now())
+    others = after.get("conflicts_with")
+    resolved: list[int] = []
+    for other in others if isinstance(others, list) else []:
+        rows = ctx.business.execute(
+            "SELECT id FROM conflicts WHERE resolved_at IS NULL AND "
+            "((fact_a = :id AND fact_b = :other) OR (fact_a = :other AND fact_b = :id))",
+            {"id": entry.fact_id, "other": str(other)},
+        ).fetchall()
+        for row in rows:
+            ctx.business.execute(
+                "UPDATE conflicts SET resolved_at = ?, resolution = 'undo' WHERE id = ?",
+                (now, row["id"]),
+            )
+            resolved.append(int(row["id"]))
+    return ({"resolved_conflicts": []}, {"resolved_conflicts": resolved})
+
+
 _HANDLERS: dict[str, Handler] = {
+    "conflict": _undo_conflict,
     "create": _undo_create,
     "approve": _undo_approve,
     "supersede": _undo_supersede,

@@ -13,8 +13,20 @@ from ingatan.scope import Context
 
 __all__ = ["OPS", "Diff", "LogEntry", "diff", "entries", "get", "scrub", "undo", "write"]
 
+# `conflict` records pairs opened after the fact was saved (see `facts.backfill`).
 OPS = frozenset(
-    {"create", "supersede", "confirm", "forget", "propose", "approve", "reject", "ingest", "undo"}
+    {
+        "create",
+        "supersede",
+        "confirm",
+        "forget",
+        "propose",
+        "approve",
+        "reject",
+        "ingest",
+        "undo",
+        "conflict",
+    }
 )
 
 
