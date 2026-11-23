@@ -576,6 +576,7 @@ def test_extracted_by_is_redacted_and_absent_unless_given(ctx: Context) -> None:
 
 def test_remember_links_part_of_at_once(ctx: Context) -> None:
     whole = facts.remember(ctx, "Gudang utama ada di cabang dua.", entities=["gudang"])
+    assert whole.fact_id is not None
     part = facts.remember(
         ctx,
         "Rak gula ada di sisi kiri gudang utama.",
