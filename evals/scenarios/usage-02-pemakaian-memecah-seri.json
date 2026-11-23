@@ -1,0 +1,73 @@
+{
+  "id": "usage-02-pemakaian-memecah-seri",
+  "title": "Dua fakta yang sama kuat cocoknya: yang lebih sering dan baru dipakai muncul lebih dulu",
+  "category": "usage",
+  "source": "pattern",
+  "xfail": "recall belum memakai sinyal pemakaian: seri jatuh ke fakta yang ditulis paling akhir",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "antar_toko_a",
+      "text": "Jadwal antar barang dari toko-a tiap Senin pagi.",
+      "keywords": [
+        "pengiriman",
+        "senin"
+      ],
+      "entities": [
+        "toko-a"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "advance_days",
+      "days": 1
+    },
+    {
+      "op": "remember",
+      "key": "antar_toko_b",
+      "text": "Jadwal antar barang dari toko-b tiap Kamis pagi.",
+      "keywords": [
+        "pengiriman",
+        "kamis"
+      ],
+      "entities": [
+        "toko-b"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "senin",
+      "repeat": 5,
+      "expect_top5": [
+        "antar_toko_a"
+      ],
+      "expect_absent": [
+        "antar_toko_b"
+      ]
+    },
+    {
+      "op": "advance_days",
+      "days": 7
+    },
+    {
+      "op": "recall",
+      "query": "jadwal antar barang",
+      "expect_first": "antar_toko_a",
+      "expect_top5": [
+        "antar_toko_a",
+        "antar_toko_b"
+      ],
+      "expect_status": {
+        "antar_toko_a": "valid",
+        "antar_toko_b": "valid"
+      }
+    }
+  ]
+}

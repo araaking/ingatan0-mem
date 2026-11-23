@@ -53,7 +53,7 @@ One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-fol
 }
 ```
 
-- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold) or `semantic` (what only an embedding model can do).
+- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold), `semantic` (what only an embedding model can do) or `usage` (how often and how recently a fact was recalled, and what that may and may not change in the order of results).
 - `source`: `pattern` (written from a known pattern) or `incident` (a real incident from the project owner).
 - `needs` (optional): `keywords` means the scenario must depend on the agent-supplied keywords (the query shares no word or fragment with the expected fact's text or entities). `trigram` means it must depend on the trigram index (the query is only a fragment of a word, with no keyword help). `tests/evals` lints these two statically so a scenario cannot pass for the wrong reason. `embeddings` means it needs an embedding model: it is skipped without one, and `tests/evals` runs it without one to prove that it then fails.
 - `actors`: named callers, each a business and an agent. The first one is the default. The clock is frozen at 2026-11-11 09:00 UTC at the start of each scenario.
@@ -69,7 +69,7 @@ Steps run in order. Common fields: `op`, `actor` (default: the first actor), `ex
 | `forget` | `key`, optional `by_user` (the user's CLI forget) |
 | `approve`, `reject` | `key` of a proposal (the user's decision) |
 | `advance_days` | `days` |
-| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all) |
+| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all), `expect_first` (one key: that fact must be result number one). Optional `repeat` (1 to 50): the query is run that many times and only the last result is judged, which is how a scenario makes a fact used, since every recall raises the use count of what it returns |
 | `brief` | optional `expect_in_section` (section to keys), `expect_not_in` (a list of keys that must be nowhere in the brief, or a section to keys map), `max_tokens`, `expect_pending` (the pending-proposals count the brief states) |
 
 Brief sections are `check first`, `global`, `business` and `agent`.

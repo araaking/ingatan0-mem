@@ -212,12 +212,16 @@ class _Run:
         d = step.data
         actor = self.actor(step)
         query = d["query"] if "query" in d else self.refs[d["query_text_of"]].text
-        hits = self.driver.recall(
-            actor,
-            query,
-            limit=int(d.get("limit", 10)),
-            include_closed=bool(d.get("include_closed")),
-        )
+        hits: list[Any] = []
+        # `repeat` is how a scenario makes a fact used: every recall raises the use count of
+        # what it returns. Only the last result is judged.
+        for _ in range(int(d.get("repeat", 1))):
+            hits = self.driver.recall(
+                actor,
+                query,
+                limit=int(d.get("limit", 10)),
+                include_closed=bool(d.get("include_closed")),
+            )
         top5 = hits[:5]
         top5_ids = {h.id for h in top5}
         problems: list[str] = []
@@ -229,6 +233,12 @@ class _Run:
             if missing:
                 problems.append(
                     f"expected in top 5: {', '.join(missing)}; top 5 was {self.describe(top5)}"
+                )
+        if "expect_first" in d:
+            wanted_first = self.refs[d["expect_first"]].fact_id
+            if not hits or hits[0].id != wanted_first:
+                problems.append(
+                    f"expected first: {d['expect_first']}; the order was {self.describe(hits)}"
                 )
         if d.get("expect_none") and hits:
             problems.append(f"expected no result at all, got {self.describe(hits)}")

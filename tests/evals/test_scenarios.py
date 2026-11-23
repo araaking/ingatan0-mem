@@ -291,3 +291,39 @@ def test_lint_checks_trigram_scenarios():
     assert any("without the trigram index" in p for p in lint_dependencies(parse_scenario(data)))
     data["steps"][2]["query"] = "kao"  # a fragment of 'kaos'
     assert lint_dependencies(parse_scenario(data)) == []
+
+
+# ---- expect_first and repeat (the usage scenarios) ------------------------------------------
+
+
+def test_expect_first_and_repeat_are_accepted() -> None:
+    scenario = parse_scenario(
+        with_step({"op": "recall", "query": "harga kaos", "expect_first": "k", "repeat": 5})
+    )
+    assert scenario.steps[-1].data["expect_first"] == "k"
+    assert scenario.steps[-1].data["repeat"] == 5
+    assert "usage" in CATEGORIES
+
+
+@pytest.mark.parametrize(
+    ("step", "message"),
+    [
+        ({"op": "recall", "query": "harga kaos", "expect_first": "nope"}, "unknown key 'nope'"),
+        ({"op": "recall", "query": "harga kaos", "expect_first": ["k"]}, "'expect_first' must be"),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_first": "k", "expect_none": True},
+            "cannot be combined",
+        ),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["k"], "repeat": 0},
+            "'repeat' must be",
+        ),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["k"], "repeat": True},
+            "'repeat' must be",
+        ),
+    ],
+)
+def test_expect_first_and_repeat_are_validated(step: dict[str, Any], message: str) -> None:
+    with pytest.raises(ScenarioError, match=message):
+        parse_scenario(with_step(step))

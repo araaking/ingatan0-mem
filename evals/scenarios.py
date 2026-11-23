@@ -38,6 +38,7 @@ CATEGORIES = (
     "forget",
     "noise",
     "semantic",
+    "usage",
 )
 SOURCES = ("pattern", "incident")
 NEEDS = ("keywords", "trigram", "embeddings")
@@ -82,6 +83,8 @@ _FIELDS: dict[str, tuple[set[str], set[str]]] = {
             "expect_absent",
             "expect_status",
             "expect_none",
+            "expect_first",
+            "repeat",
         },
     ),
     "brief": (
@@ -395,14 +398,30 @@ def _validate_recall(at: str, body: dict[str, Any], keys: dict[str, str]) -> Non
         for key in status:  # pyright: ignore[reportUnknownVariableType]
             if key not in keys:
                 raise _fail(at, f"'expect_status' refers to unknown key '{key}'")
+    if "expect_first" in body:
+        first = body["expect_first"]
+        if not isinstance(first, str):
+            raise _fail(at, "'expect_first' must be one key: the fact that has to come first")
+        if first not in keys:
+            raise _fail(at, f"'expect_first' refers to unknown key '{first}'")
+    if "repeat" in body:
+        repeat = body["repeat"]
+        if isinstance(repeat, bool) or not isinstance(repeat, int) or not 1 <= repeat <= 50:
+            raise _fail(at, "'repeat' must be an integer from 1 to 50")
     if "expect_none" in body:
         if body["expect_none"] is not True:
             raise _fail(at, "'expect_none' must be true (leave it out otherwise)")
-        if {"expect_top5", "expect_status"} & set(body):
-            raise _fail(at, "'expect_none' cannot be combined with expect_top5 or expect_status")
-    if not {"expect_top5", "expect_absent", "expect_status", "expect_none"} & set(body):
+        if {"expect_top5", "expect_status", "expect_first"} & set(body):
+            raise _fail(
+                at,
+                "'expect_none' cannot be combined with expect_top5, expect_status or expect_first",
+            )
+    wanted = {"expect_top5", "expect_absent", "expect_status", "expect_none", "expect_first"}
+    if not wanted & set(body):
         raise _fail(
-            at, "a recall check needs expect_top5, expect_absent, expect_status or expect_none"
+            at,
+            "a recall check needs expect_top5, expect_absent, expect_status, expect_none "
+            "or expect_first",
         )
 
 

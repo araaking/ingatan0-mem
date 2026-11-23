@@ -353,3 +353,67 @@ def test_in_process_driver_fills_deferred_vectors_after_each_remember(
     )
     result = run_scenario(scenario, tmp_path / "home", factory)
     assert result.status == expected, result.failures
+
+
+# ---- expect_first and repeat --------------------------------------------------------------------
+
+ORDER_SCENARIO: dict[str, Any] = {
+    "id": "usage-fake",
+    "title": "urutan hasil",
+    "category": "usage",
+    "source": "pattern",
+    "actors": {"asisten": TOKO},
+    "steps": [
+        {
+            "op": "remember",
+            "key": "tepat",
+            "text": "Supplier gula pasir adalah toko-a.",
+            "keywords": ["pemasok"],
+            "entities": ["gula pasir"],
+            "kind": "stable",
+        },
+        {
+            "op": "remember",
+            "key": "lain",
+            "text": "Jadwal libur karyawan diumumkan tiap Jumat.",
+            "keywords": ["cuti"],
+            "entities": ["karyawan"],
+            "kind": "stable",
+        },
+    ],
+}
+
+
+def _ordered(first: str, **extra: Any) -> Scenario:
+    data = json.loads(json.dumps(ORDER_SCENARIO))
+    data["steps"].append(
+        {"op": "recall", "query": "supplier gula pasir", "expect_first": first, **extra}
+    )
+    return parse_scenario(data)
+
+
+def test_expect_first_passes_when_that_fact_leads_and_fails_otherwise(tmp_path: Path) -> None:
+    right = run_scenario(_ordered("tepat"), tmp_path / "right")
+    assert right.status == PASS, right.failures
+    wrong = run_scenario(_ordered("lain"), tmp_path / "wrong")
+    assert wrong.status == FAIL
+    assert "expected first: lain" in wrong.failures[0]
+
+
+def test_repeat_recalls_that_many_times_and_judges_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class Counting(InProcessDriver):
+        def recall(
+            self, actor: Actor, query: str, *, limit: int, include_closed: bool
+        ) -> list[Hit]:
+            calls.append(query)
+            return super().recall(actor, query, limit=limit, include_closed=include_closed)
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return Counting(home, token_budget=scenario.token_budget)
+
+    result = run_scenario(_ordered("tepat", repeat=4), tmp_path / "home", factory)
+    assert result.status == PASS, result.failures
+    assert calls == ["supplier gula pasir"] * 4
+    assert len([r for r in result.records if r.kind == "recall"]) == 1
