@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import time
@@ -19,8 +20,10 @@ __all__ = [
     "Migration",
     "check_capabilities",
     "connect",
+    "fact_text_key",
     "load_migrations",
     "migrate",
+    "normalize_fact_text",
     "transaction",
 ]
 
@@ -30,6 +33,8 @@ __all__ = [
 GLOBAL_LOG_OFFSET = 1_000_000_000
 
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[A-Za-z0-9_]+\.sql$")
+_WHITESPACE = re.compile(r"\s+")
+_TRAILING_PUNCTUATION = re.compile(r"[.!?,;:\s]+$")
 
 
 @dataclass(frozen=True)
@@ -201,6 +206,43 @@ def _enable_wal(conn: sqlite3.Connection, patience: float = 10.0) -> None:
             delay = min(delay * 2, 0.2)
 
 
+def normalize_fact_text(text: str) -> str:
+    """`text` without the differences that do not make it another statement: case, runs of
+    whitespace, and trailing punctuation. Nothing else: "<" and ">" or "5" and "-5" still
+    differ, because a sign or a comparison is part of what a fact says."""
+    return _TRAILING_PUNCTUATION.sub("", _WHITESPACE.sub(" ", text).strip()).casefold()
+
+
+def fact_text_key(text: str) -> str:
+    """The value of `facts.text_key` for `text`: a hash of its normalized form.
+
+    Two texts that `normalize_fact_text` maps to the same string get the same key, so an
+    exact repeat is one index lookup away, whatever the size of the table.
+    """
+    return hashlib.sha256(normalize_fact_text(text).encode("utf-8")).hexdigest()[:32]
+
+
+def _fill_text_keys(conn: sqlite3.Connection, batch: int = 500) -> None:
+    """Give `text_key` to the rows that predate schema version 3. Cheap when none do."""
+    while True:
+        rows = conn.execute(
+            "SELECT seq, text FROM facts WHERE text_key IS NULL LIMIT ?", (batch,)
+        ).fetchall()
+        if not rows:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executemany(
+                "UPDATE facts SET text_key = ? WHERE seq = ? AND text_key IS NULL",
+                [(fact_text_key(str(row[1])), row[0]) for row in rows],
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     """Open (and create) a database file, set the pragmas and run `migrate`."""
     check_capabilities()
@@ -214,6 +256,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA secure_delete = ON")
         migrate(conn)
+        _fill_text_keys(conn)
         if target.stem == "global":
             _seed_global_log_ids(conn)
     except BaseException:

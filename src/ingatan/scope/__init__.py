@@ -37,6 +37,7 @@ __all__ = [
     "db_path",
     "find_config",
     "find_fact",
+    "load_embeddings",
     "load_home_config",
     "open_context",
     "parse_bool",
@@ -63,13 +64,24 @@ VISIBLE_SQL_GLOBAL = "tier = 'global'"
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    provider: str = "local"
+    """Semantic search settings. The default is no embeddings at all: pure FTS5.
+
+    `model_dir` is where the local provider keeps its model files (empty means
+    `<INGATAN_HOME>/models`). The three similarity fields override the cut-offs calibrated
+    for the model family; None keeps the calibrated value.
+    """
+
+    provider: str = "none"
     model: str = ""
     api_base: str = ""
     api_key_env: str = ""
     timeout: float = 15.0
     threads: int = 2
     idle_unload_seconds: int = 300
+    model_dir: str = ""
+    recall_floor: float | None = None
+    conflict_similarity: float | None = None
+    conflict_strict_similarity: float | None = None
 
 
 @dataclass(frozen=True)
@@ -211,7 +223,7 @@ def parse_embeddings(
         val = merged.get(key)
         return val.strip() if isinstance(val, str) else ""
 
-    provider = (pick_str("provider", "INGATAN_EMBED_PROVIDER") or "local").casefold()
+    provider = (pick_str("provider", "INGATAN_EMBED_PROVIDER") or "none").casefold()
     if provider not in EMBED_PROVIDERS:
         raise ConfigError(
             f"Unknown embeddings provider {provider!r}. Use one of: {', '.join(EMBED_PROVIDERS)}."
@@ -245,8 +257,31 @@ def parse_embeddings(
             raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
         return parsed
 
+    def pick_similarity(key: str) -> float | None:
+        if key not in merged:
+            return None
+        raw_val = merged[key]
+        if (
+            isinstance(raw_val, bool)
+            or not isinstance(raw_val, (int, float))
+            or not -1.0 <= raw_val <= 1.0
+        ):
+            raise ConfigError(f"[embeddings] {key} must be a cosine similarity between -1 and 1.")
+        return float(raw_val)
+
     threads = pick_int("threads", "INGATAN_EMBED_THREADS", 2, minimum=1)
     idle_unload = pick_int("idle_unload_seconds", "INGATAN_EMBED_IDLE_UNLOAD", 300, minimum=0)
+    model_dir = pick_str("model_dir", "INGATAN_MODEL_DIR")
+    if model_dir:
+        expanded = Path(model_dir).expanduser()
+        if not expanded.is_absolute():
+            # A relative path would be another folder for every working directory: the one
+            # `ingatan embeddings pull` filled is then not the one the server looks in.
+            raise ConfigError(
+                f"[embeddings] model_dir (or INGATAN_MODEL_DIR) must be an absolute path, "
+                f"got {model_dir!r}."
+            )
+        model_dir = str(expanded)
     return EmbeddingConfig(
         provider=provider,
         model=model,
@@ -255,7 +290,21 @@ def parse_embeddings(
         timeout=float(raw_timeout),
         threads=threads,
         idle_unload_seconds=idle_unload,
+        model_dir=model_dir,
+        recall_floor=pick_similarity("recall_floor"),
+        conflict_similarity=pick_similarity("conflict_similarity"),
+        conflict_strict_similarity=pick_similarity("conflict_strict_similarity"),
     )
+
+
+def load_embeddings(
+    start: Path | None = None, env: Mapping[str, str] | None = None
+) -> EmbeddingConfig:
+    """The `[embeddings]` settings alone, for commands that need no business or agent name."""
+    source = os.environ if env is None else env
+    config_file = find_config(start)
+    project_cfg = _read_config(config_file) if config_file is not None else {}
+    return parse_embeddings(source, project_cfg, load_home_config(data_home(source)))
 
 
 def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = None) -> Scope:

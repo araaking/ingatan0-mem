@@ -1,0 +1,91 @@
+{
+  "id": "noise-01-pertanyaan-di-luar-topik-tanpa-hasil",
+  "title": "Pertanyaan tentang hal yang tidak ada di memori tidak mengembalikan apa pun",
+  "category": "noise",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "retur",
+      "text": "Pelanggan boleh retur barang maksimal tujuh hari setelah diterima.",
+      "keywords": [
+        "pengembalian",
+        "kembalikan barang",
+        "batas retur"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "wifi",
+      "text": "Sandi wifi kantor diganti setiap tiga bulan oleh admin.",
+      "keywords": [
+        "password",
+        "kata sandi",
+        "jaringan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "gaji",
+      "text": "Gaji dibayarkan setiap tanggal 28.",
+      "keywords": [
+        "upah",
+        "gajian",
+        "payroll"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "blog",
+      "text": "Artikel blog terbit setiap Selasa dan Kamis.",
+      "keywords": [
+        "tulisan",
+        "jadwal terbit",
+        "publikasi"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "backup",
+      "text": "Server dicadangkan otomatis tiap malam pukul 02.00.",
+      "keywords": [
+        "backup",
+        "cadangan",
+        "pencadangan"
+      ],
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "pemenang piala dunia",
+      "expect_none": true
+    },
+    {
+      "op": "recall",
+      "query": "cara menanam cabai di pot",
+      "expect_none": true
+    },
+    {
+      "op": "recall",
+      "query": "who wrote Hamlet",
+      "expect_none": true
+    },
+    {
+      "op": "recall",
+      "query": "kapan gajian",
+      "expect_top5": [
+        "gaji"
+      ]
+    }
+  ]
+}

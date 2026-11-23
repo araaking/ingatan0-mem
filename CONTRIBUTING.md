@@ -54,7 +54,7 @@ of importing upward. `mcp` and `cli` stay thin: no business logic that a test of
 | `src/ingatan/redact/` | Secret patterns and the `[redacted]` marker | `tests/redact/` (corpus files `corpus_secrets.txt`, `corpus_plain.txt`) |
 | `src/ingatan/scope/` | Config and environment resolution, tier visibility SQL, `Context`, `find_fact` | `tests/scope/`, `tests/facts/test_isolation.py` |
 | `src/ingatan/audit/` | Append-only log, `entries`, `diff`, `undo` (`_undo.py`) | `tests/audit/` |
-| `src/ingatan/search/` | BM25, trigram, entity and recency signals, rank fusion, validity, statuses, `stem_id.py` query expansion | `tests/search/` |
+| `src/ingatan/search/` | BM25, trigram and entity signals, rank fusion, freshness, validity, statuses, conflict candidates, `stem_id.py` query expansion, and the optional embeddings (`embed.py`, `local.py`) | `tests/search/` |
 | `src/ingatan/facts/` | `remember`, `supersede`, `confirm`, `forget`, `history`, similar facts, conflict pairs | `tests/facts/` |
 | `src/ingatan/proposals/` | Proposal queue: pending, approve, reject | `tests/proposals/` |
 | `src/ingatan/episodes/` | Capture storage, truncation, offers, processed marks, retention | `tests/episodes/` |

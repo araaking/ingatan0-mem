@@ -217,3 +217,122 @@ def test_doctor_does_not_create_files_or_migrate(
     result = invoke("doctor")
     assert result.exit_code == 1  # the databases do not exist yet
     assert not ingatan_home.exists()
+
+
+# ---- embeddings ----------------------------------------------------------------------
+
+
+def test_doctor_says_embeddings_are_off_by_default(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INGATAN_EMBED_PROVIDER", raising=False)
+    result = invoke("doctor")
+    assert result.exit_code == 0, result.output
+    assert "[pass] embeddings: none (FTS5 only)" in result.stdout
+
+
+def test_doctor_names_the_command_that_fixes_a_missing_local_model(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ingatan.search import local
+
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+    monkeypatch.setattr(local, "missing_packages", lambda: [])
+    for args in (("doctor",), ("doctor", "--no-probe-embeddings")):
+        result = invoke(*args)
+        assert result.exit_code == 1, result.output
+        assert statuses(result.stdout)["embeddings"] == "FAIL"
+        assert "ingatan embeddings pull" in result.stdout
+        assert "fall back to FTS5 only" in result.stdout
+    # Nothing was downloaded or created by looking.
+    assert not (healthy / "models").exists()
+
+    monkeypatch.setattr(local, "missing_packages", lambda: ["onnxruntime", "sentencepiece"])
+    for args in (("doctor",), ("doctor", "--no-probe-embeddings")):
+        result = invoke(*args)
+        assert result.exit_code == 1
+        # A command that works from a checkout and from an installed tool alike.
+        assert local.INSTALL_HINT in result.stdout
+        assert "onnxruntime, sentencepiece" in result.stdout
+
+    monkeypatch.setenv("INGATAN_EMBED_MODEL", "not/a-model")
+    result = invoke("doctor", "--no-probe-embeddings")
+    assert result.exit_code == 1
+    assert "Unknown local embedding model" in result.stdout
+
+
+def _add_fact(
+    home: Path,
+    fact_id: str,
+    *,
+    tier: str = "business",
+    agent: str = "claude-code",
+    closed: bool = False,
+    vector_of: str | None = None,
+) -> None:
+    """Write one fact row (and optionally a vector) straight into tokoku.db."""
+    conn = sqlite3.connect(str(home / "tokoku.db"), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO facts (id, text, entities, keywords, tier, agent, kind, valid_from, "
+            "valid_to, source, created_at) VALUES (?, ?, '[]', '[]', ?, ?, 'stable', "
+            "'2020-01-01T00:00:00Z', ?, '{}', '2020-01-01T00:00:00Z')",
+            (
+                fact_id,
+                f"Catatan {fact_id}.",
+                tier,
+                agent,
+                "2020-02-01T00:00:00Z" if closed else None,
+            ),
+        )
+        if vector_of is not None:
+            conn.execute(
+                "INSERT INTO fact_embeddings (fact_id, model, dims, vec, updated_at) "
+                "VALUES (?, ?, 1, ?, '2020-01-01T00:00:00Z')",
+                (fact_id, vector_of, b"\x00\x00\x80\x3f"),
+            )
+    finally:
+        conn.close()
+
+
+def test_doctor_counts_only_the_vectors_a_reindex_would_write(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = "xenova/multilingual-e5-small"
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+    monkeypatch.setattr(doctor_module, "_local_setup_problem", lambda emb: None)
+
+    def notes() -> str:
+        result = invoke("doctor", "--no-probe-embeddings")
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    assert "have no vector" not in notes()  # an empty store has nothing to index
+
+    _add_fact(healthy, "f_done", vector_of=current)
+    _add_fact(healthy, "f_new")
+    _add_fact(healthy, "f_switched", vector_of="some/older-model")
+    _add_fact(healthy, "f_mine", tier="agent")
+    # Closed facts are never searched and never reindexed, whatever vector they still hold.
+    _add_fact(healthy, "f_closed_bare", closed=True)
+    _add_fact(healthy, "f_closed_old", closed=True, vector_of="some/older-model")
+    out = notes()
+    assert "3 of 4 valid fact(s) have no vector for this model" in out
+    assert "(1 of them have one from another model)" in out
+    assert "Run `ingatan reindex`" in out
+    assert "other agents" not in out
+
+    # Another agent's private facts are out of reach of a reindex as this agent: they are
+    # reported on their own line, with the command that does reach them.
+    _add_fact(healthy, "f_theirs", tier="agent", agent="hermes")
+    _add_fact(healthy, "f_theirs_done", tier="agent", agent="hermes", vector_of=current)
+    out = notes()
+    assert "3 of 4 valid fact(s) have no vector for this model" in out
+    assert "1 private fact(s) of other agents have no vector either" in out
+    assert "ingatan reindex --agent NAME" in out
+
+    # Seen as that agent, the same row is its own and is counted in the first line.
+    monkeypatch.setenv("INGATAN_AGENT", "hermes")
+    out = notes()
+    assert "3 of 5 valid fact(s) have no vector for this model" in out
+    assert "1 private fact(s) of other agents have no vector either" in out  # f_mine

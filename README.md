@@ -7,8 +7,8 @@
 **Memory for AI agents that knows when to doubt itself.**<br>
 **Memori untuk agen AI yang tahu kapan harus meragukan dirinya sendiri.**
 
-A local MCP server backed by plain SQLite files. Hybrid FTS5 + offline local semantic search (`intfloat/multilingual-e5-small`) out of the box, with zero API keys.<br>
-Server MCP lokal di atas berkas SQLite biasa. Pencarian hybrid FTS5 + semantik lokal offline (`intfloat/multilingual-e5-small`) aktif secara bawaan, tanpa API key.
+A local MCP server backed by plain SQLite files. Full-text search out of the box with zero API keys and no model; offline semantic search is an optional add-on.<br>
+Server MCP lokal di atas berkas SQLite biasa. Pencarian teks penuh langsung jalan tanpa API key dan tanpa model; pencarian semantik offline adalah tambahan opsional.
 
 <p>
 <img src="https://img.shields.io/badge/status-pre--release-b45309" alt="Status: pre-release">
@@ -85,9 +85,9 @@ Ingatan dibuat untuk orang yang memakai beberapa agen (asisten umum, agen SEO, a
 | | Yang dilakukan Ingatan |
 |---|---|
 | **Fakta punya tanggal tinjau** | Fakta `volatile` punya tanggal tinjau (bawaan 30 hari, bisa diatur per fakta). Setelah lewat, fakta itu tampil di bagian "check first", bukan sebagai kebenaran. |
-| **Hybrid FTS5 + semantik lokal (tanpa API key)** | Pencarian memadukan SQLite FTS5 (BM25 + trigram + imbuhan Indonesia + kamus alias) dan vektor semantik lokal offline (`intfloat/multilingual-e5-small` via ONNX `fastembed`) lewat RRF — langsung aktif tanpa API key. Vektor disimpan di berkas SQLite yang sama, bisa diganti ke Ollama (mis. `embeddinggemma`), OpenAI, Gemini, atau dimatikan (`provider = "none"`) untuk mode FTS5 hemat RAM. |
+| **Pencarian FTS5, semantik lokal opsional (tanpa API key)** | Pencarian berjalan di SQLite FTS5 (BM25 + trigram + imbuhan Indonesia + kamus alias) yang digabung lewat RRF, tanpa model sama sekali. Model embedding offline (`multilingual-e5-small` int8 lewat ONNX Runtime) bersifat opsional: `ingatan embeddings pull`, lalu `provider = "local"`. Ollama, endpoint kompatibel OpenAI, dan Gemini juga didukung. Apa yang ditambahkannya dan berapa biayanya diukur di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md). |
 | **Paham imbuhan Indonesia & alias** | Pelepas imbuhan ringan memperluas query ("dikirim" -> "pengiriman"), ditambah kamus alias per proyek (`ingatan alias add LP "landing page"`) untuk ekspansi dua arah. |
-| **Kategori memori, pin, relasi, & time-travel** | Fakta mendukung kategori (`fact`, `rule`, `procedure`, `preference`), `pinned`, deduplikasi otomatis, relasi antar-fakta (`related_to`, `part_of`), serta pencarian historis `recall(..., as_of="YYYY-MM-DD")`. |
+| **Kategori memori, pin, relasi, & time-travel** | Fakta mendukung kategori (`fact`, `rule`, `procedure`, `preference`), `pinned`, deteksi pengulangan persis, relasi antar-fakta (`related_to`, `part_of`), serta pencarian historis `recall(..., as_of="YYYY-MM-DD")`. |
 | **Scope dikunci server** | Bisnis dan agen ditentukan dari berkas konfigurasi atau variabel lingkungan saat server menyala. Tidak ada tool yang menerima nama bisnis, dan tidak ada pencarian lintas bisnis. |
 | **Langsung simpan, bisa di-undo** | Bawaan memakai pola *write-then-undo* (fakta `business`/`global` langsung tersimpan dan selalu bisa dibatalkan lewat `ingatan undo`). Bila ingin antrean persetujuan manual, set `require_approval = true` di config. |
 | **Bisa diaudit dan dibatalkan** | Setiap perubahan masuk log append-only. Kamu bisa membaca, membandingkan, dan membatalkannya. |
@@ -114,7 +114,7 @@ Ingatan belum dirilis ke PyPI, jadi pasang secara editable dari hasil clone (aga
 ```bash
 uv tool install --editable /path/to/ingatan
 ```
-> Pencarian semantik lokal offline (`fastembed` + `intfloat/multilingual-e5-small`) sudah terpasang otomatis secara bawaan (jika ingin memaksa FTS5 saja, set `INGATAN_EMBED_PROVIDER=none`).
+> Pencarian semantik bersifat opsional dan mati secara bawaan. Untuk menambahkan model offline: pasang dengan `--with numpy --with onnxruntime --with sentencepiece` (isi extra `ingatan[vector]`), jalankan `ingatan embeddings pull` sekali (unduhan 123 MB, satu-satunya perintah yang mengunduh sesuatu), lalu set `provider = "local"`. Rinciannya di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 Setelah rilis PyPI nanti, cukup satu perintah (saat ini **belum berfungsi**):
 
@@ -184,13 +184,13 @@ agent = "claude-code"
 [brief]
 token_budget = 1000
 
-# Bawaan: pencarian semantik lokal offline (`intfloat/multilingual-e5-small`)
-# Ubah ke "none" untuk FTS5 hemat RAM, atau pilih "ollama" / "openai" / "gemini"
+# Pencarian semantik opsional (bawaan: mati). Lihat docs/EMBEDDINGS.md.
 # [embeddings]
-# provider = "local"   # local (default) | none | ollama | openai | gemini
-# model = "intfloat/multilingual-e5-small"
-# threads = 2                # batas thread ONNX agar arena RAM tetap rendah
-# idle_unload_seconds = 300  # lepas model dari RAM otomatis setelah diam 5 menit (0 = tetap muat)
+# provider = "local"         # none (bawaan) | local | ollama | openai | gemini
+# model = "xenova/multilingual-e5-small"   # model lokal bawaan (int8, unduhan 123 MB)
+# threads = 2                # thread ONNX (hanya memengaruhi kecepatan, bukan RAM)
+# idle_unload_seconds = 300  # lepas model lokal dari RAM setelah diam 5 menit (0 = tetap muat)
+# recall_floor = 0.83        # ambang kemiripan; bawaannya dikalibrasi per keluarga model
 ```
 
 | Variabel lingkungan | Fungsi |
@@ -198,10 +198,11 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Menimpa `business` dari berkas konfigurasi |
 | `INGATAN_AGENT` | Menimpa `agent` dari berkas konfigurasi |
 | `INGATAN_HOME` | Folder data. Bawaan: `~/.ingatan/` |
-| `INGATAN_EMBED_PROVIDER` | Menimpa `[embeddings].provider` (`local`, `none`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_PROVIDER` | Menimpa `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`; bawaan `none`) |
 | `INGATAN_EMBED_MODEL` | Menimpa `[embeddings].model` |
-| `INGATAN_EMBED_THREADS` | Menimpa batas thread ONNX `[embeddings].threads` (bawaan: `2`) |
+| `INGATAN_EMBED_THREADS` | Menimpa jumlah thread ONNX `[embeddings].threads` (bawaan: `2`) |
 | `INGATAN_EMBED_IDLE_UNLOAD` | Menimpa detik *idle auto-unload* model lokal (bawaan: `300`, `0` = nonaktif) |
+| `INGATAN_MODEL_DIR` | Folder berkas model lokal. Bawaan: `<INGATAN_HOME>/models` |
 
 <a id="id-tool"></a>
 
@@ -211,7 +212,7 @@ token_budget = 1000
 |---|---|
 | `brief()` | Ringkasan awal sesi dalam anggaran token (bawaan 1.000): fakta "check first", lalu fakta global, bisnis, dan agen, jumlah proposal yang menunggu, dan paling banyak tiga episode untuk dicerna. |
 | `recall(query)` | Fakta valid yang cocok (leksikal + alias + semantik opsional), mendukung `as_of` (time-travel), filter `category`, `include_related` (1-hop), `include_closed`, dan `compact`. |
-| `remember(text, ...)` | Menyimpan fakta (`keywords` opsional, `category`, `pinned`, `related_to`, deduplikasi otomatis `dedup=true`). Mengembalikan fakta serupa yang berpotensi konflik. |
+| `remember(text, ...)` | Menyimpan fakta (`keywords` opsional, `category`, `pinned`, `related_to`). Teks yang sama persis hanya menyegarkan fakta yang sudah ada (`dedup=true`); teks yang sekadar mirip selalu disimpan. Mengembalikan fakta serupa yang berpotensi konflik. |
 | `supersede(old, new)` | Menutup fakta lama dan menautkannya ke yang baru (langsung berlaku secara bawaan, atau jadi proposal jika `require_approval = true`). |
 | `confirm(id, reason)` | Menyatakan fakta yang diragukan masih benar dan memajukan tanggal tinjaunya. Alasan wajib dan dicatat. |
 | `forget(id)` | Menghapus isi fakta untuk selamanya. Agen hanya boleh menghapus tier `agent`; `business`/`global` lewat CLI. |
@@ -274,7 +275,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan serve --http [--host H] [--port P]` | Menjalankan server MCP lewat HTTP (bearer token) |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Mengelola token mode HTTP |
 | `ingatan init [--business NAMA] [--agent NAMA]` | Membuat `.ingatan.toml` dan database |
-| `ingatan doctor [--business NAMA]` | Memeriksa Python, fitur SQLite, konfigurasi, database, dan folder data |
+| `ingatan doctor [--business NAMA]` | Memeriksa Python, fitur SQLite, konfigurasi, embedding, database, dan folder data |
 | `ingatan log [--limit N] [--fact ID] [--business NAMA] [--agent NAMA]` | Daftar entri log, terbaru dulu |
 | `ingatan diff <log_id> [--business NAMA]` | Sebelum dan sesudah satu entri log |
 | `ingatan undo <log_id> [--business NAMA]` | Membatalkan create, supersede, confirm, atau approve (bukan forget) |
@@ -285,6 +286,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
 | `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
+| `ingatan embeddings pull [--model NAMA]` | Mengunduh dan memverifikasi model embedding lokal opsional (satu-satunya perintah yang mengunduh sesuatu) |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Mengelola kamus alias per proyek untuk ekspansi query dua arah |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Menautkan fakta yang saling melengkapi (juga menyelesaikan konflik terbuka di antara keduanya) |
 | `ingatan pin <fact_id>`, `unpin <fact_id>` | Menyematkan fakta agar diprioritaskan di `brief` dan `recall` |
@@ -298,25 +300,29 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 - `<business>.db` menyimpan fakta bisnis dan agen, episode, catatan, dan konflik. `global.db` menyimpan fakta global. Keduanya berkas SQLite biasa.
 - `capture-errors.log` di folder data mendapat satu baris saat hook atau plugin gagal. Hook tidak pernah menghentikan sesi agen.
 - Penyamaran rahasia memakai pencocokan pola dan bisa meleset.
-- Server tidak melakukan panggilan jaringan.
+- Server tidak melakukan panggilan jaringan, kecuali kamu memilih penyedia embedding jarak jauh (`ollama`, `openai`, `gemini`): saat itu teks fakta dan query dikirim ke endpoint tersebut. Model lokal hanya diunduh ketika kamu menjalankan `ingatan embeddings pull`.
 
 <a id="id-angka"></a>
 
 ### Angka terukur
 
-Sumber: [evals/reports/latest.md](evals/reports/latest.md) (dijalankan 2026-11-23, tanpa LLM, tanpa jaringan) dan [docs/RAM.md](docs/RAM.md).
+Sumber: [evals/reports/latest.md](evals/reports/latest.md) dan [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (dijalankan 2026-11-23, tanpa LLM, tanpa jaringan), [docs/RAM.md](docs/RAM.md), dan [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-Eval berisi 43 skenario berbahasa Indonesia (40 berbasis pola + 3 skenario insiden teranonimisasi). Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
+Eval berisi 46 skenario berbahasa Indonesia (43 berbasis pola + 3 skenario insiden teranonimisasi). Satu di antaranya butuh model embedding dan dilewati pada run bawaan. Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
 
-| Metrik | Hasil | Target tebakan awal |
-|---|---|---|
-| Skenario | 43 dijalankan, 43 lulus | tidak ada |
-| recall@5 | 100,0% dari 48 pemeriksaan | di atas 80% |
-| Stale rate | 0,0% dari 66 pemeriksaan recall | di bawah 5% |
-| Leak rate | 0,0% (0 dari 91 hasil) | 0 |
-| Token per brief | rata-rata 65, maksimum 261 dari 20 brief | sekitar 1.000 |
+| Metrik | Bawaan (FTS5 saja) | Dengan model lokal | Target tebakan awal |
+|---|---|---|---|
+| Skenario | 46: 45 lulus, 1 dilewati | 46: 46 lulus | tidak ada |
+| recall@5 | 100,0% dari 51 pemeriksaan | 100,0% dari 53 pemeriksaan | di atas 80% |
+| Stale rate | 0,0% dari 72 pemeriksaan recall | 0,0% dari 74 pemeriksaan recall | di bawah 5% |
+| Leak rate | 0,0% (0 dari 95 hasil) | 0,0% (0 dari 111 hasil) | 0 |
+| Token per brief | rata-rata 64, maksimum 256 dari 20 brief | rata-rata 65, maksimum 260 dari 20 brief | sekitar 1.000 |
 
-Pemakaian memori satu proses server stdio: 70,2 MB saat diam dan 73,6 MB setelah 500 fakta disimpan. Diukur sekali, di satu laptop Windows 11, Python 3.11.16, mcp 2.3.0.
+Semua skenario lulus di kedua mode, jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
+
+Memori satu proses server stdio setelah 500 fakta, di satu laptop Windows 11 (Python 3.14.3, mcp 2.3.0): 79,5 MB tanpa model, 275,0 MB dengan model lokal bawaan termuat (puncak 324,1 MB). Model dilepas setelah lima menit diam.
+
+Kecepatan di laptop yang sama, `scripts/bench_scale.py` (korpus sintetis 60 kata, kasus terburuk): satu `remember` sekitar 5 ms pada 1.300 fakta, 15 ms pada 4.300, dan 40 ms pada 16.300; satu `recall` sekitar 5, 10, dan 40 ms. Ini hasil terbaik dari beberapa run; saat mesin sedang sibuk, run yang sama memakan waktu sampai tiga kali lebih lama.
 
 <a id="id-status"></a>
 
@@ -331,6 +337,7 @@ Yang **belum** diverifikasi:
 - Set eval belum memuat insiden nyata. Sekitar sepuluh masih dibutuhkan; lihat [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
 - Porsi kandidat konflik yang benar-benar diselesaikan agen belum diukur dari pemakaian nyata.
 - RAM di VPS Linux, dan di sistem selain laptop Windows di atas.
+- Ambang kemiripan model embedding opsional dikalibrasi pada 33 fakta sintetis di satu mesin x86-64. Model selain `multilingual-e5-small` belum diukur.
 - Konkurensi diuji dengan beberapa proses lokal, belum di network drive atau folder sinkronisasi.
 
 <a id="id-struktur"></a>
@@ -344,7 +351,7 @@ src/ingatan/
   scope/         konfigurasi, tier, visibilitas
   tokens/        token bearer untuk mode HTTP
   audit/         log append-only, diff, undo
-  search/        BM25, trigram, entitas, kebaruan, pelepas imbuhan
+  search/        BM25, trigram, entitas, kesegaran, pelepas imbuhan, embedding opsional
   facts/         remember, supersede, confirm, forget, history
   proposals/     antrean proposal
   episodes/      tangkapan percakapan dan tawaran digest
@@ -353,9 +360,10 @@ src/ingatan/
   mcp/           server MCP (stdio, dan HTTP di http.py)
   cli/           perintah untuk manusia
   integrations/  hook Claude Code dan plugin Hermes
-evals/           harness dan 40 skenario
+evals/           harness dan 46 skenario
 tests/           satu folder per modul
-docs/            desain, PRD, rencana, kontrak, panduan setup
+docs/            desain, PRD, rencana, kontrak, embedding, RAM, panduan setup
+scripts/         pengukuran: RAM, kecepatan, kalibrasi embedding
 ```
 
 <a id="id-pengembangan"></a>
@@ -377,7 +385,7 @@ Peta modul, aturan lapisan, cara menambah skenario eval, dan cara menambah migra
 
 ### Peta jalan
 
-Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin (versi pertama sudah ada, lihat [docs/setup-http.md](docs/setup-http.md)), integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key.
+Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`, versi pertama sudah ada, lihat [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin (versi pertama sudah ada, lihat [docs/setup-http.md](docs/setup-http.md)), integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key.
 
 <a id="id-masalah"></a>
 
@@ -390,6 +398,8 @@ Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional
 | Hook tidak menangkap apa pun | Lihat `capture-errors.log` di folder data. Hook sengaja diam saat gagal. |
 | `forget` melaporkan WAL masih sibuk | Tutup proses Ingatan lain, lalu jalankan forget lagi atau mulai ulang. |
 | `uvx ingatan` tidak ditemukan | Paket belum ada di PyPI. Pasang dari clone. |
+| `ingatan doctor` gagal di embeddings | Ikuti perintah yang disebutkannya: `pip install numpy onnxruntime sentencepiece` di environment tempat Ingatan berjalan (untuk `uv tool`: pasang ulang dengan `--with numpy --with onnxruntime --with sentencepiece`), atau `ingatan embeddings pull`. Sampai itu beres, recall tetap berjalan dengan FTS5 saja. |
+| Setelah upgrade, pencarian semantik tidak menemukan fakta lama | Vektor dari model lain diabaikan. Jalankan `ingatan reindex`. |
 
 <a id="id-lisensi"></a>
 
@@ -424,9 +434,9 @@ It is built for people who use several agents (a general assistant, an SEO agent
 | | What Ingatan does |
 |---|---|
 | **Facts carry a review date** | A `volatile` fact has a review date (30 days by default, settable per fact). Once it passes, the fact is shown under "check first" instead of as truth. |
-| **Hybrid FTS5 + local semantic search (no API key)** | Search fuses SQLite FTS5 (BM25 + trigram + Indonesian affixes + project aliases) with offline local semantic vectors (`intfloat/multilingual-e5-small` via ONNX `fastembed`) through RRF — enabled by default with no API key. Vectors live in the same SQLite file; switch to Ollama (e.g. `embeddinggemma`), OpenAI, Gemini, or set `provider = "none"` for pure FTS5 minimal-RAM mode. |
+| **FTS5 search, optional local semantic search (no API key)** | Search runs on SQLite FTS5 (BM25 + trigram + Indonesian affixes + project aliases) fused through RRF, with no model at all. An offline embedding model (`multilingual-e5-small`, int8, on ONNX Runtime) is opt-in: `ingatan embeddings pull`, then `provider = "local"`. Ollama, OpenAI-compatible endpoints and Gemini work too. What it adds and what it costs is measured in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md). |
 | **Understands Indonesian affixes & aliases** | A lightweight affix stripper widens queries ("dikirim" -> "pengiriman"), paired with a project-scoped alias glossary (`ingatan alias add LP "landing page"`) for bidirectional expansion. |
-| **Memory categories, pinning, links & time-travel** | Facts support categories (`fact`, `rule`, `procedure`, `preference`), `pinned`, automatic deduplication, relation edges (`related_to`, `part_of`), and historical queries via `recall(..., as_of="YYYY-MM-DD")`. |
+| **Memory categories, pinning, links & time-travel** | Facts support categories (`fact`, `rule`, `procedure`, `preference`), `pinned`, exact-repeat detection, relation edges (`related_to`, `part_of`), and historical queries via `recall(..., as_of="YYYY-MM-DD")`. |
 | **Scope fixed by the server** | The business and the agent come from a config file or environment variables at start-up (or an explicit `allowed_businesses` allowlist in multi-business mode). No cross-business search. |
 | **Write-then-undo by default** | Shared writes apply immediately and stay undoable via `ingatan undo`; set `require_approval = true` for a manual CLI proposal queue. |
 | **Auditable and reversible** | Every change goes to an append-only log. You can read it, diff it and undo it. |
@@ -453,7 +463,7 @@ Ingatan is not on PyPI yet, so install in editable mode from a checkout (so `git
 ```bash
 uv tool install --editable /path/to/ingatan
 ```
-> Offline local semantic search (`fastembed` + `intfloat/multilingual-e5-small`) is included by default (set `INGATAN_EMBED_PROVIDER=none` for pure FTS5 minimal-RAM mode).
+> Semantic search is optional and off by default. To add the offline model: install with `--with numpy --with onnxruntime --with sentencepiece` (the contents of the `ingatan[vector]` extra), run `ingatan embeddings pull` once (a 123 MB download, the only command that downloads anything), then set `provider = "local"`. Details in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
 After the PyPI release it will be one command (this **does not work yet**):
 
@@ -523,13 +533,13 @@ agent = "claude-code"
 [brief]
 token_budget = 1000
 
-# Default: offline local semantic search (`intfloat/multilingual-e5-small`)
-# Set provider = "none" for pure FTS5 minimal-RAM mode, or use "ollama" / "openai" / "gemini"
+# Optional semantic search (off by default). See docs/EMBEDDINGS.md.
 # [embeddings]
-# provider = "local"   # local (default) | none | ollama | openai | gemini
-# model = "intfloat/multilingual-e5-small"
-# threads = 2                # caps ONNX thread arenas to keep RAM low
-# idle_unload_seconds = 300  # auto-unload local model after 5 min idle (0 = keep loaded)
+# provider = "local"         # none (default) | local | ollama | openai | gemini
+# model = "xenova/multilingual-e5-small"   # the default local model (int8, 123 MB download)
+# threads = 2                # ONNX threads (affects speed only, not memory)
+# idle_unload_seconds = 300  # drop the local model from memory after 5 idle minutes (0 = keep)
+# recall_floor = 0.83        # similarity cut-off; the defaults are calibrated per model family
 ```
 
 | Environment variable | Purpose |
@@ -537,10 +547,11 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Overrides `business` from the config file |
 | `INGATAN_AGENT` | Overrides `agent` from the config file |
 | `INGATAN_HOME` | Data folder. Default: `~/.ingatan/` |
-| `INGATAN_EMBED_PROVIDER` | Overrides `[embeddings].provider` (`local`, `none`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_PROVIDER` | Overrides `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`; default `none`) |
 | `INGATAN_EMBED_MODEL` | Overrides `[embeddings].model` |
-| `INGATAN_EMBED_THREADS` | Overrides ONNX thread cap `[embeddings].threads` (default: `2`) |
+| `INGATAN_EMBED_THREADS` | Overrides the ONNX thread count `[embeddings].threads` (default: `2`) |
 | `INGATAN_EMBED_IDLE_UNLOAD` | Overrides local model idle auto-unload in seconds (default: `300`, `0` = keep) |
+| `INGATAN_MODEL_DIR` | Folder of the local model files. Default: `<INGATAN_HOME>/models` |
 
 <a id="en-tools"></a>
 
@@ -550,7 +561,7 @@ token_budget = 1000
 |---|---|
 | `brief()` | Session-start summary within a token budget (default 1,000): "check first" facts, then global, business and agent facts, the number of proposals waiting, and up to three captured episodes to digest. |
 | `recall(query)` | Valid facts matching the query (lexical + aliases + optional semantic), supporting `as_of` (time-travel), `category` filter, `include_related` (1-hop), `include_closed`, and `compact`. |
-| `remember(text, ...)` | Saves a fact (`keywords` optional, `category`, `pinned`, `related_to`, automatic deduplication `dedup=true`). Returns similar existing facts. |
+| `remember(text, ...)` | Saves a fact (`keywords` optional, `category`, `pinned`, `related_to`). An exact repeat of a stored text only refreshes that fact (`dedup=true`); a text that is merely similar is always saved. Returns similar existing facts. |
 | `supersede(old, new)` | Closes the old fact and links it to the new one (applied immediately by default, or queued as a proposal when `require_approval = true`). |
 | `confirm(id, reason)` | Says a doubtful fact is still true and moves its review date forward. A reason is required and logged. |
 | `forget(id)` | Deletes a fact's content for good. Agents can forget `agent`-tier facts only; `business`/`global` require the CLI. |
@@ -613,7 +624,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan serve --http [--host H] [--port P]` | Start the MCP server over HTTP (bearer tokens) |
 | `ingatan token add --business B --agent A [--label L]`, `list`, `revoke <id>` | Manage the HTTP-mode tokens |
 | `ingatan init [--business NAME] [--agent NAME]` | Create `.ingatan.toml` and the databases |
-| `ingatan doctor [--business NAME]` | Check Python, SQLite features, config, databases and the data folder |
+| `ingatan doctor [--business NAME]` | Check Python, SQLite features, config, embeddings, databases and the data folder |
 | `ingatan log [--limit N] [--fact ID] [--business NAME] [--agent NAME]` | List log entries, newest first |
 | `ingatan diff <log_id> [--business NAME]` | Before and after of one log entry |
 | `ingatan undo <log_id> [--business NAME]` | Reverse a create, supersede, confirm or approve (not a forget) |
@@ -624,6 +635,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
 | `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
+| `ingatan embeddings pull [--model NAME]` | Download and verify the optional local embedding model (the only command that downloads anything) |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Manage project-scoped glossary aliases for bidirectional recall expansion |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Link complementary facts (also resolves open conflicts between them) |
 | `ingatan pin <fact_id>`, `unpin <fact_id>` | Pin a fact so it stays prioritized in `brief` and `recall` |
@@ -637,25 +649,29 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 - `<business>.db` holds business and agent facts, episodes, notes and conflicts. `global.db` holds global facts. Both are plain SQLite files.
 - `capture-errors.log` in the data folder gets one line when a hook or plugin fails. Hooks never stop the agent session.
 - Redaction is pattern matching and can miss secrets.
-- The server makes no network call.
+- The server makes no network call, unless you choose a remote embedding provider (`ollama`, `openai`, `gemini`): then the text of facts and queries is sent to that endpoint. The local model is downloaded only when you run `ingatan embeddings pull`.
 
 <a id="en-numbers"></a>
 
 ### Measured numbers
 
-Sources: [evals/reports/latest.md](evals/reports/latest.md) (run on 2026-11-23, no LLM, no network) and [docs/RAM.md](docs/RAM.md).
+Sources: [evals/reports/latest.md](evals/reports/latest.md) and [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (run on 2026-11-23, no LLM, no network), [docs/RAM.md](docs/RAM.md) and [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-The eval contains 43 scenarios in Indonesian (40 pattern-based + 3 anonymized incident scenarios). These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
+The eval contains 46 scenarios in Indonesian (43 pattern-based + 3 anonymized incident scenarios). One of them needs an embedding model and is skipped in the default run. These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
 
-| Metric | Result | First-guess target |
-|---|---|---|
-| Scenarios | 43 run, 43 pass | none |
-| recall@5 | 100.0% over 48 checks | over 80% |
-| Stale rate | 0.0% over 66 recall checks | under 5% |
-| Leak rate | 0.0% (0 of 91 results) | 0 |
-| Tokens per brief | mean 65, max 261 over 20 briefs | about 1,000 |
+| Metric | Default (FTS5 only) | With the local model | First-guess target |
+|---|---|---|---|
+| Scenarios | 46: 45 pass, 1 skipped | 46: 46 pass | none |
+| recall@5 | 100.0% over 51 checks | 100.0% over 53 checks | over 80% |
+| Stale rate | 0.0% over 72 recall checks | 0.0% over 74 recall checks | under 5% |
+| Leak rate | 0.0% (0 of 95 results) | 0.0% (0 of 111 results) | 0 |
+| Tokens per brief | mean 64, max 256 over 20 briefs | mean 65, max 260 over 20 briefs | about 1,000 |
 
-Memory use of one stdio server process: 70.2 MB idle and 73.6 MB after 500 facts were saved. Measured once, on one Windows 11 laptop, Python 3.11.16, mcp 2.3.0.
+Every scenario passes in both modes, so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
+
+Memory of one stdio server process after 500 facts, on one Windows 11 laptop (Python 3.14.3, mcp 2.3.0): 79.5 MB without a model, 275.0 MB with the default local model loaded (peak 324.1 MB). The model is unloaded after five idle minutes.
+
+Speed on the same laptop, `scripts/bench_scale.py` (a synthetic 60-word corpus, a hard case): one `remember` takes about 5 ms at 1,300 facts, 15 ms at 4,300 and 40 ms at 16,300; one `recall` about 5, 10 and 40 ms. These are the better of repeated runs; on a busy machine the same run took up to three times as long.
 
 <a id="en-status"></a>
 
@@ -670,6 +686,7 @@ What is **not** verified yet:
 - The eval set has no real incidents. About ten are still wanted; see [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
 - The share of conflict candidates that agents actually resolve has not been measured from real use.
 - RAM on a Linux VPS, and on any system other than the Windows laptop above.
+- The similarity cut-offs of the optional embedding model were calibrated on 33 synthetic facts on one x86-64 machine. No model other than `multilingual-e5-small` has been measured.
 - Concurrency is tested with several local processes, not on network drives or synced folders.
 
 <a id="en-structure"></a>
@@ -683,7 +700,7 @@ src/ingatan/
   scope/         config, tiers, visibility
   tokens/        bearer tokens for HTTP mode
   audit/         append-only log, diff, undo
-  search/        BM25, trigram, entity, recency, affix stripper
+  search/        BM25, trigram, entity, freshness, affix stripper, optional embeddings
   facts/         remember, supersede, confirm, forget, history
   proposals/     proposal queue
   episodes/      captured turns and the digest offer
@@ -692,9 +709,10 @@ src/ingatan/
   mcp/           MCP server (stdio, and HTTP in http.py)
   cli/           commands for humans
   integrations/  Claude Code hooks and the Hermes plugin
-evals/           harness and 40 scenarios
+evals/           harness and 46 scenarios
 tests/           one folder per module
-docs/            design, PRD, plan, contract, setup guides
+docs/            design, PRD, plan, contract, embeddings, RAM, setup guides
+scripts/         measurements: RAM, speed, embedding calibration
 ```
 
 <a id="en-development"></a>
@@ -716,7 +734,7 @@ The module map, the layering rule, how to add an eval scenario and how to add a 
 
 ### Roadmap
 
-After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines (a first version exists, see [docs/setup-http.md](docs/setup-http.md)), code-graph integration, and a UI. All optional; every feature must keep working with no API key.
+After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`, a first version exists, see [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines (a first version exists, see [docs/setup-http.md](docs/setup-http.md)), code-graph integration, and a UI. All optional; every feature must keep working with no API key.
 
 <a id="en-troubleshooting"></a>
 
@@ -729,6 +747,8 @@ After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`in
 | Hooks capture nothing | Look at `capture-errors.log` in the data folder. Hooks stay silent on failure by design. |
 | `forget` reports the WAL is still busy | Close other Ingatan processes, then forget again or restart. |
 | `uvx ingatan` is not found | The package is not on PyPI yet. Install from a checkout. |
+| `ingatan doctor` fails on embeddings | Run the command it names: `pip install numpy onnxruntime sentencepiece` in the environment Ingatan runs in (for `uv tool`: reinstall with `--with numpy --with onnxruntime --with sentencepiece`), or `ingatan embeddings pull`. Until then recall keeps working on FTS5 alone. |
+| After an upgrade, semantic search no longer finds older facts | Vectors made by another model are ignored. Run `ingatan reindex`. |
 
 <a id="en-license"></a>
 

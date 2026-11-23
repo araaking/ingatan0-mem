@@ -104,7 +104,7 @@ Size: S
 ## Milestone B: search, facts and the seven tools (week 1)
 
 ### T-8: Search module
-Implement FTS5 BM25 over text, entities and keywords. Add the trigram fallback, the entity-match signal and the recency signal, fused by reciprocal rank. Return only valid facts by default, with source, date and status ("check first", "possible conflict"). Update `use_count` and `last_used` (OQ-6).
+Implement FTS5 BM25 over text, entities and keywords. Add the trigram fallback, the entity-match signal and the recency signal, fused by reciprocal rank (as built, recency is a bounded freshness factor on the fused score, see `ARCHITECTURE.md`). Return only valid facts by default, with source, date and status ("check first", "possible conflict"). Update `use_count` and `last_used` (OQ-6).
 Satisfies: FR-6, FR-7, FR-19, FR-27, FR-28, FR-29, FR-30, FR-31
 Depends on: T-3, T-4, T-5
 Size: L
@@ -383,7 +383,7 @@ Three things can slip the plan with no coding delay: the ten incidents, access t
 
 ## After the MVP
 
-- Vector search (`ingatan[vector]`, sqlite-vec) as an extra rank in the fusion (FR-56).
+- Vector search (`ingatan[vector]`, sqlite-vec) as an extra rank in the fusion (FR-56). A first version exists, without sqlite-vec: see `EMBEDDINGS.md`.
 - Server-side LLM digest in batches with a cheap model (`ingatan[llm]`, FR-57). Becomes the recommended mode if the failure line is hit.
 - HTTP mode for sharing across machines (FR-58).
 - LongMemEval subset, with cost reported (NFR-18).

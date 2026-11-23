@@ -7,6 +7,7 @@ import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from ingatan import timeutil
@@ -46,8 +47,17 @@ MAX_EXPANDED_TOKENS = 60
 # to 2/110, and two expanded signals at the best rank to 2*0.25/61, so a fact that matches
 # the literal word outranks one that only matches a root, apart from recency and entity bonuses.
 EXPANDED_WEIGHT = 0.25
-# Recency breaks ties and gently favours newer facts without drowning out lexical matches.
-RECENCY_WEIGHT = 0.35
+# Freshness of a volatile fact, from its age and not from its rank among the candidates: the
+# score is multiplied by 1 + RECENCY_BOOST * (0.5 ** (age_days / half_life) - 0.5). A fact
+# written today gains 2%, one a half-life old is unchanged, a very old one loses 2%. That is
+# enough to pass a neighbour ranked one place higher (1/61 against 1/62 is 1.6%) and never
+# more. Stable facts are not time-sensitive and keep their score. The half-life equals the
+# default review interval, so a fact starts to lose ground about when it is due for review.
+RECENCY_BOOST = 0.04
+RECENCY_HALF_LIFE_DAYS = 30.0
+# A lexical hit this far below the best hit of its own index and file is a weak tail hit.
+LEXICAL_TAIL_RATIO = 0.25
+NOTE_TAIL_RATIO = 0.35
 # Identifier phrase bonus (e.g. `sync_report` -> `"sync report"` matching `sync_report.py`).
 PHRASE_WEIGHT = 1.0
 # Project alias glossary expansion weight.
@@ -65,8 +75,9 @@ GENERIC_ENTITY_MIN_FACTS = 10
 GENERIC_ENTITY_FREQ_RATIO = 0.35
 MIN_CONFLICT_OVERLAP_RATIO = 0.35
 GENERIC_ONLY_OVERLAP_RATIO = 0.50
-SEMANTIC_CONFLICT_THRESHOLD = 0.82
-SEMANTIC_CONFLICT_STRICT_THRESHOLD = 0.88
+# How many lexically closest facts per file `similar_facts` examines in detail. A store with
+# fewer facts sharing the entity than this is examined in full.
+SIMILAR_CANDIDATE_LIMIT = 200
 
 # Column weights for bm25(): (text, entities, keywords) and (heading, text).
 _FACT_WEIGHTS = "1.0, 3.0, 2.0"
@@ -243,13 +254,24 @@ def _bm25_scores(
     validity: str,
     time_param: str,
     pool: dict[str, _Candidate],
+    strength: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """BM25 of every candidate of one index, from both files. Fills `pool`."""
+    """BM25 of every candidate of one index, from both files. Fills `pool`.
+
+    `strength`, when given, receives each hit's BM25 as a share of the best hit of the same
+    index in the same file (1.0 for that best hit). A raw BM25 value depends on the index,
+    the column weights and the size of the file, so only this share is comparable.
+    """
     scores: dict[str, float] = {}
     for conn in ctx.connections():
-        for row in _fact_matches(ctx, conn, table, match, validity, time_param):
+        rows = _fact_matches(ctx, conn, table, match, validity, time_param)
+        top = max((abs(float(row["bm"])) for row in rows), default=0.0)
+        for row in rows:
             pool.setdefault(row["id"], _Candidate(row, conn))
             scores[row["id"]] = row["bm"]
+            if strength is not None and top > 0.0:
+                share = abs(float(row["bm"])) / top
+                strength[row["id"]] = max(strength.get(row["id"], 0.0), share)
     return scores
 
 
@@ -324,6 +346,19 @@ def _valid_fact_count(ctx: Context) -> int:
             ).fetchone()[0]
         )
     return total
+
+
+def _freshness_factor(row: sqlite3.Row, reference: datetime) -> float:
+    """Score multiplier between 1 - RECENCY_BOOST/2 and 1 + RECENCY_BOOST/2 (stable: 1)."""
+    if row["kind"] != "volatile":
+        return 1.0
+    try:
+        written = timeutil.parse(str(row["valid_from"]))
+    except ValidationError:
+        return 1.0
+    age_days = max(0.0, (reference - written).total_seconds() / 86400.0)
+    freshness = 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
+    return 1.0 + RECENCY_BOOST * (freshness - 0.5)
 
 
 def _row_blob(row: sqlite3.Row) -> str:
@@ -441,9 +476,20 @@ def recall(
     alias_tri = [t for t in alias_tokens if len(t) >= MIN_TRIGRAM_LENGTH]
 
     pool: dict[str, _Candidate] = {}
-    word_bm = _bm25_scores(ctx, "facts_fts", _match(tokens), validity_sql, time_param, pool)
+    lexical_strength: dict[str, float] = {}
+    word_bm = _bm25_scores(
+        ctx, "facts_fts", _match(tokens), validity_sql, time_param, pool, lexical_strength
+    )
     tri_bm = (
-        _bm25_scores(ctx, "facts_tri", _match(trigram_tokens), validity_sql, time_param, pool)
+        _bm25_scores(
+            ctx,
+            "facts_tri",
+            _match(trigram_tokens),
+            validity_sql,
+            time_param,
+            pool,
+            lexical_strength,
+        )
         if trigram_tokens
         else {}
     )
@@ -536,26 +582,22 @@ def recall(
             ):
                 kept[fact_id] = cand
         pool = kept
-        # When the store is non-trivial and strong hits exist, drop weak single-term tail hits.
+        # When the store is non-trivial, drop weak single-term tail hits: those far below
+        # the best hit of their own index and file, with nothing else speaking for them.
         if len(pool) > 1 and _valid_fact_count(ctx) >= 8:
-            lex_mag = {
-                fid: max(abs(word_bm.get(fid, 0.0)), abs(tri_bm.get(fid, 0.0))) for fid in pool
+            pool = {
+                fid: cand
+                for fid, cand in pool.items()
+                if (
+                    term_hits.get(fid, 0) >= 2
+                    or fid in entity_counts
+                    or fid in phrase_bm
+                    or fid in sem_scores
+                    or fid in alias_word_bm
+                    or fid in alias_tri_bm
+                    or lexical_strength.get(fid, 0.0) >= LEXICAL_TAIL_RATIO
+                )
             }
-            top_mag = max(lex_mag.values(), default=0.0)
-            if top_mag >= 1.0:
-                pool = {
-                    fid: cand
-                    for fid, cand in pool.items()
-                    if (
-                        term_hits.get(fid, 0) >= 2
-                        or fid in entity_counts
-                        or fid in phrase_bm
-                        or fid in sem_scores
-                        or fid in alias_word_bm
-                        or fid in alias_tri_bm
-                        or lex_mag[fid] >= top_mag * 0.25
-                    )
-                }
 
     # Optional cognitive category filter.
     if category is not None:
@@ -573,12 +615,15 @@ def recall(
         if is_pinned or cat in ("rule", "procedure"):
             scores[fact_id] += ROLE_BOOST
 
-    # Recency: newest valid_from first. ISO strings sort as text, so map them to ordinals.
+    # Freshness: a bounded boost from the age of a volatile fact (see RECENCY_BOOST).
+    reference = timeutil.parse(time_param)
+    for fact_id, cand in pool.items():
+        scores[fact_id] *= _freshness_factor(cand.row, reference)
+
+    # ISO strings sort as text, so map them to ordinals for the tie-break below.
     stamps = sorted({c.row["valid_from"] for c in pool.values()})
     ordinal = {stamp: float(i) for i, stamp in enumerate(stamps)}
     recency = {i: ordinal[c.row["valid_from"]] for i, c in pool.items()}
-    for fact_id, rank in _competition_ranks(recency).items():
-        scores[fact_id] += RECENCY_WEIGHT / (RRF_K + rank)
 
     # Ties on score fall back to the newest fact, then the id.
     ordered = sorted(pool, key=lambda i: (-round(scores[i], 12), -recency[i], i))[:limit]
@@ -625,7 +670,8 @@ def _notes(
     conn = ctx.business
     rows: dict[int, sqlite3.Row] = {}
     scores: dict[int, float] = {}
-    best_bm: dict[int, float] = {}
+    # Each exact-signal hit's BM25 as a share of the best hit of the same index.
+    strength: dict[int, float] = {}
     signals = (
         ("notes_fts", tokens, 1.0),
         ("notes_tri", trigram_tokens, 1.0),
@@ -642,12 +688,13 @@ def _notes(
             "ORDER BY bm LIMIT :lim",
             {"q": _match(toks), "lim": CANDIDATES_PER_SIGNAL},
         ).fetchall()
+        top = max((abs(float(row["bm"])) for row in found), default=0.0)
         for rank, row in enumerate(found, start=1):
             nid = row["id"]
             rows.setdefault(nid, row)
             scores[nid] = scores.get(nid, 0.0) + weight / (RRF_K + rank)
-            if weight >= 1.0:
-                best_bm[nid] = max(best_bm.get(nid, 0.0), abs(float(row["bm"])))
+            if weight >= 1.0 and top > 0.0:
+                strength[nid] = max(strength.get(nid, 0.0), abs(float(row["bm"])) / top)
 
     sem_note_ids: set[int] = set()
     if query_vec:
@@ -675,14 +722,12 @@ def _notes(
             >= 1
         ]
     note_total = int(conn.execute("SELECT count(*) FROM notes").fetchone()[0])
-    if len(kept_ids) > 1 and note_total >= 4:
-        top_bm = max((best_bm.get(nid, 0.0) for nid in kept_ids), default=0.0)
-        if top_bm >= 1.0:
-            kept_ids = [
-                nid
-                for nid in kept_ids
-                if nid in sem_note_ids or best_bm.get(nid, 0.0) >= top_bm * 0.35
-            ]
+    if len(kept_ids) > 1 and note_total >= 4 and strength:
+        kept_ids = [
+            nid
+            for nid in kept_ids
+            if nid in sem_note_ids or strength.get(nid, 0.0) >= NOTE_TAIL_RATIO
+        ]
 
     best = sorted(kept_ids, key=lambda i: (-scores[i], i))[:limit]
     return [
@@ -691,23 +736,87 @@ def _notes(
     ]
 
 
-def _generic_entities(
-    ctx: Context, valid_rows: list[tuple[sqlite3.Connection, sqlite3.Row]]
-) -> set[str]:
-    """Entities that represent the scope or appear too widely to signal a conflict."""
+def _generic_entities(ctx: Context, total: int, now: str) -> set[str]:
+    """Entities that represent the scope or appear too widely to signal a conflict.
+
+    `total` is the number of valid visible facts. The counting is done by SQLite, so no
+    fact row is read into Python for it.
+    """
     generic = {ctx.scope.business.casefold(), ctx.scope.agent.casefold()}
-    total = len(valid_rows)
     if total < GENERIC_ENTITY_MIN_FACTS:
         return generic
     counts: dict[str, int] = {}
-    for _, row in valid_rows:
-        for ent in {e.casefold().strip() for e in _json_list(row["entities"]) if e.strip()}:
-            counts[ent] = counts.get(ent, 0) + 1
+    for conn in ctx.connections():
+        rows = conn.execute(
+            "SELECT j.value AS entity, count(DISTINCT f.seq) AS n "
+            "FROM facts f, json_each(f.entities) j "
+            f"WHERE {is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')} "
+            "GROUP BY j.value",
+            {"now": now, **ctx.params},
+        )
+        for row in rows:
+            name = str(row["entity"]).casefold().strip()
+            if name:
+                counts[name] = counts.get(name, 0) + int(row["n"])
     cutoff = total * GENERIC_ENTITY_FREQ_RATIO
-    for ent, freq in counts.items():
-        if freq >= cutoff:
-            generic.add(ent)
+    generic.update(name for name, freq in counts.items() if freq >= cutoff)
     return generic
+
+
+def _quoted(text: str) -> str:
+    """`text` as one FTS5 string, so the index's own tokenizer splits it.
+
+    A hand-made split can disagree with the tokenizer (it does at a combining accent, where
+    `unicode61` keeps one token), and then the phrase would never match what is indexed.
+    """
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _shared_entity_rows(
+    ctx: Context, wanted: set[str], topic_tokens: set[str], now: str
+) -> list[tuple[sqlite3.Connection, sqlite3.Row]]:
+    """Valid visible facts whose `entities` column mentions one of `wanted`.
+
+    The word index answers this, so no fact row is read only to be skipped (the lookup still
+    gets slower as more facts mention the entity). The match is on word tokens and is
+    therefore a superset of "has exactly this entity"; the caller still compares the entity
+    names themselves. When more than `SIMILAR_CANDIDATE_LIMIT` facts in a file mention the
+    entity, the ones that also share topic words come first.
+    """
+    named = sorted(name for name in wanted if _WORD.search(name))[:MAX_QUERY_TOKENS]
+    # A name with no letter or digit (an emoji, "++") has no token in the word index.
+    symbolic = sorted(wanted - set(named))[:MAX_QUERY_TOKENS]
+    found: list[tuple[sqlite3.Connection, sqlite3.Row]] = []
+    if named:
+        phrases = [_quoted(name) for name in named]
+        ranking = [
+            *phrases,
+            *(f'"{token}"' for token in sorted(topic_tokens)[:MAX_QUERY_TOKENS]),
+        ]
+        # Every row that satisfies the left side also satisfies the right side through the
+        # same phrase, so the right side never filters. It only lets topic words raise the
+        # rank.
+        match = f"(entities : ({' OR '.join(phrases)})) AND ({' OR '.join(ranking)})"
+        for conn in ctx.connections():
+            rows = conn.execute(
+                "SELECT f.* FROM facts_fts JOIN facts f ON f.seq = facts_fts.rowid "
+                f"WHERE facts_fts MATCH :q AND {is_valid_sql('f')} "
+                f"AND {ctx.visible_sql(conn, alias='f')} "
+                f"ORDER BY bm25(facts_fts, {_FACT_WEIGHTS}) LIMIT :lim",
+                {"q": match, "now": now, "lim": SIMILAR_CANDIDATE_LIMIT, **ctx.params},
+            ).fetchall()
+            found.extend((conn, row) for row in rows)
+    for name in symbolic:
+        # Rare enough to afford the one pass SQLite makes over the entities column.
+        for conn in ctx.connections():
+            rows = conn.execute(
+                "SELECT f.* FROM facts f WHERE EXISTS "
+                "(SELECT 1 FROM json_each(f.entities) j WHERE trim(j.value) = :name) "
+                f"AND {is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')} LIMIT :lim",
+                {"name": name, "now": now, "lim": SIMILAR_CANDIDATE_LIMIT, **ctx.params},
+            ).fetchall()
+            found.extend((conn, row) for row in rows)
+    return found
 
 
 def _linked_neighbors(ctx: Context, fact_id: str | None) -> set[str]:
@@ -738,56 +847,72 @@ def similar_facts(
     as complementary via `edges`, and distinct external resource IDs. Never touches `use_count`.
     """
     wanted = {e.casefold().strip() for e in entities if e.strip()}
-    sem_enabled = embed.is_enabled(ctx.scope.embeddings)
-    if (not wanted and not sem_enabled) or limit <= 0:
+    cfg = ctx.scope.embeddings
+    profile = embed.similarity_profile(cfg)
+    sem_enabled = embed.is_enabled(cfg)
+    # With no entity to share, only a model family that has an entity-free cut-off can link
+    # two facts. Without one there is nothing to look for, and no model call to make.
+    if limit <= 0 or (not wanted and not (sem_enabled and profile.conflict_strict is not None)):
         return []
 
     now = _now()
-    valid_rows: list[tuple[sqlite3.Connection, sqlite3.Row]] = []
-    for conn in ctx.connections():
-        rows = conn.execute(
-            f"SELECT * FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)}",
-            {"now": now, **ctx.params},
-        ).fetchall()
-        valid_rows.extend((conn, r) for r in rows)
-
-    if not valid_rows:
+    total = _valid_fact_count(ctx)
+    if total == 0:
         return []
 
     skip_linked = set(linked_ids) | _linked_neighbors(ctx, exclude_id)
-    generic = _generic_entities(ctx, valid_rows)
+    generic = _generic_entities(ctx, total, now)
     generic_words = frozenset(w.casefold() for g in generic for w in _WORD.findall(g))
     new_tokens = extract_content_tokens(text, " ".join(keywords), exclude=generic_words)
     new_res_ids = extract_resource_ids(text)
 
-    # Optional semantic similarity map for catching synonym-only conflicts.
-    sem_map: dict[str, float] = {}
+    vec: list[float] = []
     if sem_enabled:
         vec = (
             list(query_vec)
             if query_vec is not None
-            else embed.embed_text(ctx.scope.embeddings, text, is_query=False)
+            else embed.embed_text(cfg, text, is_query=False) or []
         )
-        if vec:
-            sem_map, _ = embed.semantic_fact_scores(
-                ctx,
-                text,
-                validity_sql=is_valid_sql("f"),
-                time_param=now,
-                min_similarity=SEMANTIC_CONFLICT_THRESHOLD,
-                query_vec=vec,
-            )
+
+    # Candidates are looked up, not found by reading every fact row: the facts that mention
+    # one of the entities and, for a model family with an entity-free cut-off, the facts
+    # that close in meaning.
+    candidates: dict[str, tuple[sqlite3.Connection, sqlite3.Row]] = {}
+    if wanted:
+        for conn, row in _shared_entity_rows(ctx, wanted, new_tokens, now):
+            candidates.setdefault(str(row["id"]), (conn, row))
+    if vec and profile.conflict_strict is not None:
+        _, close_rows = embed.semantic_fact_scores(
+            ctx,
+            text,
+            validity_sql=is_valid_sql("f"),
+            time_param=now,
+            min_similarity=profile.conflict_strict,
+            query_vec=vec,
+        )
+        for fid, pair in close_rows.items():
+            candidates.setdefault(fid, pair)
+    # Every candidate is scored itself. The nearest-neighbour list of the whole file is no
+    # substitute: it is cut at fifty, and look-alike facts about other subjects would push
+    # the one fact that shares the entity out of it.
+    sem_map = (
+        embed.fact_similarities(ctx, ((conn, fid) for fid, (conn, _row) in candidates.items()), vec)
+        if vec and candidates
+        else {}
+    )
 
     scored: list[tuple[float, int, int, str, sqlite3.Connection, sqlite3.Row]] = []
-    for conn, row in valid_rows:
-        fid = str(row["id"])
+    for fid, (conn, row) in candidates.items():
         if fid == exclude_id or fid in skip_linked:
             continue
         row_entities = {e.casefold().strip() for e in _json_list(row["entities"]) if e.strip()}
         shared_ents = wanted & row_entities
         sem_sim = sem_map.get(fid, 0.0)
 
-        if not shared_ents and sem_sim < SEMANTIC_CONFLICT_STRICT_THRESHOLD:
+        # Close enough in meaning to count without a shared entity (never, for a model
+        # family whose scores cannot tell two subjects on one template apart).
+        close_alone = profile.conflict_strict is not None and sem_sim >= profile.conflict_strict
+        if not shared_ents and not close_alone:
             continue
 
         specific_shared = shared_ents - generic
@@ -802,13 +927,15 @@ def similar_facts(
         min_len = max(1, min(len(new_tokens), len(cand_tokens)))
         ratio_all = len(overlap_all) / min_len
 
-        # Guard: distinct external resource IDs (e.g. two different Google Sheets) rarely conflict.
+        # Guard: two facts that name different external resources (two Google Sheets, two
+        # URLs) are about two things unless their wording is nearly the same. A similarity
+        # score does not override this: such facts are usually written on one template.
         cand_res_ids = extract_resource_ids(str(row["text"]))
         if (
             new_res_ids
             and cand_res_ids
             and new_res_ids.isdisjoint(cand_res_ids)
-            and max(ratio_all, sem_sim) < 0.75
+            and ratio_all < 0.75
         ):
             continue
 
@@ -816,9 +943,7 @@ def similar_facts(
         cand_non_ent = cand_tokens - shared_ent_words
 
         accepted = False
-        if sem_sim >= SEMANTIC_CONFLICT_STRICT_THRESHOLD or (
-            specific_shared and sem_sim >= SEMANTIC_CONFLICT_THRESHOLD
-        ):
+        if close_alone or (specific_shared and sem_sim >= profile.conflict):
             accepted = True
         elif specific_shared:
             if (

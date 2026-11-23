@@ -1,37 +1,34 @@
-"""Pluggable semantic embeddings stored as L2-normalized float32 BLOBs in SQLite.
+"""Optional semantic embeddings stored as L2-normalized float32 BLOBs in SQLite.
 
-Supports:
-- `local` (default): offline ONNX multilingual embeddings via `fastembed`
-  (`intfloat/multilingual-e5-small`), with bounded thread count and idle auto-unload.
+Providers:
+- `none` (default): no embeddings, pure SQLite FTS5.
+- `local`: offline ONNX Runtime + SentencePiece (`ingatan.search.local`). The model files
+  are fetched once with `ingatan embeddings pull`, never during a tool call.
 - `ollama`: local Ollama `/api/embed` via Python stdlib `urllib`.
-- `openai`: OpenAI or OpenAI-compatible `/embeddings` via stdlib `urllib`.
+- `openai`: OpenAI or any OpenAI-compatible `/embeddings` endpoint via stdlib `urllib`.
 - `gemini`: Google Generative Language `embedContent` via stdlib `urllib`.
-- `none`: disabled, pure SQLite FTS5 minimal-RAM mode.
 
 All vectors live inside `<business>.db` / `global.db` so single-file isolation and byte-level
 `forget` (`PRAGMA secure_delete = ON`) remain intact. Runtime embedding calls fail gracefully
-(returning `None`) so `recall` and `remember` never break when offline.
+(returning `None`) so `recall` and `remember` never break when a model is unavailable.
+
+Cosine scores are not comparable between model families, so every cut-off comes from a
+`SimilarityProfile` chosen by model name (`similarity_profile`), never from a bare constant.
 """
 
 from __future__ import annotations
 
 import array
-import contextlib
-import ctypes
-import gc
-import importlib.util
 import json
 import math
 import os
 import sqlite3
 import struct
-import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -39,22 +36,21 @@ from ingatan import timeutil
 from ingatan.db import transaction
 from ingatan.errors import IngatanError
 from ingatan.scope import Context, EmbeddingConfig
-
-try:
-    import numpy as _np  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - optional extra
-    _np = None
+from ingatan.search import local
 
 __all__ = [
     "DEFAULT_MODELS",
+    "E5_PROFILE",
+    "GENERIC_PROFILE",
     "MAX_SEMANTIC_CANDIDATES",
-    "MIN_SEMANTIC_SIMILARITY",
     "REINDEX_BATCH_SIZE",
     "ReindexReport",
+    "SimilarityProfile",
     "cosine_similarity",
     "effective_model",
     "embed_batch",
     "embed_text",
+    "fact_similarities",
     "is_enabled",
     "last_embed_error",
     "local_runtime_available",
@@ -64,6 +60,7 @@ __all__ = [
     "score_blobs",
     "semantic_fact_scores",
     "semantic_note_scores",
+    "similarity_profile",
     "store_fact_embedding",
     "store_note_embedding",
     "unload_local_models",
@@ -71,7 +68,7 @@ __all__ = [
 ]
 
 DEFAULT_MODELS: dict[str, str] = {
-    "local": "intfloat/multilingual-e5-small",
+    "local": local.DEFAULT_LOCAL_MODEL,
     "ollama": "nomic-embed-text",
     "openai": "text-embedding-3-small",
     "gemini": "gemini-embedding-001",
@@ -88,48 +85,52 @@ DEFAULT_KEY_ENVS: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
 }
 
-# Cosine threshold below which a vector match is considered unrelated noise.
-MIN_SEMANTIC_SIMILARITY = 0.35
 # Upper bound on semantic candidates returned to RRF (keeps memory & hydration small).
 MAX_SEMANTIC_CANDIDATES = 50
-# Batch size for `reindex` ONNX inference + SQLite writes.
+# Texts handed to the provider, and rows written, per `reindex` step.
 REINDEX_BATCH_SIZE = 32
-# Bounded LRU cache for repeated query embeddings (< 200 KiB for 384-d float vectors).
+# Bounded LRU cache of query vectors, kept packed (about 1.5 KiB per 384-dim entry).
 _QUERY_CACHE_MAX = 128
 
 _K = TypeVar("_K")
 
-# Models not in fastembed's built-in catalog, registered automatically via add_custom_model.
-_CUSTOM_LOCAL_MODELS: dict[str, dict[str, Any]] = {
-    "intfloat/multilingual-e5-small": {
-        "model": "intfloat/multilingual-e5-small",
-        "hf": "intfloat/multilingual-e5-small",
-        "model_file": "onnx/model.onnx",
-        "dim": 384,
-        "size_in_gb": 0.47,
-        "license": "mit",
-        "description": (
-            "Multilingual E5 small (100+ languages, 384 dims, mean pooling, L2 normalized)."
-        ),
-    },
-    "xenova/multilingual-e5-small": {
-        "model": "Xenova/multilingual-e5-small",
-        "hf": "Xenova/multilingual-e5-small",
-        "model_file": "onnx/model_quantized.onnx",
-        "dim": 384,
-        "size_in_gb": 0.12,
-        "license": "mit",
-        "description": (
-            "Quantized int8 Multilingual E5 small (100+ languages, 384 dims, mean pooling)."
-        ),
-    },
-}
 
-_local_lock = threading.Lock()
-_local_models: dict[tuple[str, int], Any] = {}
-_local_last_used: dict[tuple[str, int], float] = {}
-_local_timers: dict[tuple[str, int], threading.Timer] = {}
-_query_cache: OrderedDict[tuple[int, str, str, str], list[float]] = OrderedDict()
+@dataclass(frozen=True)
+class SimilarityProfile:
+    """Cosine cut-offs for one embedding model family.
+
+    `recall_floor`: a query-to-fact score below this is noise, so a fact that matches a
+    query only semantically must reach it to be returned.
+    `conflict`: two facts that share a specific entity and score at least this are shown to
+    the agent as a possible conflict.
+    `conflict_strict`: two facts this close are shown as a possible conflict even without a
+    shared entity. None means never: similarity alone is not evidence for this family.
+
+    There is deliberately no "duplicate" cut-off. For every model measured, two statements
+    that differ only in a value ("Rp 15.000" against "Rp 18.000") score higher than two true
+    paraphrases, so a cosine score can never tell an update from a repeat.
+    """
+
+    recall_floor: float
+    conflict: float
+    conflict_strict: float | None
+
+
+# For models with no measurement of their own. Suits models whose scores spread over most of
+# the 0 to 1 range; override per project with `[embeddings] recall_floor = ...` and friends.
+GENERIC_PROFILE = SimilarityProfile(recall_floor=0.35, conflict=0.82, conflict_strict=0.88)
+# The E5 family is trained with a very low contrastive temperature, so its scores sit in a
+# narrow band near the top: two unrelated Indonesian facts score 0.73 to 0.90.
+# Measured with `scripts/calibrate_embeddings.py`; the tables are in docs/EMBEDDINGS.md.
+# At 0.83 an off-topic question gets no semantic hit 92% of the time. At 0.90, 97% of
+# changed values and 94% of paraphrases are flagged, against 3% of same-topic facts.
+# There is no entity-free cut-off: two facts built on one template about different subjects
+# ("stok gula ..." and "stok tepung ...") score 0.92 to 0.98, the same as a real update of
+# one fact (0.94 to 0.98). Only a shared entity says that two facts are about one thing.
+E5_PROFILE = SimilarityProfile(recall_floor=0.83, conflict=0.90, conflict_strict=None)
+
+_state_lock = threading.Lock()
+_query_cache: OrderedDict[tuple[int, str, str, str], bytes] = OrderedDict()
 _last_error: str = ""
 
 
@@ -146,13 +147,13 @@ class ReindexReport:
 
 def last_embed_error() -> str:
     """Most recent embedding failure message (empty if the last call succeeded)."""
-    with _local_lock:
+    with _state_lock:
         return _last_error
 
 
 def _set_last_error(message: str) -> None:
     global _last_error
-    with _local_lock:
+    with _state_lock:
         _last_error = message
 
 
@@ -161,14 +162,19 @@ def is_enabled(cfg: EmbeddingConfig) -> bool:
 
 
 def local_runtime_available() -> bool:
-    """Return True if the ONNX `fastembed` runtime is importable."""
-    return importlib.util.find_spec("fastembed") is not None
+    """True when the packages of the `vector` extra are importable."""
+    return not local.missing_packages()
+
+
+def _is_e5(model_name: str) -> bool:
+    low = model_name.casefold()
+    return "e5-" in low or low.endswith(("-e5", "/e5", ":e5")) or low == "e5"
 
 
 def _apply_model_prefix(model_name: str, text: str, *, is_query: bool) -> str:
     """Apply model-family retrieval prefixes when expected (E5, EmbeddingGemma)."""
     low_model = model_name.casefold()
-    if "e5-" in low_model:
+    if _is_e5(model_name):
         prefix = "query: " if is_query else "passage: "
         return text if text.casefold().startswith(prefix) else prefix + text
     if "embeddinggemma" in low_model:
@@ -178,9 +184,24 @@ def _apply_model_prefix(model_name: str, text: str, *, is_query: bool) -> str:
 
 
 def effective_model(cfg: EmbeddingConfig) -> str:
+    """The model name vectors are stored under. Local names are case-insensitive."""
     if not is_enabled(cfg):
         return ""
-    return cfg.model.strip() or DEFAULT_MODELS.get(cfg.provider, "")
+    name = cfg.model.strip() or DEFAULT_MODELS.get(cfg.provider, "")
+    return name.casefold() if cfg.provider == "local" else name
+
+
+def similarity_profile(cfg: EmbeddingConfig) -> SimilarityProfile:
+    """The cut-offs for the configured model, with any `[embeddings]` overrides applied."""
+    base = E5_PROFILE if _is_e5(effective_model(cfg)) else GENERIC_PROFILE
+    floor, conflict, strict = base.recall_floor, base.conflict, base.conflict_strict
+    if cfg.recall_floor is not None:
+        floor = cfg.recall_floor
+    if cfg.conflict_similarity is not None:
+        conflict = cfg.conflict_similarity
+    if cfg.conflict_strict_similarity is not None:
+        strict = cfg.conflict_strict_similarity
+    return SimilarityProfile(recall_floor=floor, conflict=conflict, conflict_strict=strict)
 
 
 def _normalize(vec: Sequence[float]) -> list[float]:
@@ -209,14 +230,16 @@ def cosine_similarity(query_vec: Sequence[float], blob: bytes, dims: int) -> flo
     """Dot product between an L2-normalized `query_vec` and a packed normalized `blob`."""
     if dims <= 0 or len(query_vec) != dims or len(blob) != dims * 4:
         return 0.0
-    if _np is not None:
-        q = _np.asarray(query_vec, dtype=_np.float32)
-        v = _np.frombuffer(blob, dtype=_np.float32)
-        return float(_np.dot(q, v))
+    np = local.load_numpy()
+    if np is not None:
+        q = np.asarray(query_vec, dtype=np.float32)
+        v = np.frombuffer(blob, dtype=np.float32)
+        return float(np.dot(q, v))
     arr = array.array("f")
     arr.frombytes(blob)
-    if hasattr(math, "sumprod"):
-        return float(math.sumprod(query_vec, arr))
+    sumprod = getattr(math, "sumprod", None)  # Python 3.12 and later
+    if sumprod is not None:
+        return float(sumprod(query_vec, arr))
     return float(sum(a * b for a, b in zip(query_vec, arr, strict=True)))
 
 
@@ -230,8 +253,8 @@ def score_blobs(
 ) -> list[tuple[_K, float]]:
     """Compute top-k cosine similarities over packed normalized float32 BLOBs.
 
-    Uses a single vectorized BLAS matrix-vector multiply when NumPy is installed, avoiding
-    per-row Python/NumPy allocation overhead and skipping hydration of non-matching rows.
+    Uses a single vectorized matrix-vector multiply when NumPy is installed, avoiding
+    per-row Python allocation overhead and skipping hydration of non-matching rows.
     """
     if dims <= 0 or len(query_vec) != dims or not items or top_k <= 0:
         return []
@@ -247,21 +270,16 @@ def score_blobs(
         return []
 
     scored: list[tuple[_K, float]] = []
-    if _np is not None:
-        q = _np.asarray(query_vec, dtype=_np.float32)
-        mat = _np.frombuffer(b"".join(valid_blobs), dtype=_np.float32).reshape(-1, dims)
+    np = local.load_numpy()
+    if np is not None:
+        q = np.asarray(query_vec, dtype=np.float32)
+        mat = np.frombuffer(b"".join(valid_blobs), dtype=np.float32).reshape(-1, dims)
         sims = mat @ q
-        indices = _np.flatnonzero(sims >= min_similarity)
+        indices = np.flatnonzero(sims >= min_similarity)
         if indices.size == 0:
             return []
-        if indices.size > top_k:
-            sub = sims[indices]
-            order = _np.argsort(sub)[::-1][:top_k]
-            indices = indices[order]
-        else:
-            order = _np.argsort(sims[indices])[::-1]
-            indices = indices[order]
-        for idx in indices.tolist():
+        order = np.argsort(sims[indices])[::-1][:top_k]
+        for idx in indices[order].tolist():
             scored.append((valid_keys[idx], float(sims[idx])))
         return scored
 
@@ -273,115 +291,11 @@ def score_blobs(
     return scored[:top_k]
 
 
-def _trim_os_memory() -> None:
-    """Release freed C/C++ heap arenas back to the OS (critical for glibc + onnxruntime)."""
-    gc.collect()
-    if sys.platform.startswith("linux"):
-        with contextlib.suppress(OSError):
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-
-
-def _unload_if_idle(key: tuple[str, int], idle_seconds: float) -> None:
-    dropped = False
-    with _local_lock:
-        last = _local_last_used.get(key)
-        if last is not None and (time.monotonic() - last) >= max(0.0, idle_seconds - 0.05):
-            if _local_models.pop(key, None) is not None:
-                dropped = True
-            _local_last_used.pop(key, None)
-            _local_timers.pop(key, None)
-    if dropped:
-        _trim_os_memory()
-
-
-def _schedule_unload_locked(key: tuple[str, int], idle_seconds: int) -> None:
-    old = _local_timers.pop(key, None)
-    if old is not None:
-        old.cancel()
-    if idle_seconds <= 0:
-        return
-    timer = threading.Timer(float(idle_seconds), _unload_if_idle, args=(key, float(idle_seconds)))
-    timer.daemon = True
-    timer.start()
-    _local_timers[key] = timer
-
-
 def unload_local_models() -> int:
-    """Unload all cached local ONNX models, clear query cache, and trim OS heap memory."""
-    with _local_lock:
-        count = len(_local_models)
-        for timer in _local_timers.values():
-            timer.cancel()
-        _local_timers.clear()
-        _local_models.clear()
-        _local_last_used.clear()
+    """Drop the local model from memory and clear the query cache."""
+    with _state_lock:
         _query_cache.clear()
-    if count > 0:
-        _trim_os_memory()
-    return count
-
-
-def _ensure_custom_local_model(text_embedding_cls: Any, model_name: str) -> None:
-    """Register known models absent from fastembed's built-in list via `add_custom_model`."""
-    spec = _CUSTOM_LOCAL_MODELS.get(model_name.casefold())
-    if spec is None or not hasattr(text_embedding_cls, "add_custom_model"):
-        return
-    try:
-        supported = {
-            str(m.get("model", "")).casefold()
-            for m in text_embedding_cls.list_supported_models()
-            if isinstance(m, dict)
-        }
-    except Exception:
-        supported = set()
-    if spec["model"].casefold() in supported:
-        return
-    from fastembed.common.model_description import (  # type: ignore[import-not-found]
-        ModelSource,
-        PoolingType,
-    )
-
-    try:
-        text_embedding_cls.add_custom_model(
-            model=spec["model"],
-            pooling=PoolingType.MEAN,
-            normalization=True,
-            sources=ModelSource(hf=spec["hf"]),
-            dim=int(spec["dim"]),
-            model_file=spec["model_file"],
-            description=spec["description"],
-            license=spec["license"],
-            size_in_gb=float(spec["size_in_gb"]),
-        )
-    except ValueError as exc:
-        if "already registered" not in str(exc).casefold():
-            raise
-
-
-def _get_local_model(model_name: str, *, threads: int = 2, idle_unload_seconds: int = 300) -> Any:
-    key = (model_name, max(1, threads))
-    with _local_lock:
-        found = _local_models.get(key)
-        if found is None:
-            from fastembed import TextEmbedding  # type: ignore[import-not-found]
-
-            _ensure_custom_local_model(TextEmbedding, model_name)
-
-            # Evict stale thread-count instances of the same model before loading.
-            for existing_key in [k for k in _local_models if k[0] == model_name]:
-                old_timer = _local_timers.pop(existing_key, None)
-                if old_timer is not None:
-                    old_timer.cancel()
-                _local_models.pop(existing_key, None)
-                _local_last_used.pop(existing_key, None)
-            try:
-                found = TextEmbedding(model_name=model_name, threads=key[1])
-            except TypeError:
-                found = TextEmbedding(model_name=model_name)
-            _local_models[key] = found
-        _local_last_used[key] = time.monotonic()
-        _schedule_unload_locked(key, idle_unload_seconds)
-        return found
+    return local.unload()
 
 
 def _http_post_json(
@@ -400,35 +314,18 @@ def _http_post_json(
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _embed_local(
-    cfg: EmbeddingConfig, model_name: str, text: str, *, is_query: bool
-) -> list[float] | None:
-    prepared = _apply_model_prefix(model_name, text, is_query=is_query)
-    model = _get_local_model(
-        model_name,
-        threads=cfg.threads,
-        idle_unload_seconds=cfg.idle_unload_seconds,
-    )
-    vec = next(iter(model.embed([prepared])), None)
-    if vec is None:
-        return None
-    return _normalize(vec.tolist() if hasattr(vec, "tolist") else list(vec))
-
-
 def _embed_local_batch(
     cfg: EmbeddingConfig, model_name: str, texts: Sequence[str], *, is_query: bool
 ) -> list[list[float] | None]:
     prepared = [_apply_model_prefix(model_name, t, is_query=is_query) for t in texts]
-    model = _get_local_model(
-        model_name,
+    vectors = local.embed(
+        prepared,
+        model_name=model_name,
+        model_dir=cfg.model_dir,
         threads=cfg.threads,
         idle_unload_seconds=cfg.idle_unload_seconds,
     )
-    out: list[list[float] | None] = []
-    for vec in model.embed(prepared):
-        normed = _normalize(vec.tolist() if hasattr(vec, "tolist") else list(vec))
-        out.append(normed if normed else None)
-    return out
+    return [vec if vec else None for vec in vectors]
 
 
 def _embed_ollama(
@@ -473,13 +370,15 @@ def _embed_gemini(
     if not api_key:
         return None
     full_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-    url = f"{base}/{full_model}:embedContent?key={api_key}"
     payload: dict[str, Any] = {
         "model": full_model,
         "content": {"parts": [{"text": text}]},
         "taskType": "RETRIEVAL_QUERY" if is_query else "RETRIEVAL_DOCUMENT",
     }
-    data = _http_post_json(url, payload, {}, cfg.timeout)
+    # The key travels in a header, not in the URL: URLs end up in logs and error messages.
+    data = _http_post_json(
+        f"{base}/{full_model}:embedContent", payload, {"x-goog-api-key": api_key}, cfg.timeout
+    )
     emb = data.get("embedding")
     if isinstance(emb, dict):
         values = emb.get("values")
@@ -495,7 +394,7 @@ def _embed_raw(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float
     if not model_name:
         return None
     if cfg.provider == "local":
-        return _embed_local(cfg, model_name, text, is_query=is_query)
+        return _embed_local_batch(cfg, model_name, [text], is_query=is_query)[0]
     if cfg.provider == "ollama":
         return _embed_ollama(cfg, model_name, text, is_query=is_query)
     if cfg.provider == "openai":
@@ -506,6 +405,15 @@ def _embed_raw(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float
 
 
 _DEFAULT_EMBED_RAW = _embed_raw
+# What a provider can raise at run time. `IngatanError` covers an unknown local model name.
+_EMBED_ERRORS = (
+    ImportError,
+    OSError,
+    ValueError,
+    urllib.error.URLError,
+    RuntimeError,
+    IngatanError,
+)
 
 
 def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> list[float] | None:
@@ -515,20 +423,14 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
     model_name = effective_model(cfg)
     cache_key = (id(_embed_raw), cfg.provider, model_name, text)
     if is_query:
-        with _local_lock:
+        with _state_lock:
             cached = _query_cache.get(cache_key)
             if cached is not None:
                 _query_cache.move_to_end(cache_key)
-                return list(cached)
+                return unpack_vector(cached, len(cached) // 4)
     try:
         vec = _embed_raw(cfg, text, is_query=is_query)
-    except (
-        ImportError,
-        OSError,
-        ValueError,
-        urllib.error.URLError,
-        RuntimeError,
-    ) as exc:
+    except _EMBED_ERRORS as exc:
         _set_last_error(f"{type(exc).__name__}: {exc}")
         return None
     if not vec:
@@ -536,8 +438,9 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
         return None
     _set_last_error("")
     if is_query:
-        with _local_lock:
-            _query_cache[cache_key] = list(vec)
+        packed = pack_vector(vec)
+        with _state_lock:
+            _query_cache[cache_key] = packed
             _query_cache.move_to_end(cache_key)
             while len(_query_cache) > _QUERY_CACHE_MAX:
                 _query_cache.popitem(last=False)
@@ -568,20 +471,29 @@ def probe_embedding(cfg: EmbeddingConfig) -> int:
 def embed_batch(
     cfg: EmbeddingConfig, texts: Sequence[str], *, is_query: bool = False
 ) -> list[list[float] | None]:
-    """Batch-embed texts efficiently for local ONNX, falling back to per-item calls otherwise."""
+    """Embed several texts, in order. One model call for the local provider, else one each.
+
+    A text that is empty or fails gets `None`. Never raises.
+    """
     if not texts:
         return []
     if not is_enabled(cfg):
         return [None for _ in texts]
     model_name = effective_model(cfg)
     if cfg.provider == "local" and model_name and _embed_raw is _DEFAULT_EMBED_RAW:
+        wanted = [(i, t) for i, t in enumerate(texts) if t.strip()]
+        out: list[list[float] | None] = [None for _ in texts]
+        if not wanted:
+            return out
         try:
-            vecs = _embed_local_batch(cfg, model_name, texts, is_query=is_query)
-        except (ImportError, OSError, ValueError, RuntimeError) as exc:
+            vecs = _embed_local_batch(cfg, model_name, [t for _, t in wanted], is_query=is_query)
+        except _EMBED_ERRORS as exc:
             _set_last_error(f"{type(exc).__name__}: {exc}")
-            return [None for _ in texts]
+            return out
         _set_last_error("")
-        return vecs
+        for (index, _), vec in zip(wanted, vecs, strict=True):
+            out[index] = vec
+        return out
     return [embed_text(cfg, t, is_query=is_query) for t in texts]
 
 
@@ -593,7 +505,11 @@ def store_fact_embedding(
     *,
     vector: Sequence[float] | None = None,
 ) -> bool:
-    """Store (or update) a fact's normalized vector in `fact_embeddings`. Returns True if stored."""
+    """Store (or update) a fact's normalized vector in `fact_embeddings`. Returns True if stored.
+
+    Pass `vector` when calling inside a write transaction: without it the text is embedded
+    here, and a model call must never run while the database is locked for writing.
+    """
     if not is_enabled(cfg):
         return False
     vec = list(vector) if vector is not None else embed_text(cfg, text, is_query=False)
@@ -625,7 +541,10 @@ def store_note_embedding(
     *,
     vector: Sequence[float] | None = None,
 ) -> bool:
-    """Store (or update) a document note's normalized vector in `note_embeddings`."""
+    """Store (or update) a document note's normalized vector in `note_embeddings`.
+
+    Pass `vector` when calling inside a write transaction (see `store_fact_embedding`).
+    """
     if not is_enabled(cfg):
         return False
     combined = f"{heading}\n{text}".strip()
@@ -655,16 +574,20 @@ def semantic_fact_scores(
     *,
     validity_sql: str,
     time_param: str,
-    min_similarity: float = MIN_SEMANTIC_SIMILARITY,
+    min_similarity: float | None = None,
     query_vec: Sequence[float] | None = None,
 ) -> tuple[dict[str, float], dict[str, tuple[sqlite3.Connection, sqlite3.Row]]]:
-    """Cosine similarity scores for visible facts matching the active embedding model."""
+    """Cosine similarity scores for visible facts matching the active embedding model.
+
+    `min_similarity` defaults to the model's calibrated `recall_floor`.
+    """
     cfg = ctx.scope.embeddings
     if not is_enabled(cfg):
         return {}, {}
     vec = list(query_vec) if query_vec is not None else embed_text(cfg, query, is_query=True)
     if not vec:
         return {}, {}
+    floor = similarity_profile(cfg).recall_floor if min_similarity is None else min_similarity
     model = effective_model(cfg)
     dims = len(vec)
     scores: dict[str, float] = {}
@@ -688,7 +611,7 @@ def semantic_fact_scores(
             vec,
             raw_items,
             dims,
-            min_similarity=min_similarity,
+            min_similarity=floor,
             top_k=MAX_SEMANTIC_CANDIDATES,
         )
         if not matched:
@@ -708,11 +631,50 @@ def semantic_fact_scores(
     return scores, rows_out
 
 
+def fact_similarities(
+    ctx: Context,
+    facts: Iterable[tuple[sqlite3.Connection, str]],
+    query_vec: Sequence[float],
+) -> dict[str, float]:
+    """Cosine between `query_vec` and the stored vector of each named fact.
+
+    `facts` are `(connection, fact id)` pairs. A fact without a vector of the active model
+    is left out. Use this, not the nearest-neighbour list of a whole file, to score known
+    candidates: that list is cut at `MAX_SEMANTIC_CANDIDATES`, and look-alike facts about
+    other subjects can push the one that matters out of it.
+    """
+    cfg = ctx.scope.embeddings
+    if not is_enabled(cfg) or not query_vec:
+        return {}
+    model = effective_model(cfg)
+    dims = len(query_vec)
+    grouped: dict[int, tuple[sqlite3.Connection, list[str]]] = {}
+    for conn, fact_id in facts:
+        grouped.setdefault(id(conn), (conn, []))[1].append(fact_id)
+    scores: dict[str, float] = {}
+    for conn, ids in grouped.values():
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ",".join("?" for _ in chunk)
+            items = [
+                (str(r["fact_id"]), bytes(r["vec"]))
+                for r in conn.execute(
+                    "SELECT fact_id, vec FROM fact_embeddings "
+                    f"WHERE model = ? AND dims = ? AND fact_id IN ({marks})",
+                    (model, dims, *chunk),
+                )
+            ]
+            scores.update(
+                score_blobs(query_vec, items, dims, min_similarity=-2.0, top_k=len(items))
+            )
+    return scores
+
+
 def semantic_note_scores(
     ctx: Context,
     query: str,
     *,
-    min_similarity: float = MIN_SEMANTIC_SIMILARITY,
+    min_similarity: float | None = None,
     query_vec: Sequence[float] | None = None,
 ) -> tuple[dict[int, float], dict[int, sqlite3.Row]]:
     """Cosine similarity scores for ingested document notes matching the active model."""
@@ -722,6 +684,7 @@ def semantic_note_scores(
     vec = list(query_vec) if query_vec is not None else embed_text(cfg, query, is_query=True)
     if not vec:
         return {}, {}
+    floor = similarity_profile(cfg).recall_floor if min_similarity is None else min_similarity
     model = effective_model(cfg)
     dims = len(vec)
     sql = "SELECT note_id, vec FROM note_embeddings WHERE model = :model AND dims = :dims"
@@ -733,7 +696,7 @@ def semantic_note_scores(
         vec,
         raw_items,
         dims,
-        min_similarity=min_similarity,
+        min_similarity=floor,
         top_k=MAX_SEMANTIC_CANDIDATES,
     )
     if not matched:
@@ -789,6 +752,7 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
                 pending.append((fid, str(row["text"])))
         for start in range(0, len(pending), REINDEX_BATCH_SIZE):
             chunk = pending[start : start + REINDEX_BATCH_SIZE]
+            # The model runs before the write lock is taken, never inside it.
             vecs = embed_batch(cfg, [text for _, text in chunk], is_query=False)
             ts = timeutil.iso(timeutil.now())
             with transaction(conn):
@@ -833,6 +797,8 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
                 blob = pack_vector(vec) if vec else b""
                 if not blob or not vec:
                     errors += 1
+                    if not error_reason:
+                        error_reason = last_embed_error()
                     continue
                 ctx.business.execute(
                     "INSERT INTO note_embeddings (note_id, model, dims, vec, updated_at) "
@@ -851,5 +817,5 @@ def reindex(ctx: Context, *, force: bool = False) -> ReindexReport:
         notes_indexed=notes_indexed,
         notes_skipped=notes_skipped,
         errors=errors,
-        last_error=error_reason or last_embed_error() if errors else "",
+        last_error=(error_reason or last_embed_error()) if errors else "",
     )

@@ -54,12 +54,14 @@ ingatan serve --http --host 0.0.0.0 --port 9000   # all interfaces
   each request comes from its token, while shared defaults (`[brief].token_budget`,
   `require_approval`, `[embeddings]`) are inherited from `<INGATAN_HOME>/config.toml` and
   reloaded automatically when that file changes. `INGATAN_HOME` still selects the data folder.
-- **Shared embedding model (low RAM):** all businesses and agents served by one HTTP process
-  share a single loaded ONNX embedding model instance (automatically unloaded after
-  `idle_unload_seconds`, default 300s), instead of loading one copy per stdio agent process.
+- **Shared embedding model (low RAM):** when the optional local embedding provider is
+  enabled, all businesses and agents served by one HTTP process share a single loaded
+  model (automatically unloaded after `idle_unload_seconds`, default 300s), instead of
+  loading one copy per stdio agent process. See [EMBEDDINGS.md](EMBEDDINGS.md).
 - Requests above 1 MiB are refused with `413`. A missing, malformed or unknown token gets
   `401` with `WWW-Authenticate: Bearer`; the body does not say which of the three it was.
-- The server makes no outbound network call.
+- The server makes no outbound network call, unless a remote embedding provider
+  (`ollama`, `openai`, `gemini`) is configured in `[embeddings]`.
 
 Run it under your service manager so that it restarts, for example a systemd unit whose
 `ExecStart` is `ingatan serve --http` (*not verified*).

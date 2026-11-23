@@ -107,13 +107,19 @@ facts by default. A trigram tokenizer backs up partial-word matches. Indonesian
 text is a first-class eval case, since exact-word search misses inflected forms.
 Vector search is an optional extra after the MVP.
 
+As built, two details differ: recency is a bounded freshness factor on the fused
+score of volatile facts, not a rank of its own, and the first version of vector
+search keeps plain `float32` BLOBs in the same SQLite file instead of using
+sqlite-vec. `ARCHITECTURE.md` and `EMBEDDINGS.md` describe both.
+
 ## Tech stack
 
 - Python 3.10+, stdlib `sqlite3` with FTS5 in WAL mode, the official `mcp` SDK,
   `pydantic`, `typer`. Numbered SQL migrations with `PRAGMA user_version`.
 - Tooling: `uv`, `ruff`, `pytest`, `pyright`, GitHub Actions on Windows, macOS
   and Linux.
-- Extras after the MVP: `ingatan[vector]` (sqlite-vec), `ingatan[llm]` (httpx to
+- Extras after the MVP: `ingatan[vector]` (planned on sqlite-vec, built on ONNX
+  Runtime and SentencePiece), `ingatan[llm]` (httpx to
   an OpenAI-compatible endpoint), `ingatan[graph]` (graphify).
 - Code graph is out of scope. codebase-memory-mcp runs alongside as its own
   server.
