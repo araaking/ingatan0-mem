@@ -263,6 +263,29 @@ def test_over_budget_drops_the_least_used_facts_first(
     assert len(shown) < 300
 
 
+def test_facts_that_tie_are_cut_by_insertion_order_not_by_their_random_id(
+    make_ctx: MakeContext, insert_fact: InsertFact, frozen_clock: FrozenClock
+) -> None:
+    ctx = make_ctx(token_budget=200)
+    # Forty facts equal in every respect (never used, same kind, written at the same
+    # instant), with ids that sort the opposite way to the order they were written in.
+    # Fact ids are random in real use: if the id decided, two stores holding the same
+    # facts would show different briefs.
+    for n in range(40):
+        insert_fact(
+            ctx.business,
+            id=f"f_{0xFFF - n:012x}",
+            text=f"Catatan gudang nomor {n:02d} tentang rak dan lorong penyimpanan barang",
+            tier="business",
+        )
+    text = brief.build(ctx)
+    assert brief.estimate_tokens(text) <= 200
+    shown = [int(line.split("nomor ")[1][:2]) for line in text.splitlines() if "nomor " in line]
+    # The most recently written facts are the ones kept, newest first.
+    assert 3 <= len(shown) < 40
+    assert shown == list(range(39, 39 - len(shown), -1))
+
+
 def test_tiny_budget_is_never_exceeded(
     make_ctx: MakeContext, insert_fact: InsertFact, frozen_clock: FrozenClock
 ) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -12,7 +11,7 @@ from datetime import timedelta
 from typing import Any
 
 from ingatan import audit, timeutil
-from ingatan.db import transaction
+from ingatan.db import fact_text_key, normalize_fact_text, transaction
 from ingatan.errors import NotFoundError, ValidationError
 from ingatan.facts._util import (
     DEFAULT_REVIEW_DAYS,
@@ -34,9 +33,6 @@ __all__ = ["RememberResult", "create_fact", "insert_proposal", "remember"]
 
 TIERS = ("agent", "business", "global")
 KINDS = ("stable", "volatile")
-SEMANTIC_DEDUP_THRESHOLD = 0.94
-_NORM_WS = re.compile(r"\s+")
-_TRAIL_PUNCT = re.compile(r"[.!?,;:\s]+$")
 
 
 @dataclass(frozen=True)
@@ -85,6 +81,7 @@ def create_fact(
         "review_interval_days": interval,
         "source": json.dumps(dict(fields["source"]), ensure_ascii=False),
         "created_at": now,
+        "text_key": fact_text_key(str(fields["text"])),
     }
     names = ", ".join(row)
     marks = ", ".join(f":{k}" for k in row)
@@ -184,10 +181,6 @@ def _similar_view(hits: Sequence[FactHit]) -> list[dict[str, str]]:
     return [{"id": h.id, "text": h.text, "status": h.status} for h in hits]
 
 
-def _norm_text(text: str) -> str:
-    return _TRAIL_PUNCT.sub("", _NORM_WS.sub(" ", text).strip()).casefold()
-
-
 def _find_duplicate(
     ctx: Context,
     conn: sqlite3.Connection,
@@ -196,39 +189,36 @@ def _find_duplicate(
     category: str,
     clean_text: str,
     entities: list[str],
-    vector: list[float] | None,
 ) -> sqlite3.Row | None:
-    """Return an existing open fact in the same tier/category that is a near-duplicate."""
-    now = now_iso()
-    norm_new = _norm_text(clean_text)
+    """An open fact in the same tier and category that says the same thing, word for word.
+
+    "The same" ignores case, spacing and trailing punctuation, and nothing else. Closeness
+    in meaning is never treated as a repeat: "ongkir Rp 15.000" and "ongkir Rp 18.000" are
+    closer to each other than two real paraphrases, so merging on a similarity score would
+    silently drop a changed value. Such a pair is saved and reported as similar instead.
+    """
+    norm_new = normalize_fact_text(clean_text)
     ent_set = {e.casefold() for e in entities}
-    where = f"tier = :tier AND category = :cat AND {is_valid_sql()} AND {ctx.visible_sql(conn)}"
-    params: dict[str, Any] = {"tier": tier, "cat": category, "now": now, **ctx.params}
+    where = (
+        f"text_key = :key AND tier = :tier AND category = :cat AND {is_valid_sql()} "
+        f"AND {ctx.visible_sql(conn)}"
+    )
+    params: dict[str, Any] = {
+        "key": fact_text_key(clean_text),
+        "tier": tier,
+        "cat": category,
+        "now": now_iso(),
+        **ctx.params,
+    }
     if tier == "agent":
         where += " AND agent = :agent"
+    # One lookup in the `text_key` index, whatever the size of the table. The comparison
+    # below is the real test; the key only narrows it to the rows that can pass.
     rows = conn.execute(f"SELECT * FROM facts WHERE {where}", params).fetchall()
     for row in rows:
         row_ents = {e.casefold() for e in loads_list(str(row["entities"]))}
-        if _norm_text(str(row["text"])) == norm_new and row_ents == ent_set:
+        if normalize_fact_text(str(row["text"])) == norm_new and row_ents == ent_set:
             return row
-
-    if vector and len(clean_text.split()) >= 4 and embed_store.is_enabled(ctx.scope.embeddings):
-        model = embed_store.effective_model(ctx.scope.embeddings)
-        dims = len(vector)
-        emb_rows = conn.execute(
-            "SELECT e.fact_id, e.vec FROM fact_embeddings e "
-            "JOIN facts f ON f.id = e.fact_id "
-            f"WHERE e.model = :model AND e.dims = :dims AND f.tier = :tier "
-            f"AND f.category = :cat AND {is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')}",
-            {"model": model, "dims": dims, **params},
-        ).fetchall()
-        raw_items = [(str(r["fact_id"]), bytes(r["vec"])) for r in emb_rows]
-        best = embed_store.score_blobs(
-            vector, raw_items, dims, min_similarity=SEMANTIC_DEDUP_THRESHOLD, top_k=1
-        )
-        if best:
-            best_id = best[0][0]
-            return conn.execute("SELECT * FROM facts WHERE id = ?", (best_id,)).fetchone()
     return None
 
 
@@ -242,7 +232,7 @@ def _refresh_duplicate(
     pinned: bool,
     episode: int | None,
 ) -> RememberResult:
-    """Refresh review_after & metadata on a near-duplicate fact instead of creating a second row."""
+    """Refresh review_after and metadata on the fact this text repeats; create nothing."""
     fact_id = str(existing["id"])
     now = now_iso()
     new_review = existing["review_after"]
@@ -280,7 +270,7 @@ def _refresh_duplicate(
             after={
                 "review_after": new_review,
                 "pending_proposal": existing["pending_proposal"],
-                "reason": "dedup: refreshed existing near-duplicate fact",
+                "reason": "dedup: the same text was remembered again",
                 "resolved_conflicts": [],
             },
         )
@@ -343,13 +333,6 @@ def remember(
             raise NotFoundError(f"No related fact {tid}.")
         link_targets.append(tid)
 
-    # Compute embedding once (if enabled) and reuse for dedup, conflict check, and storage.
-    new_vec: list[float] | None = (
-        embed_store.embed_text(ctx.scope.embeddings, clean_text, is_query=False)
-        if embed_store.is_enabled(ctx.scope.embeddings)
-        else None
-    )
-
     needs_approval = tier != "agent" and ctx.scope.require_approval
     conn = ctx.conn_for_tier(tier)
 
@@ -361,7 +344,6 @@ def remember(
             category=category,
             clean_text=clean_text,
             entities=entity_list,
-            vector=new_vec,
         )
         if dup is not None:
             res = _refresh_duplicate(
@@ -378,6 +360,14 @@ def remember(
                     link_facts(ctx, res.fact_id, tid, relation="related_to")
             return res
 
+    # One model call, made before any write lock is taken and only for a fact that will be
+    # saved. The vector serves both the conflict check and storage.
+    new_vec: list[float] | None = (
+        embed_store.embed_text(ctx.scope.embeddings, clean_text, is_query=False)
+        if embed_store.is_enabled(ctx.scope.embeddings)
+        else None
+    )
+
     similar = (
         similar_facts(
             ctx,
@@ -385,7 +375,7 @@ def remember(
             entity_list,
             keyword_list,
             linked_ids=link_targets,
-            query_vec=new_vec,
+            query_vec=new_vec or [],
         )
         if check_conflicts
         else []

@@ -230,6 +230,8 @@ class _Run:
                 problems.append(
                     f"expected in top 5: {', '.join(missing)}; top 5 was {self.describe(top5)}"
                 )
+        if d.get("expect_none") and hits:
+            problems.append(f"expected no result at all, got {self.describe(hits)}")
         for key in d.get("expect_absent", []):
             ref = self.refs[key]
             if any(h.id == ref.fact_id or h.text == ref.text for h in hits):
@@ -361,12 +363,33 @@ class _Run:
         return ", ".join(self.name_of(i) for i in ids) or "nothing"
 
 
+NEEDS_EMBEDDINGS_NOTE = (
+    "needs an embedding model: skipped (run `python -m evals --embeddings local` to include it)"
+)
+
+
 def run_scenario(
-    scenario: Scenario, home: Path, driver_factory: DriverFactory = default_driver_factory
+    scenario: Scenario,
+    home: Path,
+    driver_factory: DriverFactory = default_driver_factory,
+    *,
+    honor_needs: bool = True,
 ) -> ScenarioResult:
-    """Run one scenario in `home` with the clock frozen at `FROZEN_START`."""
+    """Run one scenario in `home` with the clock frozen at `FROZEN_START`.
+
+    A scenario with `needs = "embeddings"` is skipped when the driver has no embedding
+    model, unless `honor_needs` is false (used to prove that it does depend on one).
+    """
     timeutil.set_now(FROZEN_START)
     driver = driver_factory(home, scenario)
+    if (
+        honor_needs
+        and scenario.needs == "embeddings"
+        and not getattr(driver, "embeddings_enabled", False)
+    ):
+        driver.close()
+        timeutil.set_now(None)
+        return ScenarioResult(scenario, SKIP, notes=[NEEDS_EMBEDDINGS_NOTE])
     run = _Run(scenario, driver)
     try:
         for step in scenario.steps:

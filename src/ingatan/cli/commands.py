@@ -34,11 +34,13 @@ from ingatan.scope import (
     data_home,
     db_path,
     find_fact,
+    load_embeddings,
     open_context,
     resolve_scope,
     validate_agent,
     validate_business,
 )
+from ingatan.search import local as local_models
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -78,6 +80,13 @@ alias_app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 app.add_typer(alias_app, name="alias")
+embeddings_app = typer.Typer(
+    help="Set up the optional local embedding model for semantic search.",
+    no_args_is_help=True,
+    add_completion=False,
+    pretty_exceptions_enable=False,
+)
+app.add_typer(embeddings_app, name="embeddings")
 
 AgentOption = Annotated[
     str | None,
@@ -726,7 +735,8 @@ def reindex(
             typer.echo(
                 "Embeddings are disabled (provider = 'none'). "
                 "Enable [embeddings] in .ingatan.toml or ~/.ingatan/config.toml "
-                "(or set INGATAN_EMBED_PROVIDER) first."
+                "(or set INGATAN_EMBED_PROVIDER) first. For the offline local model, "
+                "run `ingatan embeddings pull` once."
             )
             return
         report = search.reindex(ctx, force=force)
@@ -740,6 +750,61 @@ def reindex(
         if report.last_error:
             typer.echo(f"ingatan: embedding error: {report.last_error}", err=True)
         raise typer.Exit(1)
+
+
+@embeddings_app.command("pull")
+@cli_command
+def embeddings_pull(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            metavar="NAME",
+            help="Local model to download. Default: the configured one, else the built-in default.",
+        ),
+    ] = None,
+) -> None:
+    """Download the local embedding model once and verify its checksums.
+
+    This is the only Ingatan command that downloads anything. The server itself never
+    does: without the model it simply answers from the word index.
+    """
+    cfg = load_embeddings()
+    name = (model or (cfg.model if cfg.provider == "local" else "")).strip()
+    spec = local_models.resolve(name)
+    folder = local_models.model_folder(cfg.model_dir, spec)
+    typer.echo(f"Model:  {spec.name} ({spec.summary})")
+    typer.echo(f"Folder: {folder}")
+
+    shown: dict[str, int] = {}
+
+    def progress(file: local_models.ModelFile, received: int) -> None:
+        tenth = received * 10 // max(1, file.size)
+        if shown.get(file.name) != tenth:
+            shown[file.name] = tenth
+            typer.echo(f"  {file.name}: {received / 1e6:.0f} of {file.size / 1e6:.0f} MB", err=True)
+
+    fetched = local_models.pull(spec.name, cfg.model_dir, progress=progress)
+    if fetched:
+        size = sum(path.stat().st_size for path in fetched) / 1e6
+        typer.echo(f"Downloaded {len(fetched)} file(s), {size:.0f} MB. Checksums verified.")
+    else:
+        typer.echo("Already present and verified. Nothing was downloaded.")
+    missing = local_models.missing_packages()
+    if missing:
+        typer.echo(
+            f"Still needed: the packages {', '.join(missing)}. "
+            f"Install them in the environment Ingatan runs in: {local_models.INSTALL_HINT}"
+        )
+    configured_model = cfg.model.strip().casefold() or local_models.DEFAULT_LOCAL_MODEL
+    if cfg.provider != "local" or configured_model != spec.name:
+        typer.echo(
+            "To use it, set this in .ingatan.toml or in config.toml of the data folder:\n"
+            "  [embeddings]\n"
+            '  provider = "local"\n'
+            f'  model = "{spec.name}"'
+        )
+    typer.echo("Then run `ingatan reindex` to embed the facts that already exist.")
 
 
 @alias_app.command("add")

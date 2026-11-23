@@ -92,7 +92,22 @@ def ingest_path(ctx: Context, path: str | Path) -> IngestReport:
         if hashes == {digest}:
             skipped.append(Skipped(stored, "unchanged"))
             continue
-        sections = split_sections(content, file.name)
+        sections = [
+            (redact(section.heading), redact(section.text))
+            for section in split_sections(content, file.name)
+        ]
+        # The model runs here, before the write lock: a file with many sections would
+        # otherwise keep every other writer waiting for as long as the embedding takes.
+        embeddings_on = embed_store.is_enabled(ctx.scope.embeddings)
+        vectors = (
+            embed_store.embed_batch(
+                ctx.scope.embeddings,
+                [f"{heading}\n{text}".strip() for heading, text in sections],
+                is_query=False,
+            )
+            if embeddings_on
+            else [None for _ in sections]
+        )
         now = timeutil.iso(timeutil.now())
         with transaction(ctx.business):
             ctx.business.execute(
@@ -101,17 +116,21 @@ def ingest_path(ctx: Context, path: str | Path) -> IngestReport:
                 (stored,),
             )
             removed = ctx.business.execute("DELETE FROM notes WHERE path = ?", (stored,)).rowcount
-            for section in sections:
-                heading = redact(section.heading)
-                text = redact(section.text)
+            for (heading, text), vector in zip(sections, vectors, strict=True):
                 note_id = ctx.business.execute(
                     "INSERT INTO notes (path, heading, text, file_hash, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
                     (stored, heading, text, digest, now),
                 ).lastrowid
-                if note_id is not None and embed_store.is_enabled(ctx.scope.embeddings):
+                if note_id is not None and embeddings_on:
+                    # An empty vector means "could not embed": store nothing, compute nothing.
                     embed_store.store_note_embedding(
-                        ctx.business, int(note_id), heading, text, ctx.scope.embeddings
+                        ctx.business,
+                        int(note_id),
+                        heading,
+                        text,
+                        ctx.scope.embeddings,
+                        vector=vector or [],
                     )
                 audit.write(
                     ctx.business,

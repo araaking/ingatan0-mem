@@ -108,14 +108,24 @@ class InProcessDriver:
     """Calls the real modules, one open `Context` per actor, all in one data folder."""
 
     def __init__(
-        self, home: Path, *, token_budget: int = 1000, require_approval: bool = False
+        self,
+        home: Path,
+        *,
+        token_budget: int = 1000,
+        require_approval: bool = False,
+        embeddings: EmbeddingConfig | None = None,
     ) -> None:
         self.home = home
         self.token_budget = token_budget
         self.require_approval = require_approval
+        self.embeddings = embeddings if embeddings is not None else EmbeddingConfig()
         self._contexts: dict[Actor, Context] = {}
 
     # -- plumbing ---------------------------------------------------------
+
+    @property
+    def embeddings_enabled(self) -> bool:
+        return self.embeddings.provider != "none"
 
     def ctx(self, actor: Actor) -> Context:
         found = self._contexts.get(actor)
@@ -126,7 +136,7 @@ class InProcessDriver:
                 home=self.home,
                 token_budget=self.token_budget,
                 require_approval=self.require_approval,
-                embeddings=EmbeddingConfig(provider="none"),
+                embeddings=self.embeddings,
             )
             found = self._contexts[actor] = open_context(scope)
         return found

@@ -36,9 +36,11 @@ CATEGORIES = (
     "conflict",
     "proposal",
     "forget",
+    "noise",
+    "semantic",
 )
 SOURCES = ("pattern", "incident")
-NEEDS = ("keywords", "trigram")
+NEEDS = ("keywords", "trigram", "embeddings")
 BRIEF_SECTIONS = ("check first", "global", "business", "agent")
 OPS = (
     "remember",
@@ -79,6 +81,7 @@ _FIELDS: dict[str, tuple[set[str], set[str]]] = {
             "expect_top5",
             "expect_absent",
             "expect_status",
+            "expect_none",
         },
     ),
     "brief": (
@@ -392,8 +395,15 @@ def _validate_recall(at: str, body: dict[str, Any], keys: dict[str, str]) -> Non
         for key in status:  # pyright: ignore[reportUnknownVariableType]
             if key not in keys:
                 raise _fail(at, f"'expect_status' refers to unknown key '{key}'")
-    if not {"expect_top5", "expect_absent", "expect_status"} & set(body):
-        raise _fail(at, "a recall check needs expect_top5, expect_absent or expect_status")
+    if "expect_none" in body:
+        if body["expect_none"] is not True:
+            raise _fail(at, "'expect_none' must be true (leave it out otherwise)")
+        if {"expect_top5", "expect_status"} & set(body):
+            raise _fail(at, "'expect_none' cannot be combined with expect_top5 or expect_status")
+    if not {"expect_top5", "expect_absent", "expect_status", "expect_none"} & set(body):
+        raise _fail(
+            at, "a recall check needs expect_top5, expect_absent, expect_status or expect_none"
+        )
 
 
 def _validate_brief(at: str, body: dict[str, Any], keys: dict[str, str]) -> None:
@@ -471,8 +481,10 @@ def lint_dependencies(scenario: Scenario) -> list[str]:
     with the expected fact's text or entities, but must hit its keywords.
     `needs = "trigram"`: the query must share no whole word with the fact (text,
     entities, keywords) and no fragment with its keywords, but be a fragment of its text.
+    `needs = "embeddings"` has no static form: `tests/evals` runs such a scenario without
+    a model and requires it to fail there.
     """
-    if scenario.needs is None:
+    if scenario.needs is None or scenario.needs == "embeddings":
         return []
     remembered = {
         s.data["key"]: s.data for s in scenario.steps if s.op == "remember" and "key" in s.data

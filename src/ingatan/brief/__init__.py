@@ -44,8 +44,10 @@ def estimate_tokens(text: str) -> int:
 @dataclass(frozen=True)
 class _Item:
     # Smaller means dropped first when the brief is over budget:
-    # pinned -> use_count -> last_used -> rule/procedure -> stable -> valid_from -> id.
-    rank: tuple[int, int, str, int, int, str, str]
+    # pinned -> use_count -> last_used -> rule/procedure -> stable -> valid_from -> seq -> id.
+    # `seq` (insertion order) settles facts written at the same instant: fact ids are random,
+    # so ending on the id alone would make two stores with the same content cut differently.
+    rank: tuple[int, int, str, int, int, str, int, str]
     line: str
 
 
@@ -74,6 +76,7 @@ def _item(row: sqlite3.Row, tags: list[str]) -> _Item:
             role_boost,
             stable_boost,
             row["valid_from"],
+            int(row["seq"]) if "seq" in keys else 0,
             row["id"],
         ),
         line=f"- [{row['id']}] {_flat(row['text'])}{suffix}",

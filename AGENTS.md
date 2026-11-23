@@ -42,6 +42,8 @@ timeutil -> errors -> db -> redact -> scope -> audit -> search -> facts -> propo
   - `require_approval = true` (in `.ingatan.toml`, `~/.ingatan/config.toml`, or `INGATAN_REQUIRE_APPROVAL=1`) enables the manual CLI proposal queue.
   - `forget` on `business` and `global` tiers is always CLI-only (`by_user=True`) because `forget` permanently scrubs bytes and cannot be undone.
 - **Byte-level `forget` guarantee**: keep `PRAGMA secure_delete = ON`, FTS5 `secure-delete`, `optimize`, and `PRAGMA wal_checkpoint(TRUNCATE)` intact whenever touching DB schema or deletion paths.
+- **Semantic search stays optional**: the default provider is `none`. Nothing may import `numpy`, `onnxruntime` or `sentencepiece` at import time, the server must never download a model (only `ingatan embeddings pull` does), and an embedding must never be computed inside a write transaction.
+- **No bare similarity constants**: cosine scores are not comparable between embedding models. Cut-offs live in a `SimilarityProfile` (`src/ingatan/search/embed.py`) and are changed only with numbers from `scripts/calibrate_embeddings.py`, recorded in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md). Two facts are never merged because they are similar.
 - **Python 3.10+ compatibility**: every `.py` file must begin with `from __future__ import annotations`.
 
 ## Development & Verification Commands
@@ -62,5 +64,6 @@ On Windows machines where `.venv\Scripts\python.exe` is blocked by Application C
 ## Documentation & Changelog Maintenance
 
 - Record user-visible changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) using Keep a Changelog categories (`Added`, `Changed`, `Fixed`). Keep entries general and implementation-accurate.
-- When adding or modifying eval scenarios in `evals/scenarios/` (or anonymized real incidents in `evals/scenarios/incidents/`), run `python -m evals` so [evals/reports/latest.md](evals/reports/latest.md) stays up to date, and sync any changed metrics in [README.md](README.md).
+- When adding or modifying eval scenarios in `evals/scenarios/` (or anonymized real incidents in `evals/scenarios/incidents/`), run `python -m evals` so [evals/reports/latest.md](evals/reports/latest.md) stays up to date, and sync any changed metrics in [README.md](README.md). If the local embedding model is on your machine, also run `python -m evals --embeddings local` (it rewrites [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md)) and `INGATAN_TEST_MODEL_DIR=<model folder> python -m pytest tests/search/test_real_model.py`; CI has no model and runs neither.
+- Memory figures in [docs/RAM.md](docs/RAM.md) come from `scripts/measure_ram.py` and `scripts/measure_embed_ram.py`. Do not edit them by hand.
 - For new DB schema changes, add a continuous numbered migration `src/ingatan/db/migrations/NNNN_*.sql` — never edit a shipped migration.

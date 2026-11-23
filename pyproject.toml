@@ -23,15 +23,16 @@ dependencies = [
   "typer",
   "uvicorn",
   "tomli>=2; python_version < '3.11'",
-  "fastembed>=0.4",
-  "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
-# Kept for compatibility; local vector dependencies are now included by default.
+# Offline semantic search. Install these three (`pip install -e '.[vector]'` in a checkout),
+# download the model once with `ingatan embeddings pull`, then set
+# `[embeddings] provider = "local"`.
 vector = [
-  "fastembed>=0.4",
   "numpy>=1.24",
+  "onnxruntime>=1.17",
+  "sentencepiece>=0.2",
 ]
 
 [project.urls]
@@ -46,6 +47,10 @@ dev = [
   "ruff",
   "pyright",
   "pytest",
+  # The `vector` extra, so the tests and the type checker see the optional code paths.
+  "numpy>=1.24",
+  "onnxruntime>=1.17",
+  "sentencepiece>=0.2",
 ]
 
 [tool.hatch.build.targets.wheel]

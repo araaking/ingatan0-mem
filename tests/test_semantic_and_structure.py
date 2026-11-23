@@ -84,17 +84,32 @@ def test_migration_v1_to_v2_preserves_existing_rows_and_adds_tables(tmp_path: Pa
         conn.close()
 
 
-def test_default_embeddings_is_local_multilingual_e5_and_prefixes(
+def test_default_embeddings_is_off_and_local_defaults_to_quantized_e5(
     ingatan_home: Path, tmp_path: Path
 ) -> None:
     proj = tmp_path / "default-proj"
     proj.mkdir()
     (proj / ".ingatan.toml").write_text('business = "tokoku"\nagent = "hermes"\n', encoding="utf-8")
 
-    # With no [embeddings] section or env override, defaults to local multilingual-e5-small.
+    # With no [embeddings] section or env override there are no embeddings: pure FTS5.
     scope = resolve_scope(start=proj, env={"INGATAN_HOME": str(ingatan_home)})
-    assert scope.embeddings.provider == "local"
-    assert embed_store.effective_model(scope.embeddings) == "intfloat/multilingual-e5-small"
+    assert scope.embeddings.provider == "none"
+    assert embed_store.is_enabled(scope.embeddings) is False
+    assert embed_store.effective_model(scope.embeddings) == ""
+    assert scope.embeddings == EmbeddingConfig()
+
+    # Opting in to the local provider selects the int8 multilingual-e5-small by default,
+    # and local model names are case-insensitive.
+    local_scope = resolve_scope(
+        start=proj, env={"INGATAN_HOME": str(ingatan_home), "INGATAN_EMBED_PROVIDER": "local"}
+    )
+    assert embed_store.effective_model(local_scope.embeddings) == "xenova/multilingual-e5-small"
+    assert (
+        embed_store.effective_model(
+            EmbeddingConfig(provider="local", model="Intfloat/Multilingual-E5-Small")
+        )
+        == "intfloat/multilingual-e5-small"
+    )
 
     # Model-family prefix formatting for both E5 and EmbeddingGemma
     assert (
@@ -349,10 +364,13 @@ def test_http_embedding_providers_parsing(monkeypatch: pytest.MonkeyPatch) -> No
         def __exit__(self, *args: object) -> None:
             return None
 
+    headers_seen: dict[str, dict[str, str]] = {}
+
     def fake_urlopen(req: Any, timeout: float = 0.0) -> FakeResp:
         url = req.full_url
         payload = json.loads(req.data.decode("utf-8"))
         calls.append((url, payload))
+        headers_seen[url] = {k.lower(): v for k, v in req.header_items()}
         if "/api/embed" in url:
             return FakeResp({"embeddings": [[3.0, 4.0]]})
         if "/embeddings" in url:
@@ -375,12 +393,18 @@ def test_http_embedding_providers_parsing(monkeypatch: pytest.MonkeyPatch) -> No
     assert v_gemini is not None and abs(v_gemini[0] - 1.0) < 1e-5
     assert len(calls) == 3
 
+    # API keys travel in headers, never in a URL (URLs end up in logs and error messages).
+    gemini_url = calls[2][0]
+    assert "AIza-test-fake" not in gemini_url and "key=" not in gemini_url
+    assert headers_seen[gemini_url]["x-goog-api-key"] == "AIza-test-fake"
+    assert headers_seen[calls[1][0]]["authorization"] == "Bearer sk-test-fake"
+
 
 def test_semantic_conflict_detection(ingatan_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_embed(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
         low = text.lower()
         if "jam" in low or "buka" in low or "operasional" in low:
-            # High similarity (~0.90) — above 0.88 conflict threshold, below 0.94 dedup threshold
+            # Cosine ~0.90: above the generic profile's entity-free conflict cut-off (0.88).
             if "08:00" in low:
                 return _unit(1.0, 0.0, 0.0)
             return _unit(0.90, 0.43589, 0.0)
@@ -407,16 +431,16 @@ def test_semantic_conflict_detection(ingatan_home: Path, monkeypatch: pytest.Mon
         ctx.close()
 
 
-# ---- 3. Near-duplicate deduplication -------------------------------------------------
+# ---- 3. Exact repeats refresh; close meaning is saved and flagged --------------------
 
 
-def test_near_duplicate_exact_and_semantic_dedup(
+def test_exact_duplicate_refreshes_and_close_meaning_is_saved_and_flagged(
     ingatan_home: Path, frozen_clock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_embed(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
         low = text.lower()
         if "margin" in low or "keuntungan" in low:
-            # Cosine ~0.985 >= 0.94 semantic dedup threshold
+            # Cosine ~0.985: as close as two texts get without being the same text.
             if "margin" in low:
                 return _unit(1.0, 0.0, 0.0)
             return _unit(0.985, 0.1725, 0.0)
@@ -452,15 +476,19 @@ def test_near_duplicate_exact_and_semantic_dedup(
         row = ctx.business.execute("SELECT * FROM facts WHERE id = ?", (first.fact_id,)).fetchone()
         assert "profit" in json.loads(row["keywords"])
 
-        # Semantic near-duplicate (>= 0.94 cosine, >= 4 words) also refreshes instead of duplicating
-        dup_sem = facts.remember(
+        # A text that is only close in meaning is never merged, however high the score: a
+        # changed value scores higher than a paraphrase, so merging would drop updates.
+        # It is saved, and the earlier fact comes back as similar for the agent to resolve.
+        close = facts.remember(
             ctx,
             "Batas keuntungan bersih minimum barang adalah 25 persen.",
             keywords=["keuntungan"],
             tier="business",
         )
-        assert dup_sem.fact_id == first.fact_id
-        assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 1
+        assert close.fact_id and close.fact_id != first.fact_id
+        assert [s["id"] for s in close.similar] == [first.fact_id]
+        assert "similar fact" in close.message
+        assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 2
 
         # Passing dedup=False forces a separate row
         forced = facts.remember(
@@ -472,7 +500,7 @@ def test_near_duplicate_exact_and_semantic_dedup(
             dedup=False,
         )
         assert forced.fact_id and forced.fact_id != first.fact_id
-        assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 2
+        assert ctx.business.execute("SELECT count(*) FROM facts").fetchone()[0] == 3
     finally:
         ctx.close()
 
@@ -828,21 +856,6 @@ def test_embed_threads_idle_unload_and_query_cache(
             env={"INGATAN_HOME": str(ingatan_home), "INGATAN_EMBED_THREADS": "0"},
         )
 
-    # Verify idle auto-unload and manual unload_local_models()
-    embed_store.unload_local_models()
-    key = ("fake-model", 2)
-    with embed_store._local_lock:
-        embed_store._local_models[key] = object()
-        embed_store._local_last_used[key] = 0.0
-    embed_store._unload_if_idle(key, 1.0)
-    assert key not in embed_store._local_models
-
-    with embed_store._local_lock:
-        embed_store._local_models[key] = object()
-        embed_store._local_last_used[key] = 999999999.0
-    assert embed_store.unload_local_models() == 1
-    assert embed_store._local_models == {}
-
     # Verify bounded LRU query cache avoids redundant inference
     calls = 0
 
@@ -934,41 +947,10 @@ def test_http_app_reloads_scope_on_config_change_and_evicts_revoked(
     asyncio.run(exercise())
 
 
-def test_custom_e5_small_registration_doctor_probe_and_reindex_exit_code(
+def test_doctor_probe_and_reindex_report_embedding_errors(
     ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import sys
-    import types
-
-    # 1. Verify _ensure_custom_local_model registers intfloat/multilingual-e5-small idempotently
-    registered: list[dict[str, Any]] = []
-
-    class FakeTextEmbedding:
-        @classmethod
-        def list_supported_models(cls) -> list[dict[str, Any]]:
-            return [{"model": m["model"]} for m in registered]
-
-        @classmethod
-        def add_custom_model(cls, **kwargs: Any) -> None:
-            registered.append(kwargs)
-
-    fake_md = types.ModuleType("fastembed.common.model_description")
-    fake_md.PoolingType = types.SimpleNamespace(MEAN="MEAN")  # type: ignore[attr-defined]
-    fake_md.ModelSource = lambda **kw: kw  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fastembed", types.ModuleType("fastembed"))
-    monkeypatch.setitem(sys.modules, "fastembed.common", types.ModuleType("fastembed.common"))
-    monkeypatch.setitem(sys.modules, "fastembed.common.model_description", fake_md)
-
-    embed_store._ensure_custom_local_model(FakeTextEmbedding, "intfloat/multilingual-e5-small")
-    embed_store._ensure_custom_local_model(FakeTextEmbedding, "intfloat/multilingual-e5-small")
-    assert len(registered) == 1
-    assert registered[0]["model"] == "intfloat/multilingual-e5-small"
-    assert registered[0]["dim"] == 384
-    assert registered[0]["model_file"] == "onnx/model.onnx"
-    assert registered[0]["normalization"] is True
-    assert registered[0]["sources"] == {"hf": "intfloat/multilingual-e5-small"}
-
-    # 2. Initialize a business with 1 fact, then test doctor probe & reindex error handling
+    # Initialize a business with 1 fact, then test doctor probe & reindex error handling
     assert (
         runner.invoke(app, ["init", "--business", "tokoku", "--agent", "claude-code"]).exit_code
         == 0
@@ -1012,9 +994,14 @@ def test_custom_e5_small_registration_doctor_probe_and_reindex_exit_code(
     )
     res_doc_ok = runner.invoke(app, ["doctor", "--business", "tokoku"])
     assert res_doc_ok.exit_code == 0
-    assert "[pass] embeddings: local (intfloat/multilingual-e5-small, 3 dims; probe OK)" in (
+    assert "[pass] embeddings: local (xenova/multilingual-e5-small, 3 dims; probe OK)" in (
         res_doc_ok.stdout
     )
+    # Doctor says which facts still lack a vector, so the user knows to reindex.
+    assert "1 of 1 valid fact(s) have no vector for this model" in res_doc_ok.stdout
     res_re_ok = runner.invoke(app, ["reindex", "--business", "tokoku"])
     assert res_re_ok.exit_code == 0
     assert "facts indexed=1" in res_re_ok.stdout
+    res_doc_done = runner.invoke(app, ["doctor", "--business", "tokoku"])
+    assert res_doc_done.exit_code == 0
+    assert "have no vector" not in res_doc_done.stdout

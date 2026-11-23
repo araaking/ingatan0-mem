@@ -13,16 +13,18 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ingatan import db, tokens
+from ingatan import db, timeutil, tokens
 from ingatan.errors import ConfigError, IngatanError
 from ingatan.scope import (
     GLOBAL_NAME,
+    EmbeddingConfig,
     Scope,
     data_home,
     db_path,
     find_config,
     resolve_scope,
     validate_business,
+    visible_sql,
 )
 
 __all__ = ["Check", "render", "run_checks"]
@@ -138,8 +140,103 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]
     return Check("config", "pass", detail, notes), scope.business, scope
 
 
+_FALLBACK_NOTE = (
+    "Recall will fall back to FTS5 only until this is resolved "
+    "(or set [embeddings] provider = 'none' / INGATAN_EMBED_PROVIDER=none)."
+)
+
+
+def _local_setup_problem(emb: EmbeddingConfig) -> str | None:
+    """What still has to be installed or downloaded for the local provider, if anything.
+
+    Looks at package names and file sizes only: it loads no model and uses no network.
+    """
+    from ingatan.search import local
+
+    try:
+        model = local.resolve(emb.model)
+    except IngatanError as exc:
+        return exc.message
+    absent = local.missing_packages()
+    if absent:
+        return (
+            f"the packages {', '.join(absent)} are not installed. "
+            f"Install them in the environment Ingatan runs in: {local.INSTALL_HINT}"
+        )
+    if local.missing_files(model, emb.model_dir):
+        folder = local.model_folder(emb.model_dir, model)
+        return (
+            f"the model files are not in {folder}. Download them once with: ingatan embeddings pull"
+        )
+    return None
+
+
+def _vector_notes(scope: Scope, model_name: str) -> list[str]:
+    """Which valid facts still lack a vector of the current model. Never raises.
+
+    Only what `ingatan reindex` would fix is counted as its job: the facts this business and
+    agent can see. Another agent's private facts are reported separately, because a reindex
+    as this agent does not reach them. Vectors left on closed facts are not counted at all:
+    nothing recomputes them and nothing reads them.
+    """
+    now = timeutil.iso(timeutil.now())
+    valid = (
+        "f.valid_from <= :now AND (f.valid_to IS NULL OR f.valid_to > :now) "
+        "AND f.superseded_by IS NULL"
+    )
+    no_vector = (
+        "NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = f.id AND e.model = :model)"
+    )
+    old_vector = (
+        "EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = f.id AND e.model != :model)"
+    )
+    params = {"now": now, "model": model_name, "agent": scope.agent}
+    total = missing = replaced = others = 0
+    for name in (scope.business, GLOBAL_NAME):
+        path = db_path(scope.home, name)
+        if not path.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(str(path))
+        except sqlite3.Error:
+            continue
+
+        def count(where: str, conn: sqlite3.Connection = conn) -> int:
+            sql = f"SELECT count(*) FROM facts f WHERE {valid} AND {where}"
+            return int(conn.execute(sql, params).fetchone()[0])
+
+        try:
+            mine = visible_sql(is_global=name == GLOBAL_NAME, alias="f")
+            total += count(mine)
+            missing += count(f"{mine} AND {no_vector}")
+            replaced += count(f"{mine} AND {no_vector} AND {old_vector}")
+            others += count(f"NOT ({mine}) AND {no_vector}")
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+    notes: list[str] = []
+    if missing:
+        note = f"{missing} of {total} valid fact(s) have no vector for this model"
+        if replaced:
+            note += f" ({replaced} of them have one from another model)"
+        notes.append(
+            note + ". Run `ingatan reindex`; until then those facts are found by words only."
+        )
+    if others:
+        notes.append(
+            f"{others} private fact(s) of other agents have no vector either. "
+            "Run `ingatan reindex --agent NAME` for each of those agents."
+        )
+    return notes
+
+
 def _check_embeddings(scope: Scope | None, *, probe: bool = True) -> Check:
-    """Verify the configured embedding provider by embedding one short test sentence."""
+    """Verify the configured embedding provider by embedding one short test sentence.
+
+    Nothing here downloads a model. For the local provider a missing package or model file
+    is reported with the command that fixes it.
+    """
     if scope is None:
         return Check("embeddings", "skip", "no valid config (see config)")
     emb = scope.embeddings
@@ -149,20 +246,25 @@ def _check_embeddings(scope: Scope | None, *, probe: bool = True) -> Check:
 
     model_name = effective_model(emb)
     if not probe:
-        return Check("embeddings", "pass", f"{emb.provider} ({model_name}; probe skipped)")
+        problem = _local_setup_problem(emb) if emb.provider == "local" else None
+        if problem is not None:
+            return Check("embeddings", "FAIL", f"local ({model_name}): {problem}", [_FALLBACK_NOTE])
+        return Check(
+            "embeddings",
+            "pass",
+            f"{emb.provider} ({model_name}; probe skipped)",
+            _vector_notes(scope, model_name),
+        )
     try:
         dims = probe_embedding(emb)
     except IngatanError as exc:
-        return Check(
-            "embeddings",
-            "FAIL",
-            exc.message,
-            [
-                "Recall will fall back to FTS5 only until this is resolved "
-                "(or set [embeddings] provider = 'none' / INGATAN_EMBED_PROVIDER=none)."
-            ],
-        )
-    return Check("embeddings", "pass", f"{emb.provider} ({model_name}, {dims} dims; probe OK)")
+        return Check("embeddings", "FAIL", exc.message, [_FALLBACK_NOTE])
+    return Check(
+        "embeddings",
+        "pass",
+        f"{emb.provider} ({model_name}, {dims} dims; probe OK)",
+        _vector_notes(scope, model_name),
+    )
 
 
 def _valid_business(name: str | None) -> str | None:

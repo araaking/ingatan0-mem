@@ -83,7 +83,7 @@ def exit_reasons(run: RunResult) -> list[str]:
     return reasons
 
 
-def write_report(path: Path, run: RunResult) -> None:
+def write_report(path: Path, run: RunResult, *, embeddings: str = "none (FTS5 only)") -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     targets = {"recall@5": "over 80%", "stale rate": "under 5%", "leak rate": "0"}
     out: list[str] = [
@@ -91,6 +91,7 @@ def write_report(path: Path, run: RunResult) -> None:
         "",
         f"Date: {today}  ",
         f"Result: {_summary(run)}  ",
+        f"Embeddings: {embeddings}  ",
         f"Network attempts during the run: {len(run.network_attempts)}",
         "",
         "## Metrics",

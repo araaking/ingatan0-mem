@@ -12,7 +12,7 @@ from evals.driver import Hit, InProcessDriver, MemoryDriver
 from evals.metrics import compute
 from evals.netguard import NetworkBlockedError, NetworkGuard
 from evals.report import exit_reasons, format_metrics, write_report
-from evals.runner import FAIL, PASS, XFAIL, XPASS, RunResult, run_all
+from evals.runner import FAIL, PASS, SKIP, XFAIL, XPASS, RunResult, run_all, run_scenario
 from evals.scenarios import Actor, Scenario, load_dir, parse_scenario
 
 SCENARIO_DIR = Path(__file__).resolve().parents[2] / "evals" / "scenarios"
@@ -237,6 +237,46 @@ def test_a_socket_opened_during_a_run_fails_the_run():
     assert any("network" in r for r in exit_reasons(run))
 
 
+def test_expect_none_passes_on_silence_and_fails_on_any_result():
+    data = dict(PLAIN_SCENARIO, id="noise-fake", category="noise")
+    data["steps"] = [
+        PLAIN_SCENARIO["steps"][0],
+        {"op": "recall", "query": "jadwal pertandingan bulu tangkis", "expect_none": True},
+    ]
+    assert run_all([parse_scenario(data)]).results[0].status == PASS
+    data["steps"] = [
+        PLAIN_SCENARIO["steps"][0],
+        {"op": "recall", "query": "harga kaos polos", "expect_none": True},
+    ]
+    result = run_all([parse_scenario(data)]).results[0]
+    assert result.status == FAIL
+    assert "expected no result at all" in result.failures[0]
+
+
+def test_a_scenario_that_needs_embeddings_is_skipped_without_a_model(tmp_path: Path):
+    needy = [s for s in load_dir(SCENARIO_DIR) if s.needs == "embeddings"]
+    assert needy, "at least one shipped scenario exercises the embedding model"
+    for scenario in needy:
+        skipped = run_scenario(scenario, tmp_path / f"{scenario.id}-a")
+        assert skipped.status == SKIP and skipped.failures == []
+        assert "needs an embedding model" in skipped.notes[0]
+        # It really does depend on one: made to run on words alone, it fails.
+        forced = run_scenario(scenario, tmp_path / f"{scenario.id}-b", honor_needs=False)
+        assert forced.status == FAIL, scenario.id
+    # A skipped scenario never fails the run.
+    run = run_all(needy)
+    assert run.count(SKIP) == len(needy) and exit_reasons(run) == []
+
+
+def test_embeddings_mode_refuses_to_start_without_the_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    code = main(["--embeddings", "local", "--model-dir", str(tmp_path / "nothing-here")])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "ingatan embeddings pull" in err or "pip install" in err
+
+
 # -- the whole shipped suite, in process ------------------------------------------
 
 
@@ -265,6 +305,7 @@ def test_whole_suite_metrics_are_reported(suite: RunResult, tmp_path: Path):
     write_report(report, suite)
     text = report.read_text(encoding="utf-8")
     assert "recall@5" in text and "Briefs measured" in text
+    assert "Embeddings: none (FTS5 only)" in text
     for result in suite.results:
         assert result.scenario.id in text
 

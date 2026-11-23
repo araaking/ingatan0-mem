@@ -1,17 +1,18 @@
 # Ingatan eval report
 
 Date: 2026-11-23  
-Result: 43 scenarios: 43 pass, 0 fail, 0 xfail, 0 xpass, 0 skipped  
+Result: 46 scenarios: 45 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
+Embeddings: none (FTS5 only)  
 Network attempts during the run: 0
 
 ## Metrics
 
 | Metric | Value | Target |
 |---|---|---|
-| recall@5 | 100.0% (48 checks) | over 80% |
-| stale rate | 0.0% (66 recall checks) | under 5% |
-| leak rate | 0.0% (0 of 91 results) | 0 |
-| tokens per brief | mean 65, max 261 (20 briefs) | about 1,000 |
+| recall@5 | 100.0% (51 checks) | over 80% |
+| stale rate | 0.0% (72 recall checks) | under 5% |
+| leak rate | 0.0% (0 of 95 results) | 0 |
+| tokens per brief | mean 64, max 256 (20 briefs) | about 1,000 |
 
 Definitions are in `evals/README.md`.
 
@@ -26,6 +27,7 @@ Definitions are in `evals/README.md`.
 | brief-incident-01-fakta-stabil-prioritas-cold-start | brief | incident | PASS |  |
 | conflict-01-fakta-mirip-ditandai | conflict | pattern | PASS |  |
 | conflict-02-confirm-dengan-id-menyelesaikan | conflict | pattern | PASS |  |
+| conflict-03-nilai-berubah-tetap-tersimpan | conflict | pattern | PASS |  |
 | conflict-incident-01-entitas-umum-tidak-konflik | conflict | incident | PASS |  |
 | forget-01-fakta-agen-sendiri | forget | pattern | PASS |  |
 | forget-02-fakta-bisnis-tidak-bisa-dihapus-agen | forget | pattern | PASS |  |
@@ -46,6 +48,7 @@ Definitions are in `evals/README.md`.
 | leak-business-02-fakta-global-terlihat-di-semua-bisnis | leak-business | pattern | PASS |  |
 | leak-business-03-brief-dan-hitungan-proposal-bisnis-lain | leak-business | pattern | PASS |  |
 | leak-business-04-nama-agen-sama-di-bisnis-berbeda | leak-business | pattern | PASS |  |
+| noise-01-pertanyaan-di-luar-topik-tanpa-hasil | noise | pattern | PASS |  |
 | partial-01-langgan | partial-word | pattern | PASS |  |
 | partial-02-blokir | partial-word | pattern | PASS |  |
 | partial-03-ekspedi | partial-word | pattern | PASS |  |
@@ -55,6 +58,7 @@ Definitions are in `evals/README.md`.
 | proposal-03-ditolak-tidak-pernah-muncul | proposal | pattern | PASS |  |
 | proposal-04-supersede-fakta-bisnis-menunggu-persetujuan | proposal | pattern | PASS |  |
 | proposal-05-supersede-ditolak-fakta-kembali-valid | proposal | pattern | PASS |  |
+| semantic-01-konflik-entitas-sama-kata-berbeda | semantic | pattern | SKIP | needs an embedding model: skipped (run `python -m evals --embeddings local` to include it) |
 | stale-01-ongkir-lewat-31-hari | stale | pattern | PASS |  |
 | stale-02-jadwal-review-eksplisit | stale | pattern | PASS |  |
 | stale-03-confirm-valid-lagi | stale | pattern | PASS |  |
@@ -73,7 +77,7 @@ None.
 | brief-01-check-first-terpisah | tokoku/asisten | 137 | 1000 |
 | brief-02-confirm-keluar-dari-check-first | tokoku/asisten | 95 | 1000 |
 | brief-02-confirm-keluar-dari-check-first | tokoku/asisten | 45 | 1000 |
-| brief-03-anggaran-token-dan-pemangkasan | tokoku/asisten | 261 | 300 |
+| brief-03-anggaran-token-dan-pemangkasan | tokoku/asisten | 256 | 300 |
 | brief-04-urutan-bagian-global-bisnis-agen | tokoku/seo-agent | 99 | 1000 |
 | brief-incident-01-fakta-stabil-prioritas-cold-start | proyekku/asisten | 75 | 120 |
 | forget-01-fakta-agen-sendiri | tokoku/asisten | 19 | 1000 |
@@ -90,3 +94,7 @@ None.
 | proposal-03-ditolak-tidak-pernah-muncul | tokoku/seo-agent | 20 | 1000 |
 | stale-04-fakta-stabil-tidak-basi | tokoku/asisten | 42 | 1000 |
 | supersede-02-rantai-tiga-versi | tokoku/penulis | 44 | 1000 |
+
+## Notes
+
+- needs an embedding model: skipped (run `python -m evals --embeddings local` to include it)

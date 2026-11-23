@@ -10,6 +10,11 @@ Standard library only. Usage:
     python scripts/measure_ram.py [--facts N] [--no-write]
 
 It prints the numbers and appends a dated row to docs/RAM.md (unless --no-write).
+
+The server is configured the usual way, so the embedding mode comes from the environment
+(`INGATAN_EMBED_PROVIDER`, `INGATAN_EMBED_MODEL`, `INGATAN_MODEL_DIR`). With a model the
+"loaded" figure includes it: the facts were just embedded, and the model has not been idle
+long enough to be unloaded.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ Resident set size (RSS) of one `ingatan.mcp.server` process, measured by
 `recall` and `brief` calls. "Peak" is the highest value the operating system recorded.
 The threshold is OQ-19 and is the owner's call; these are measurements only.
 
-| Date | Machine | Python | mcp | Facts | Idle MB | Loaded MB | Peak MB | Command |
+| Date | Machine | Python | mcp | Embeddings | Facts | Idle MB | Loaded MB | Peak MB |
 |---|---|---|---|---|---|---|---|---|
 """
 PID_MARK = "INGATAN_MEASURE_PID="
@@ -297,6 +302,15 @@ def machine() -> str:
     return f"{system} {platform.release()} ({platform.machine()})"
 
 
+def embeddings_label() -> str:
+    """The embedding mode the server subprocess resolves from the environment."""
+    provider = (os.environ.get("INGATAN_EMBED_PROVIDER") or "none").strip().casefold()
+    if provider == "none":
+        return "none"
+    model = (os.environ.get("INGATAN_EMBED_MODEL") or "").strip() or "default model"
+    return f"{provider} ({model})"
+
+
 def mcp_version() -> str:
     try:
         return metadata.version("mcp")
@@ -312,9 +326,7 @@ def main() -> int:
 
     result = measure(args.facts)
     idle, loaded, peak = (megabytes(result[k]) for k in ("idle", "loaded", "peak"))
-    command = "python scripts/measure_ram.py" + (
-        "" if args.facts == 500 else f" --facts {args.facts}"
-    )
+    print(f"embeddings: {embeddings_label()}")
     print(f"idle   : {idle} MB")
     print(f"loaded : {loaded} MB  ({args.facts} facts through the MCP tools)")
     print(f"peak   : {peak} MB")
@@ -322,8 +334,8 @@ def main() -> int:
     if not args.no_write:
         row = (
             f"| {datetime.now(timezone.utc).date().isoformat()} | {machine()} | "
-            f"{platform.python_version()} | {mcp_version()} | {args.facts} | "
-            f"{idle} | {loaded} | {peak} | `{command}` |\n"
+            f"{platform.python_version()} | {mcp_version()} | {embeddings_label()} | "
+            f"{args.facts} | {idle} | {loaded} | {peak} |\n"
         )
         RAM_DOC.parent.mkdir(parents=True, exist_ok=True)
         if not RAM_DOC.exists():

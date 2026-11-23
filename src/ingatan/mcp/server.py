@@ -7,7 +7,6 @@ tool takes a business or an agent name, and nothing but protocol is written to s
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
 import time
@@ -23,13 +22,12 @@ from ingatan.scope import (
     Context,
     EmbeddingConfig,
     Scope,
-    find_config,
-    load_home_config,
+    load_embeddings,
     open_context,
-    parse_embeddings,
     resolve_allowed_businesses,
     resolve_scope,
 )
+from ingatan.search.local import limit_math_threads
 
 __all__ = ["build_multi_server", "build_server", "run"]
 
@@ -337,7 +335,8 @@ def build_server(ctx: Context) -> MCPServer:
             bool,
             Field(
                 description=(
-                    "If true (default), refresh an existing near-duplicate instead of duplicating."
+                    "If true (default), a text that repeats a stored fact word for word refreshes "
+                    "that fact instead of adding a second one."
                 )
             ),
         ] = True,
@@ -575,7 +574,8 @@ def build_multi_server(
             bool,
             Field(
                 description=(
-                    "If true (default), refresh an existing near-duplicate instead of duplicating."
+                    "If true (default), a text that repeats a stored fact word for word refreshes "
+                    "that fact instead of adding a second one."
                 )
             ),
         ] = True,
@@ -667,6 +667,7 @@ def _open_with_retry(scope: Scope, attempts: int = 40, delay: float = 0.25) -> C
 
 def run() -> None:
     """Resolve the scope from the working folder and environment, then serve stdio."""
+    limit_math_threads()
     try:
         multi = resolve_allowed_businesses()
     except IngatanError as exc:
@@ -675,14 +676,11 @@ def run() -> None:
 
     if multi is not None:
         businesses, agent, home, budget, require_approval = multi
-        home_cfg = load_home_config(home)
-        cfg_file = find_config()
-        proj_cfg: dict[str, Any] = {}
-        if cfg_file is not None:
-            from ingatan.scope import _read_config  # pyright: ignore[reportPrivateUsage]
-
-            proj_cfg = _read_config(cfg_file)
-        embeddings = parse_embeddings(os.environ, proj_cfg, home_cfg)
+        try:
+            embeddings = load_embeddings()
+        except IngatanError as exc:
+            print(f"ingatan: {exc.message}", file=sys.stderr)
+            raise SystemExit(1) from exc
         server, opened = build_multi_server(
             businesses,
             agent=agent,

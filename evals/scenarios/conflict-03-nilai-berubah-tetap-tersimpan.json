@@ -1,0 +1,72 @@
+{
+  "id": "conflict-03-nilai-berubah-tetap-tersimpan",
+  "title": "Fakta yang nilainya berubah tetap tersimpan dan ditandai, tidak dianggap pengulangan",
+  "category": "conflict",
+  "source": "pattern",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "ongkir_lama",
+      "text": "Ongkir ke Bandung Rp 15.000 per kg lewat kurir reguler.",
+      "keywords": [
+        "ongkos kirim",
+        "tarif pengiriman",
+        "biaya kirim"
+      ],
+      "entities": [
+        "Bandung"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "ongkir_baru",
+      "text": "Ongkir ke Bandung Rp 18.000 per kg lewat kurir reguler.",
+      "keywords": [
+        "ongkos kirim",
+        "tarif pengiriman",
+        "biaya kirim"
+      ],
+      "entities": [
+        "Bandung"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "recall",
+      "query": "ongkir ke Bandung",
+      "expect_top5": [
+        "ongkir_lama",
+        "ongkir_baru"
+      ],
+      "expect_status": {
+        "ongkir_lama": "possible conflict",
+        "ongkir_baru": "possible conflict"
+      }
+    },
+    {
+      "op": "supersede",
+      "old": "ongkir_lama",
+      "new": "ongkir_baru"
+    },
+    {
+      "op": "recall",
+      "query": "ongkir ke Bandung",
+      "expect_top5": [
+        "ongkir_baru"
+      ],
+      "expect_absent": [
+        "ongkir_lama"
+      ],
+      "expect_status": {
+        "ongkir_baru": "valid"
+      }
+    }
+  ]
+}

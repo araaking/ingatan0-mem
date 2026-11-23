@@ -27,6 +27,7 @@ from ingatan.errors import ConfigError
 from ingatan.mcp.server import build_server
 from ingatan.scope import Context, Scope, data_home, open_context
 from ingatan.search import unload_local_models
+from ingatan.search.local import limit_math_threads
 from ingatan.tokens import TokenStore
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "HTTPApp", "build_app", "is_loopback", "run_http"]
@@ -274,6 +275,7 @@ def build_app(home: Path) -> HTTPApp:
 
 def run_http(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     """Serve HTTP until interrupted. Refuses to start when no token exists."""
+    limit_math_threads()
     home = data_home()
     if TokenStore(home).count() == 0:
         raise ConfigError(

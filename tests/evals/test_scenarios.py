@@ -105,6 +105,16 @@ CASES: list[tuple[str, dict[str, Any], str]] = [
     ("approve a fact", with_step({"op": "approve", "key": "k"}), "is not a proposal"),
     ("recall without expectation", with_step({"op": "recall", "query": "x"}), "needs expect_top5"),
     (
+        "expect_none that is not true",
+        with_step({"op": "recall", "query": "x", "expect_none": False}),
+        "'expect_none' must be true",
+    ),
+    (
+        "expect_none together with expected facts",
+        with_step({"op": "recall", "query": "x", "expect_none": True, "expect_top5": ["k"]}),
+        "cannot be combined",
+    ),
+    (
         "recall query and query_text_of",
         with_step({"op": "recall", "query": "x", "query_text_of": "k", "expect_absent": ["k"]}),
         "exactly one of 'query' and 'query_text_of'",

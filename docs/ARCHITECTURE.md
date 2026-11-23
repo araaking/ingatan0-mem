@@ -4,7 +4,7 @@ This is the shared contract for everyone implementing `PLAN.md`. `PRD.md` wins o
 
 ## Ground rules
 
-- Python 3.10+ (`from __future__ import annotations` everywhere). Runtime deps: `mcp` (2.x: `mcp>=2.3,<3`, the `MCPServer` API), `pydantic`, `typer`, and `tomli` only for Python < 3.11. Storage is stdlib `sqlite3` only. No network calls anywhere.
+- Python 3.10+ (`from __future__ import annotations` everywhere). Runtime deps: `mcp` (2.x: `mcp>=2.3,<3`, the `MCPServer` API), `pydantic`, `typer`, and `tomli` only for Python < 3.11. Storage is stdlib `sqlite3` only. The optional extra `ingatan[vector]` adds `numpy`, `onnxruntime` and `sentencepiece` for the local embedding model; nothing imports them unless that provider is in use. No network calls anywhere, with two exceptions the user has to ask for: `ingatan embeddings pull` (downloads the local model once) and a remote embedding provider (`ollama`, `openai`, `gemini`) if one is configured.
 - `src/` layout, package `ingatan`, build backend `hatchling`. Dev deps in a `dev` dependency group: `ruff`, `pyright`, `pytest`.
 - Run everything through uv: `uv run python -m pytest`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run python -m pyright`, and `uv run python -m evals`. All five must pass before you report done.
 - Tests live in `tests/<module>/test_*.py`. Every test gets an isolated data folder through the `INGATAN_HOME` env var (shared fixture in `tests/conftest.py`). Never touch the real `~/.ingatan`.
@@ -38,6 +38,7 @@ token_budget = 1000
 - `connect(path) -> sqlite3.Connection`: creates the file if needed, `row_factory = sqlite3.Row`, `PRAGMA journal_mode=WAL`, `busy_timeout=10000`, `foreign_keys=ON`, `secure_delete=ON`, `isolation_level=None` (explicit transactions), then runs `migrate`. `busy_timeout` is not honoured by `journal_mode=WAL` on a brand-new file, so `connect` retries that pragma on locked/busy for up to 10 s; several processes can open a fresh data folder at once.
 - `transaction(conn)` context manager: `BEGIN IMMEDIATE` … `COMMIT`, rollback on error. Every write goes through it.
 - `migrate(conn)`: numbered files `src/ingatan/db/migrations/0001_*.sql`, applied in order above `PRAGMA user_version`, each inside `BEGIN IMMEDIATE` with `user_version` re-checked once the lock is won (a racing process skips what the other applied). A database newer than the code raises `SchemaError`.
+- `normalize_fact_text(text)` and `fact_text_key(text)`: the normal form of a fact's text (case, runs of whitespace and trailing punctuation removed, nothing else) and the hash of it stored in `facts.text_key`. `connect` fills the key for rows that predate schema version 3.
 - `check_capabilities()` raises `SchemaError` with a clear message when FTS5, the trigram tokenizer, FTS5 `secure-delete` (SQLite 3.42+) or the JSON functions are missing. `LATEST_VERSION` constant.
 - `GLOBAL_LOG_OFFSET = 1_000_000_000`: `connect` on `global.db` seeds the `log` AUTOINCREMENT counter to this value (idempotent, under `BEGIN IMMEDIATE`), so a log id names exactly one entry across both files. `audit.get`, `diff` and `undo` rely on it. Business-file ids start at 1.
 
@@ -64,7 +65,9 @@ facts(
   source TEXT NOT NULL,           -- JSON: {agent, date, session?, document?, episode?}
   use_count INTEGER NOT NULL DEFAULT 0,
   last_used TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  text_key TEXT                   -- hash of the normalized text (migration 0003), indexed.
+                                  -- Internal: never copied into the log or a proposal
 )
 facts_fts   -- FTS5(text, entities, keywords), unicode61 remove_diacritics 2, rowid = facts.seq
 facts_tri   -- FTS5(text, entities, keywords), tokenize='trigram', rowid = facts.seq
@@ -103,10 +106,11 @@ notes(
 )
 notes_fts, notes_tri  -- FTS5 over (heading, text), same two tokenizers, rowid = notes.id
 -- Migration 0002_semantic_and_structure.sql:
-fact_embeddings(fact_id TEXT PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, text_hash TEXT, updated_at TEXT)
-note_embeddings(note_id INTEGER PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, text_hash TEXT, updated_at TEXT)
+fact_embeddings(fact_id TEXT PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, updated_at TEXT)
+note_embeddings(note_id INTEGER PRIMARY KEY, model TEXT, dims INTEGER, vec BLOB, updated_at TEXT)
 aliases(id INTEGER PK, term TEXT, canonical TEXT, created_at TEXT, UNIQUE(term, canonical))
 edges(id INTEGER PK, src_id TEXT, dst_id TEXT, relation TEXT, created_at TEXT, UNIQUE(src_id, dst_id, relation))
+-- Migration 0003_fact_text_key.sql: facts.text_key and its index (see above).
 ```
 
 Log protection lives in the schema: a trigger aborts every `DELETE` on `log`, and aborts every `UPDATE` on `log` unless it only sets `change` to NULL. That is what makes FR-36 true whatever the Python code does.
@@ -174,7 +178,11 @@ def is_valid_sql() -> str                    # shared validity filter
 - Valid: `valid_from <= now AND (valid_to IS NULL OR valid_to > now) AND superseded_by IS NULL`.
 - Status: `check first` when the fact is volatile with `review_after < now`, or has `pending_proposal` set. `possible conflict` when it is in an unresolved `conflicts` pair. Both at once: `check first, possible conflict`. Otherwise `valid`. Closed facts shown with `include_closed`: `superseded` or `expired`.
 - Query handling: split the query into word tokens, quote each one for FTS5 and OR them, so user text can never be an FTS syntax error. Tokens under three characters are skipped for the trigram index.
-- Signals, fused with reciprocal rank fusion (`k = 60`) over the union of candidates: BM25 on `facts_fts`, trigram match rank, entity match (number of the fact's entities that appear in the query, case-insensitive), recency (`valid_from`, newest first). A signal contributes nothing for a fact it did not match, so an entity match always lifts a fact above an otherwise equal one.
+- Signals, fused with reciprocal rank fusion (`k = 60`) over the union of candidates: BM25 on `facts_fts`, trigram match rank, entity match (number of the fact's entities that appear in the query, case-insensitive). A signal contributes nothing for a fact it did not match, so an entity match always lifts a fact above an otherwise equal one.
+- Freshness is not a rank signal. The fused score of a `volatile` fact is multiplied by `1 + 0.04 * (0.5 ** (age_days / 30) - 0.5)`, a factor between 0.98 and 1.02 that depends on the fact's age and not on what else matched. A `stable` fact keeps its score. Ties still fall back to the newest `valid_from`.
+- A weak single-term hit is dropped when its BM25 is under a quarter of the best hit of the same index in the same file. Raw BM25 values are never compared across indexes or files: they depend on the tokenizer, the column weights and the size of the file.
+- Embeddings are optional (`search/embed.py`, `search/local.py`; provider `none` by default). With a provider, the query vector is scored against the `fact_embeddings` rows of the same model, and hits at or above the model family's `recall_floor` join the fusion as one more signal (weight 1.5). Every cut-off comes from `embed.similarity_profile(cfg)`, never from a bare constant, because cosine scores are not comparable between model families; the measurements are in `docs/EMBEDDINGS.md`. The local provider is ONNX Runtime + SentencePiece: one text per forward pass, CPU memory arena off, the model dropped after `idle_unload_seconds`, files under `<INGATAN_HOME>/models` fetched only by `ingatan embeddings pull`. An embedding is computed before any write lock is taken and at most once per call; a failure returns no vector and recall carries on with FTS5.
+- `similar_facts` takes its candidates from indexes instead of reading every fact row into Python: the facts whose `entities` column mentions one of the new fact's entities (at most 200 per file, those sharing topic words first) and, for a profile that has a `conflict_strict` value, the facts at or above it. Each candidate's own vector is then scored, so the 50-row cut of a nearest-neighbour list cannot hide the fact that shares the entity. One counting pass over the `entities` column still runs inside SQLite (from 10 valid facts on), to find the entities too common to signal a conflict. A candidate is a conflict when it shares a specific (non-generic) entity and either overlaps in topic words or reaches `conflict`. Similarity alone counts only if the profile has a `conflict_strict` value; the E5 family has none, because two facts on one template about different subjects score as high as a real update. Facts that name different external resources are never a conflict unless their wording is nearly the same.
 - Query expansion: `search/stem_id.py` (`candidates(word)`) is a dependency-free Indonesian affix stripper that proposes up to 6 plausible roots per query word (`pengiriman` -> `kirim`). It over-generates on purpose and stores nothing. The roots (never the query words themselves, at most 60) run against both indexes as two extra signals with weight `EXPANDED_WEIGHT = 0.25` against 1.0 for the exact ones, so a literal match outranks a root-only match. Notes get the same expansion. Expansion happens at query time only; do not stem at write time.
 - `touch=True` raises `use_count` and sets `last_used` for returned facts (OQ-6). `similar_facts` and the brief never touch.
 - Runs against both files, visibility applied, results merged before the cut to `limit`.
@@ -192,6 +200,7 @@ def history(ctx, id_or_entity) -> list[LogEntry]
 def create_fact(conn, ctx, fields, *, op="create") -> str      # shared by remember and proposal approval
 ```
 
+- `remember(..., dedup=True)`: a text that is the same as a valid stored fact of the same tier and category after `db.normalize_fact_text`, with the same entities, refreshes that fact (one lookup in the `text_key` index) and creates nothing. Closeness in meaning never merges: such a fact is saved and the earlier one is returned in `similar`.
 - `remember`: text is redacted first, and so are keywords and entities. Empty or missing `keywords` raises `ValidationError` asking for synonyms and root words, and saves nothing. `kind` defaults to `volatile`. A volatile fact with no `review_after` gets `valid_from + 30 days`. `review_interval_days` records the interval. `tier="agent"` creates the fact at once, records a `conflicts` pair with each similar fact, and logs `create`. `tier` `business` or `global` creates a pending proposal (`propose` in the log) and no fact. Similar facts are still returned. `episode=<id>` marks that episode processed (it must be one of the caller's own, else `NotFoundError`) and is stored as `source.episode`.
 - `supersede(old, new)`:
   - Both ids must exist and be visible, else `NotFoundError` and nothing changes. `new` may be a fact id or a pending proposal id.
@@ -256,7 +265,7 @@ User: ...
 Assistant: ...
 ```
 
-Facts in each section are ordered by `use_count` desc, then `last_used` desc. A fact with `possible conflict` carries that tag on its line. Over budget: drop the least used facts first, across the three sections. The header, the pending count and the whole "check first" section are kept. If episodes push it over, drop episodes from the end. The final text is never over `scope.token_budget`. Notes never appear.
+Facts in each section are ordered by `use_count` desc, then `last_used` desc; facts that tie in every respect are ordered by insertion (`seq`, newest first), never by their random id, so two stores with the same content build the same brief. A fact with `possible conflict` carries that tag on its line. Over budget: drop the least used facts first, across the three sections. The header, the pending count and the whole "check first" section are kept. If episodes push it over, drop episodes from the end. The final text is never over `scope.token_budget`. Notes never appear.
 
 ## `ingatan.ingest`
 
@@ -280,11 +289,11 @@ Facts in each section are ordered by `use_count` desc, then `last_used` desc. A 
 
 ## `ingatan.cli`
 
-`ingatan` with no subcommand starts the MCP server (OQ-20, `uvx ingatan`). Commands: `serve [--http [--host H] [--port P]]` (stdio by default), `init [--business --agent]`, `doctor`, `log [--limit N] [--fact ID]`, `diff <log_id>`, `undo <log_id>`, `proposals list|approve <id>|reject <id>`, `forget <fact_id>` (the user's forget, any tier, asks for confirmation unless `--yes`), `ingest <path>`, `conflicts` (the NFR-9 report), `token add --business --agent [--label]|list|revoke <id>` (HTTP-mode tokens), `hook <event>` (Claude Code hook entry, see `integrations`). Exit code 1 with a one-line message on `IngatanError`.
+`ingatan` with no subcommand starts the MCP server (OQ-20, `uvx ingatan`). Commands: `serve [--http [--host H] [--port P]]` (stdio by default), `init [--business --agent]`, `doctor`, `log [--limit N] [--fact ID]`, `diff <log_id>`, `undo <log_id>`, `proposals list|approve <id>|reject <id>`, `forget <fact_id>` (the user's forget, any tier, asks for confirmation unless `--yes`), `ingest <path>`, `reindex [--force]`, `embeddings pull [--model NAME]` (downloads the optional local model; the only command that downloads anything), `conflicts` (the NFR-9 report), `token add --business --agent [--label]|list|revoke <id>` (HTTP-mode tokens), `hook <event>` (Claude Code hook entry, see `integrations`). Exit code 1 with a one-line message on `IngatanError`.
 
 - Human commands open the context of the configured business and agent: they see `business` and `global` facts and that agent's private entries only. `log`, `diff`, `undo`, `forget` and `conflicts` take `--agent NAME` to open the context as another agent, to audit that agent's private entries. The visibility filter itself is never weakened.
 - `hook <event>` always exits 0 and prints nothing of its own. When the hook module is missing or `run` raises, it writes one line to `<data home>/capture-errors.log` if it can (NFR-14). It never exits 2, which would block the agent.
 
 ## `evals/`
 
-Not shipped in the wheel. `uv run python -m evals` runs every scenario in `evals/scenarios/*.yaml`-style files (use JSON or TOML so no extra dependency is needed) against the real modules in a temporary `INGATAN_HOME` with a frozen clock, prints recall@5, stale rate, leak rate and tokens per brief, writes `evals/reports/latest.md`, and exits non-zero when leak rate is above 0. Scenario text is Indonesian.
+Not shipped in the wheel. `uv run python -m evals` runs every scenario in `evals/scenarios/*.yaml`-style files (use JSON or TOML so no extra dependency is needed) against the real modules in a temporary `INGATAN_HOME` with a frozen clock, prints recall@5, stale rate, leak rate and tokens per brief, writes `evals/reports/latest.md`, and exits non-zero when leak rate is above 0. Scenario text is Indonesian. `--embeddings local` runs the same scenarios with the local model switched on (it must already be downloaded) and writes `evals/reports/latest-semantic.md`; a scenario with `needs = "embeddings"` is skipped without it.

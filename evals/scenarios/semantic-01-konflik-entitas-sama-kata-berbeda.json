@@ -1,0 +1,91 @@
+{
+  "id": "semantic-01-konflik-entitas-sama-kata-berbeda",
+  "title": "Fakta pengganti dengan kata-kata yang sama sekali berbeda tetap ditandai, fakta kembar beda subjek tidak",
+  "category": "semantic",
+  "source": "pattern",
+  "needs": "embeddings",
+  "actors": {
+    "asisten": {
+      "business": "tokoku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "ongkir_lama",
+      "text": "Ongkir ke Bandung Rp 15.000 per kg lewat kurir reguler.",
+      "keywords": [
+        "ongkos kirim",
+        "paket"
+      ],
+      "entities": [
+        "ongkir Bandung"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "stok_gula",
+      "text": "Stok gula di gudang tinggal 20 karung.",
+      "keywords": [
+        "persediaan",
+        "sisa gula"
+      ],
+      "entities": [
+        "gula"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "ongkir_baru",
+      "text": "Tarif ongkir Bandung sekarang delapan belas ribu rupiah tiap kilogram.",
+      "keywords": [
+        "biaya pengiriman",
+        "harga baru"
+      ],
+      "entities": [
+        "ongkir Bandung"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "stok_tepung",
+      "text": "Stok tepung di gudang tinggal 20 karung.",
+      "keywords": [
+        "persediaan",
+        "sisa tepung"
+      ],
+      "entities": [
+        "tepung"
+      ],
+      "kind": "volatile"
+    },
+    {
+      "op": "recall",
+      "query": "ongkir Bandung",
+      "expect_top5": [
+        "ongkir_lama",
+        "ongkir_baru"
+      ],
+      "expect_status": {
+        "ongkir_lama": "possible conflict",
+        "ongkir_baru": "possible conflict"
+      }
+    },
+    {
+      "op": "recall",
+      "query": "stok di gudang",
+      "expect_top5": [
+        "stok_gula",
+        "stok_tepung"
+      ],
+      "expect_status": {
+        "stok_gula": "valid",
+        "stok_tepung": "valid"
+      }
+    }
+  ]
+}

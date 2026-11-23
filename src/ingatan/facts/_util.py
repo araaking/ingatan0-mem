@@ -47,11 +47,16 @@ def loads_dict(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# Columns that never leave the row. `text_key` is derived from the text: copying it into
+# the log or a proposal would leave a trace of a fact that is later forgotten.
+_INTERNAL_COLUMNS = frozenset({"seq", "text_key"})
+
+
 def fact_dict(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
-    """Every column of a fact row (JSON columns decoded) except the internal `seq`."""
+    """Every column of a fact row (JSON columns decoded) except the internal ones."""
     data: Any = row
     keys = data.keys()
-    out: dict[str, Any] = {k: data[k] for k in keys if k != "seq"}
+    out: dict[str, Any] = {k: data[k] for k in keys if k not in _INTERNAL_COLUMNS}
     out["entities"] = loads_list(out["entities"])
     out["keywords"] = loads_list(out["keywords"])
     out["source"] = loads_dict(out["source"])

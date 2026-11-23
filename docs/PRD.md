@@ -144,7 +144,7 @@ Each requirement has one behaviour and one observable result. "Valid fact" means
 | ID | Requirement | Tag |
 |---|---|---|
 | FR-27 | `recall` ranks matches with FTS5 BM25 over `text`, `entities` and `keywords`. | W1 |
-| FR-28 | `recall` fuses BM25 rank, entity-match rank and recency rank by reciprocal rank fusion. A fact that matches the query's entity ranks above an equal-BM25 fact that does not. | W1 |
+| FR-28 | `recall` fuses BM25 rank, entity-match rank and recency rank by reciprocal rank fusion. A fact that matches the query's entity ranks above an equal-BM25 fact that does not. As built, recency is not a third rank: the fused score of a `volatile` fact is multiplied by a bounded freshness factor (0.98 to 1.02, 30-day half-life) and a `stable` fact keeps its score (`ARCHITECTURE.md`). | W1 |
 | FR-29 | A query that is a partial word of a stored word returns the fact, through the trigram tokenizer. | W1 |
 | FR-30 | A fact stored with agent-supplied `keywords` containing a root word is returned for a query that uses a different inflected form of that word. At least five Indonesian scenarios in the eval set cover this. | W1 |
 | FR-31 | When `recall` returns a fact, its `use_count` rises by one and `last_used` is set to now. The exact trigger is confirmed in OQ-6. | W1 |
@@ -210,7 +210,7 @@ The remaining CLI commands (`log`, `diff`, `undo`, proposal review) are FR-24 to
 
 | ID | Requirement | Tag |
 |---|---|---|
-| FR-56 | With the `ingatan[vector]` extra installed, `recall` adds a vector rank (sqlite-vec) to the fusion. Without it, `recall` behaves as in FR-27 to FR-29. | Post |
+| FR-56 | With the `ingatan[vector]` extra installed, `recall` adds a vector rank (sqlite-vec) to the fusion. Without it, `recall` behaves as in FR-27 to FR-29. As built (a first version): the vectors are `float32` BLOBs in the same SQLite file, scored in the process, and sqlite-vec is not used; installing the extra is not enough, the provider is switched on in `[embeddings]` (`EMBEDDINGS.md`). | Post |
 | FR-57 | With the `ingatan[llm]` extra and an API key, a cheap model digests pending episodes in batches. Without a key FR-49 still applies. | Post |
 | FR-58 | An HTTP mode lets several machines share one memory. A first version is implemented: `ingatan serve --http`, bearer tokens that each map to one business and agent, specified in [HTTP_MODE.md](HTTP_MODE.md). | Post (first version done) |
 

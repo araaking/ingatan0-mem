@@ -21,11 +21,17 @@ Targets (PRD section 9, first guesses): leak rate 0, stale rate under 5%, recall
 | FAIL | a check failed and the scenario has no `xfail` | 1 |
 | XFAIL | a check failed and the scenario is marked `xfail` (known product gap) | 0 |
 | XPASS | a scenario marked `xfail` passed: remove the marker | 0 |
-| SKIP | a brief was needed and the brief module is not available | 0 |
+| SKIP | a brief was needed and the brief module is not available, or the scenario needs an embedding model and the run has none | 0 |
 
 A leak makes the run fail whatever the status of its scenario, so an `xfail` can never hide one. Exit code 2 means the scenario files themselves are invalid.
 
-Flags: `--scenario NAME` (repeatable, a filtered run does not overwrite the report unless `--report PATH` is given), `--verbose` (every step and result), `--scenarios-dir DIR`, `--report PATH`.
+Flags: `--scenario NAME` (repeatable, a filtered run does not overwrite the report unless `--report PATH` is given), `--verbose` (every step and result), `--scenarios-dir DIR`, `--report PATH`, `--embeddings local` (see below).
+
+## Running with an embedding model
+
+The default run uses no embedding model, like the default installation. `uv run python -m evals --embeddings local` runs every scenario again with the local model switched on, and writes `evals/reports/latest-semantic.md` instead. The model must already be on disk (`ingatan embeddings pull`, or `--model-dir DIR`); the run opens no socket and fails like any other if something tries to. `--model NAME` picks another local model.
+
+This is the check that enabling a model does not break anything the word index gets right: stale facts stay marked, nothing leaks, an off-topic question still returns nothing. A scenario with `"needs": "embeddings"` tests something only a model can do; it is `SKIP`ped in the default run, and `tests/evals` verifies that it fails when forced to run without a model. CI runs the default mode only, because it has no model.
 
 ## Scenario format
 
@@ -45,9 +51,9 @@ One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-fol
 }
 ```
 
-- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal` or `forget`.
+- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold) or `semantic` (what only an embedding model can do).
 - `source`: `pattern` (written from a known pattern) or `incident` (a real incident from the project owner).
-- `needs` (optional): `keywords` means the scenario must depend on the agent-supplied keywords (the query shares no word or fragment with the expected fact's text or entities). `trigram` means it must depend on the trigram index (the query is only a fragment of a word, with no keyword help). `tests/evals` lints this statically so a scenario cannot pass for the wrong reason.
+- `needs` (optional): `keywords` means the scenario must depend on the agent-supplied keywords (the query shares no word or fragment with the expected fact's text or entities). `trigram` means it must depend on the trigram index (the query is only a fragment of a word, with no keyword help). `tests/evals` lints these two statically so a scenario cannot pass for the wrong reason. `embeddings` means it needs an embedding model: it is skipped without one, and `tests/evals` runs it without one to prove that it then fails.
 - `actors`: named callers, each a business and an agent. The first one is the default. The clock is frozen at 2026-11-11 09:00 UTC at the start of each scenario.
 - Facts are referred to by a scenario-local `key`, never by id. A key made by a `business` or `global` remember names a pending proposal until an `approve` step, after which it names the new fact.
 
@@ -61,7 +67,7 @@ Steps run in order. Common fields: `op`, `actor` (default: the first actor), `ex
 | `forget` | `key`, optional `by_user` (the user's CLI forget) |
 | `approve`, `reject` | `key` of a proposal (the user's decision) |
 | `advance_days` | `days` |
-| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status) |
+| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all) |
 | `brief` | optional `expect_in_section` (section to keys), `expect_not_in` (a list of keys that must be nowhere in the brief, or a section to keys map), `max_tokens`, `expect_pending` (the pending-proposals count the brief states) |
 
 Brief sections are `check first`, `global`, `business` and `agent`.

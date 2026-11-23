@@ -99,15 +99,25 @@ def approve(ctx: Context, proposal_id: str) -> str:
     if isinstance(retire_to, str) and retire_to:
         return _approve_retire(ctx, conn, proposal, retire_to, now)
 
+    # One model call, before any write lock; reused for the conflict check and for storage.
+    text = str(proposal.payload.get("text") or "")
+    embeddings_on = embed_store.is_enabled(ctx.scope.embeddings)
+    vector = (
+        embed_store.embed_text(ctx.scope.embeddings, text, is_query=False)
+        if embeddings_on
+        else None
+    )
+
     # Re-evaluate similar facts against the live store (merging with stored ids),
     # excluding the fact this proposal intentionally supersedes.
     fresh_similar = [
         h.id
         for h in similar_facts(
             ctx,
-            str(proposal.payload.get("text") or ""),
+            text,
             list(proposal.payload.get("entities") or []),
             list(proposal.payload.get("keywords") or []),
+            query_vec=vector or [],
         )
     ]
     merged_similar = [
@@ -164,9 +174,9 @@ def approve(ctx: Context, proposal_id: str) -> str:
             extra["affects"] = affects
         fields["_extra"] = extra
         create_fact(conn, ctx, fields, op="approve")
-        if embed_store.is_enabled(ctx.scope.embeddings):
+        if embeddings_on:
             embed_store.store_fact_embedding(
-                conn, new_fact_id, str(fields.get("text") or ""), ctx.scope.embeddings
+                conn, new_fact_id, text, ctx.scope.embeddings, vector=vector or []
             )
         conn.execute(
             "UPDATE proposals SET status = 'approved', decided_at = ?, fact_id = ? WHERE id = ?",

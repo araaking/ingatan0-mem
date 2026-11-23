@@ -7,6 +7,7 @@ import sys
 
 from ingatan.cli.commands import app
 from ingatan.errors import IngatanError
+from ingatan.search.local import limit_math_threads
 
 __all__ = ["app", "main"]
 
@@ -26,6 +27,7 @@ def _use_utf8() -> None:
 
 def main() -> None:
     _use_utf8()
+    limit_math_threads()
     try:
         app(prog_name="ingatan")
     except IngatanError as exc:
