@@ -313,3 +313,43 @@ def test_whole_suite_metrics_are_reported(suite: RunResult, tmp_path: Path):
 def test_every_brief_is_within_its_budget(suite: RunResult):
     briefs = [r for r in suite.records if r.kind == "brief" and r.tokens is not None]
     assert all(r.budget is not None and (r.tokens or 0) <= r.budget for r in briefs)
+
+
+# ---- deferred embedding in the harness ------------------------------------------------------
+
+
+def test_defer_flag_needs_the_local_model(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--defer"]) == 2
+    assert "--defer needs --embeddings local" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("fill", "expected"), [(True, PASS), (False, FAIL)])
+def test_in_process_driver_fills_deferred_vectors_after_each_remember(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fill: bool, expected: str
+) -> None:
+    """With `defer`, the harness does at once what a server's worker does a moment later.
+
+    The scenario needs a conflict only a model can see. Every text gets the same vector
+    here, so the pair that shares an entity is flagged as soon as both vectors exist, and
+    without the fill it never is.
+    """
+    from ingatan.facts import backfill
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import embed as embed_store
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    if not fill:
+        monkeypatch.setattr(backfill, "fill_pending", lambda ctx, **_: backfill.FillReport(0, 0, 0))
+    cfg = EmbeddingConfig(provider="local", defer=True)
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return InProcessDriver(home, token_budget=scenario.token_budget, embeddings=cfg)
+
+    scenario = next(
+        s for s in load_dir(SCENARIO_DIR) if s.id == "semantic-01-konflik-entitas-sama-kata-berbeda"
+    )
+    result = run_scenario(scenario, tmp_path / "home", factory)
+    assert result.status == expected, result.failures

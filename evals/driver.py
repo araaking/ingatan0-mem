@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ingatan import facts, proposals, search, timeutil
+from ingatan.facts import backfill
 from ingatan.scope import Context, EmbeddingConfig, Scope, open_context
 
 from .scenarios import Actor
@@ -168,6 +169,10 @@ class InProcessDriver:
             kind=kind,
             review_after=review_after,
         )
+        if self.embeddings_enabled and self.embeddings.defer:
+            # A server's background worker does this a moment after `remember` returns.
+            # The harness has no worker, and its next step must see what a user would.
+            backfill.fill_pending(self.ctx(actor))
         return Remembered(result.fact_id, result.proposal_id)
 
     def supersede(self, actor: Actor, old_id: str, new_id: str) -> str | None:

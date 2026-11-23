@@ -202,6 +202,7 @@ token_budget = 1000
 # model = "xenova/multilingual-e5-small"   # model lokal bawaan (int8, unduhan 123 MB)
 # threads = 2                # thread ONNX (hanya memengaruhi kecepatan, bukan RAM)
 # idle_unload_seconds = 300  # lepas model lokal dari RAM setelah diam 5 menit (0 = tetap muat)
+# defer = true               # remember langsung menyimpan; server mengisi vektor & cek konflik makna belakangan
 # recall_floor = 0.83        # ambang kemiripan; bawaannya dikalibrasi per keluarga model
 ```
 
@@ -565,6 +566,7 @@ token_budget = 1000
 # model = "xenova/multilingual-e5-small"   # the default local model (int8, 123 MB download)
 # threads = 2                # ONNX threads (affects speed only, not memory)
 # idle_unload_seconds = 300  # drop the local model from memory after 5 idle minutes (0 = keep)
+# defer = true               # remember saves at once; the server adds the vector and the meaning check afterwards
 # recall_floor = 0.83        # similarity cut-off; the defaults are calibrated per model family
 ```
 

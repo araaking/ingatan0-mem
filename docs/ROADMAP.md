@@ -21,7 +21,7 @@ this roadmap most:
 | Order | Item | Why here |
 |---|---|---|
 | 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
-| 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Small, and the shared model process builds on it |
+| 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | The largest memory saving left |
 | 4 | [Review queue for similar facts](#4-review-queue-for-similar-facts) | Mostly a CLI over data that already exists |
 | 5 | [Usage and decay in `recall`](#3-usage-and-time-decay-in-recall) | Needs eval scenarios before any code |
@@ -60,21 +60,15 @@ the total for one, and `docs/RAM.md` records it.
 
 ## 2. Deferred embedding on write
 
-**Problem.** `remember` waits for the model before it returns, and in HTTP mode the
-embedding call blocks the server while it runs.
+**Status.** Built: `[embeddings] defer = true` (see the changelog and
+[EMBEDDINGS.md](EMBEDDINGS.md)). Every fact gets its vector without a manual `reindex`, and
+a conflict found late is visible in `recall` and `ingatan conflicts`; both are covered by
+tests with a stand-in model.
 
-**Idea.** An opt-in setting under `[embeddings]`: the fact is written at once without a
-vector, and a background step fills the vector in afterwards. Uteke has the same switch
-(`--defer-embed`).
-
-**What exists already.** A fact without a vector of the current model is already a normal
-state: `recall` finds it by words, `ingatan doctor` counts it, and `ingatan reindex` fills
-it in. Deferring is mostly a matter of doing that fill automatically.
-
-**Trade-off to settle.** The semantic conflict check uses the new fact's vector at write
-time. With deferral it has to run when the vector arrives and record the conflict then, so
-`remember` can no longer report a meaning-only conflict in its own result. The word-based
-check is unaffected.
+**What is left.** The first part of the done-when is a measurement, and it needs the model
+on disk: run `scripts/bench_scale.py` three ways (no embeddings, `--embeddings local`,
+`--embeddings local --defer`) and `python -m evals --embeddings local --defer`, and record
+the results in EMBEDDINGS.md. This section goes when those numbers are in.
 
 **Done when.** `remember` with the local provider takes about as long as with
 `provider = "none"` (`scripts/bench_scale.py`), every fact gets its vector without a manual

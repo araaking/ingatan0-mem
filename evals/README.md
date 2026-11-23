@@ -33,6 +33,8 @@ The default run uses no embedding model, like the default installation. `uv run 
 
 This is the check that enabling a model does not break anything the word index gets right: stale facts stay marked, nothing leaks, an off-topic question still returns nothing. A scenario with `"needs": "embeddings"` tests something only a model can do; it is `SKIP`ped in the default run, and `tests/evals` verifies that it fails when forced to run without a model. CI runs the default mode only, because it has no model.
 
+`--defer` (with `--embeddings local`) runs every scenario the way `[embeddings] defer = true` does: each fact is saved without a vector and filled in afterwards. A server does that in a background thread; the harness does it right after each `remember`, so the next step sees what a user would see a moment later. It writes `evals/reports/latest-semantic-defer.md`. The scenario that needs a model must still pass: a conflict found late is still found.
+
 ## Scenario format
 
 One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-folders are read too, see `scenarios/incidents/`).

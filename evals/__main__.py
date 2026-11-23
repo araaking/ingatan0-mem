@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,6 +22,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_SCENARIOS = HERE / "scenarios"
 DEFAULT_REPORT = HERE / "reports" / "latest.md"
 SEMANTIC_REPORT = HERE / "reports" / "latest-semantic.md"
+SEMANTIC_DEFER_REPORT = HERE / "reports" / "latest-semantic-defer.md"
 NO_EMBEDDINGS = "none (FTS5 only)"
 
 
@@ -72,6 +74,13 @@ def main(
         help="run every scenario with the local embedding model switched on (it must "
         "already be downloaded; the run still makes no network call). Default: none",
     )
+    parser.add_argument(
+        "--defer",
+        action="store_true",
+        help="with --embeddings local: save every fact without a vector and fill it in "
+        "afterwards, as `[embeddings] defer = true` does (the harness fills after each "
+        "remember, where a server would do it in the background)",
+    )
     parser.add_argument("--model", default="", help="local model name with --embeddings local")
     parser.add_argument(
         "--model-dir", type=Path, default=None, help="model folder with --embeddings local"
@@ -80,11 +89,14 @@ def main(
         "--report",
         type=Path,
         default=None,
-        help="where to write the markdown report (default evals/reports/latest.md, or "
-        "latest-semantic.md with --embeddings local; a --scenario run writes none unless "
-        "this is given)",
+        help="where to write the markdown report (default evals/reports/latest.md, "
+        "latest-semantic.md with --embeddings local, latest-semantic-defer.md with --defer; "
+        "a --scenario run writes none unless this is given)",
     )
     args = parser.parse_args(argv)
+    if args.defer and args.embeddings != "local":
+        print("evals: --defer needs --embeddings local", file=sys.stderr)
+        return 2
 
     embeddings_label = NO_EMBEDDINGS
     if args.embeddings == "local":
@@ -94,6 +106,9 @@ def main(
             print(f"evals: {exc.message}", file=sys.stderr)
             return 2
         embeddings_label = f"local ({embed.effective_model(cfg)})"
+        if args.defer:
+            cfg = dataclasses.replace(cfg, defer=True)
+            embeddings_label += ", deferred"
 
         def with_model(home: Path, scenario: Scenario) -> MemoryDriver:
             return InProcessDriver(
@@ -149,7 +164,10 @@ def main(
 
     report = args.report
     if report is None and not args.scenario:
-        report = SEMANTIC_REPORT if args.embeddings == "local" else DEFAULT_REPORT
+        if args.defer:
+            report = SEMANTIC_DEFER_REPORT
+        else:
+            report = SEMANTIC_REPORT if args.embeddings == "local" else DEFAULT_REPORT
     if report is not None:
         write_report(report, run, embeddings=embeddings_label)
         print(f"\nreport written to {report}")

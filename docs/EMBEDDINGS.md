@@ -177,6 +177,59 @@ python scripts/calibrate_embeddings.py --provider ollama --model embeddinggemma
 
 Whether a larger model does better on Indonesian paraphrases has not been measured here.
 
+## Saving first, embedding afterwards (`defer`)
+
+By default `remember` waits for the model: it embeds the new fact before it saves it, uses
+the vector for the meaning-based conflict check, and stores it with the fact. In HTTP mode
+that call also holds up every other request for as long as the model runs.
+
+```toml
+[embeddings]
+provider = "local"
+defer = true        # or INGATAN_EMBED_DEFER=1
+```
+
+With `defer` on, `remember` does not call the model at all. The fact is saved at once, with
+one row in `embed_queue` (migration 0004) that says a vector is owed, and a background
+thread of the server (stdio and HTTP alike) does the rest a moment later: it embeds the fact
+outside any transaction, stores the vector, and runs the conflict check that needed it.
+
+What changes for the agent, in the words of the roadmap this came from: with `defer` on,
+`remember` no longer reports a meaning-only conflict in its own result. The word-based check
+still runs at write time and is reported as before. A pair that only the model can see is
+recorded when the vector arrives: it then shows as `possible conflict` in `recall`, in
+`ingatan conflicts list` and in the conflict report, and it has a log entry of its own (op
+`conflict`), which `ingatan undo` reverses. `remember` says so in its message.
+
+The rest of what is worth knowing:
+
+- `remember(check_conflicts=false)` is remembered too: such a fact gets its vector and no
+  check.
+- A fact the server finds without a vector for any other reason (saved while the provider
+  was `none`, imported, the model changed) is embedded as well, so `ingatan reindex` is no
+  longer needed after switching `defer` on. Those facts get no conflict scan; that is still
+  `ingatan conflicts scan`.
+- A process that runs no server (a CLI command) leaves the row queued. Nothing is lost: the
+  fact is found by words in the meantime, and the next server start picks the row up.
+- A vector is stored only while its fact still exists. A `forget` that lands between the
+  model call and the write leaves no vector and no queue row.
+- In approval mode (`require_approval = true`) a proposal is not deferred: nothing is saved
+  yet, and the similar facts shown to the approver are worked out when it is proposed.
+- `ingatan doctor` shows `defer: on` and counts the facts that still wait.
+
+What it buys has to be measured on a machine that has the model. Run these three and compare
+the `remember` column; the last one also prints what the fill cost per fact:
+
+```bash
+python scripts/bench_scale.py 1000
+python scripts/bench_scale.py --embeddings local 1000
+python scripts/bench_scale.py --embeddings local --defer 1000
+python -m evals --embeddings local --defer     # writes evals/reports/latest-semantic-defer.md
+```
+
+No figure is given here yet: the code and its tests were written on a machine without the
+model, and numbers in this document come from runs, not from estimates.
+
 ## How vectors are made and kept
 
 - One text per forward pass. The quantized model computes its activation ranges over its

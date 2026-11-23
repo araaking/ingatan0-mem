@@ -14,6 +14,7 @@ build/
 evals/reports/*
 !evals/reports/latest.md
 !evals/reports/latest-semantic.md
+!evals/reports/latest-semantic-defer.md
 .coverage
 htmlcov/
 .idea/
