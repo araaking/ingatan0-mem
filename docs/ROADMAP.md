@@ -1,0 +1,220 @@
+# Roadmap
+
+Status: planned. Nothing on this page is implemented yet. It records what was agreed as
+worth building next, why, and the constraints each item has to respect. An item becomes a
+changelog entry when it ships and is removed from this page.
+
+Every item is bound by the invariants in [AGENTS.md](../AGENTS.md). The ones that shape
+this roadmap most:
+
+- Every core feature works offline with no API key. Anything that needs a model or a
+  network call is optional and off by default.
+- One SQLite file per business plus `global.db`. No second index file, no cross-business
+  search.
+- `forget` removes the bytes. Nothing added here may keep a trace of a forgotten fact.
+- No model call inside a write transaction, and the server never downloads a model.
+- A claim in `README.md` is backed by a number in `evals/reports/` or `docs/RAM.md`.
+
+## Suggested order
+
+| Order | Item | Why here |
+|---|---|---|
+| 1 | [Easier installation](#9-easier-installation) | Independent of everything else; decides whether people try the project at all |
+| 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Small, and the shared model process builds on it |
+| 3 | [Shared model process](#1-shared-model-process) | The largest memory saving left |
+| 4 | [Review queue for similar facts](#4-review-queue-for-similar-facts) | Mostly a CLI over data that already exists |
+| 5 | [Usage and decay in `recall`](#3-usage-and-time-decay-in-recall) | Needs eval scenarios before any code |
+| 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | The largest item; needs design decisions first |
+| 7 | [Light knowledge graph](#8-light-knowledge-graph-optional) | Reuses the extraction pass |
+| 8 | [Tombstones](#5-tombstones-for-wrong-values) | Needs a design that cannot collide with `forget` |
+| 9 | [Static embedding model](#6-static-embedding-model) | Only if 275 MB is still too much after items 2 and 3 |
+
+The numbers in the headings below are the ones the items were first discussed under; the
+table above is the order to build them in.
+
+## 1. Shared model process
+
+**Problem.** Each stdio server loads its own copy of the embedding model. Three agent
+sessions with the local provider hold three copies, about 275 MB each
+([RAM.md](RAM.md)).
+
+**Idea.** One local process holds the model and the stdio servers ask it for vectors. It
+starts on first use and exits after the idle time that `idle_unload_seconds` already
+defines. Seen in Uteke, which runs a shared daemon to avoid cold starts.
+
+**Constraints.**
+- Loopback or a local pipe only. Fact text never leaves the machine.
+- A server that cannot reach the process falls back to the word index, exactly as it does
+  today when the model is missing. It never fails a tool call.
+- The process downloads nothing; `ingatan embeddings pull` stays the only download.
+
+**Open decisions.** The transport (a named pipe or Unix socket, or loopback TCP with a
+token), and who starts the process (the first server, or an explicit `ingatan` command).
+
+**What exists already.** HTTP mode shares one loaded model across businesses and agents,
+and `provider = "ollama"` gives one copy today for anyone who runs Ollama.
+
+**Done when.** `scripts/measure_embed_ram.py` shows the total for three sessions close to
+the total for one, and `docs/RAM.md` records it.
+
+## 2. Deferred embedding on write
+
+**Problem.** `remember` waits for the model before it returns, and in HTTP mode the
+embedding call blocks the server while it runs.
+
+**Idea.** An opt-in setting under `[embeddings]`: the fact is written at once without a
+vector, and a background step fills the vector in afterwards. Uteke has the same switch
+(`--defer-embed`).
+
+**What exists already.** A fact without a vector of the current model is already a normal
+state: `recall` finds it by words, `ingatan doctor` counts it, and `ingatan reindex` fills
+it in. Deferring is mostly a matter of doing that fill automatically.
+
+**Trade-off to settle.** The semantic conflict check uses the new fact's vector at write
+time. With deferral it has to run when the vector arrives and record the conflict then, so
+`remember` can no longer report a meaning-only conflict in its own result. The word-based
+check is unaffected.
+
+**Done when.** `remember` with the local provider takes about as long as with
+`provider = "none"` (`scripts/bench_scale.py`), every fact gets its vector without a manual
+`reindex`, and a conflict found late is visible in `recall` and `ingatan conflicts`.
+
+## 3. Usage and time decay in `recall`
+
+**Problem.** `use_count` orders the brief but plays no part in `recall`.
+
+**Idea.** A bounded factor on the fused score from how often and how recently a fact was
+used, in the same style as the freshness factor for volatile facts (a few percent, never
+enough to lift an off-topic fact). OpenViking scores "hotness" this way.
+
+**Risk.** Facts that are recalled often get recalled more, and a new, correct fact loses
+to an old popular one. `recall` itself raises `use_count`, which feeds the loop.
+
+**Constraints.** Scenarios come first: one where the popular fact is the wrong answer, one
+where usage rightly breaks a tie. The factor ships only if both pass and no existing
+scenario regresses. The bound and the half-life are named constants with the eval numbers
+recorded next to them.
+
+**Done when.** The new scenarios are in `evals/scenarios/` and the report shows them
+passing with the factor on.
+
+## 4. Review queue for similar facts
+
+**Problem.** A fact that resembles an earlier one is reported to the agent in the result of
+`remember`. If the agent does nothing, the pair stays `possible conflict` until someone
+notices.
+
+**Idea.** A CLI pass over the open pairs that shows both facts and asks what to do: keep
+both and link them, let one supersede the other, or forget one. With a way to apply one
+answer to several pairs. claude-mem sends near-duplicates to a review queue in the same
+spirit.
+
+**What exists already.** The `conflicts` table, `ingatan conflicts list` and
+`ingatan conflicts scan`, linking through `edges`, and `supersede`.
+
+**Constraints.** Every action goes through the existing functions, so it is logged and can
+be undone. Forgetting keeps its confirmation.
+
+**Done when.** Every open pair can be resolved from the CLI without typing a fact id.
+
+## 5. Tombstones for wrong values
+
+**Problem.** A value that was recorded and turned out to be wrong can be recorded again by
+an agent that reads the same wrong source.
+
+**Idea.** Mark a fact as retracted, so that a later `remember` of the same statement is
+answered with "this was recorded before and withdrawn" instead of being saved silently.
+Uteke keeps tombstones for wrong values.
+
+**Constraint that decides the design.** `forget` scrubs bytes and leaves no trace, so a
+tombstone can never be how a forgotten fact is remembered. Retracting has to be a separate
+operation on a fact that stays in the file, and a forgotten fact takes its tombstone with
+it.
+
+**Open decisions.** Whether the match is the exact normalized text (the `text_key` index)
+or something looser, and whether a retracted fact is still shown by `history`.
+
+**Done when.** The design is written down and agreed before any code; the eval then needs
+a scenario where the wrong value comes back.
+
+## 6. Static embedding model
+
+**Idea.** A static token-vector model (the model2vec family) needs no ONNX Runtime and is
+several times smaller than the current default. codebase-memory-mcp uses the same kind of
+runtime-free vectors.
+
+**Why it is last.** Its quality is below the E5 model that is the default today, and items
+1 and 2 may make the memory question go away.
+
+**Constraints.** It gets its own `SimilarityProfile` from
+`scripts/calibrate_embeddings.py`; no cut-off is carried over from another model. It is
+added as another local model, not as a new default, unless the calibration numbers say it
+should be.
+
+**Done when.** `docs/EMBEDDINGS.md` and `docs/RAM.md` hold its measured numbers next to
+the current model's.
+
+## 7. LLM fact extraction (optional)
+
+**Problem.** Ingatan remembers only what an agent chooses to pass to `remember`. A long
+conversation or a document holds facts nobody wrote down.
+
+**Idea.** An optional extra (`ingatan[llm]`, off by default) that reads episodes and
+ingested documents and proposes facts from them. This is the server-side digest already
+foreseen as FR-57 in [PRD.md](PRD.md).
+
+**Constraints.**
+- The provider is configurable and can be local: an Ollama model or any
+  OpenAI-compatible endpoint, the same choice the embedding providers offer. Nothing is
+  sent anywhere unless the user configured an endpoint.
+- A model can invent things. Extracted facts carry a source that marks them as extracted,
+  and by default they go to the proposal queue instead of becoming valid facts.
+- It runs as its own command or background step, never inside `remember` and never inside
+  a write transaction.
+- Redaction applies before any text is sent to a model.
+
+**Open decisions.** Whether extracted facts may ever be written directly (reversible with
+`ingatan undo`) or always need approval, and which model sizes are worth supporting.
+
+**Done when.** An eval measures how many extracted facts are correct and how many are
+invented, on scenarios with a known answer, and the README states that number.
+
+## 8. Light knowledge graph (optional)
+
+**Idea.** No graph database. The extraction pass of item 7 also proposes relations between
+facts, stored in the existing `edges` table (`related_to`, `part_of`), and `recall` follows
+them for one or two hops.
+
+**What exists already.** `edges`, `ingatan link` and `unlink`, and `recall` returning facts
+one hop away.
+
+**Why not a full graph.** Entity and relation extraction on every write, plus a graph
+engine, is what graphiti and cognee do. It needs a model for every `remember` and would
+make the offline core depend on one.
+
+**Constraints.** A proposed relation is reviewed like a proposed fact. A relation never
+crosses a business file.
+
+**Done when.** An eval scenario needs a fact two hops away to answer, fails without the
+relations and passes with them.
+
+## 9. Easier installation
+
+**Problem.** Installing means cloning the repository and installing it in editable mode,
+and switching semantic search on takes four separate steps.
+
+**Parts.**
+1. **Publish to PyPI.** A release workflow that runs on a version tag and uses trusted
+   publishing, so no token is stored anywhere. Tried on TestPyPI first, because a
+   published version cannot be replaced. To check before anything else: that the package
+   name is free.
+2. **`ingatan setup`.** A guided command: business and agent name, whether to use semantic
+   search (and download the model if so), which client to configure, then `doctor`. Every
+   question has a flag, so a script can run it without prompts. Writing into another
+   application's configuration file shows the change and asks first.
+3. **One command for semantic search.** Download the model, set `provider = "local"` and
+   reindex in one step, instead of four.
+4. **A short start in the README.** Three commands at the top; the details move below.
+
+**Done when.** A new user goes from nothing to a working `recall` in a client with one
+install command and one setup command, on Windows, macOS and Linux.
