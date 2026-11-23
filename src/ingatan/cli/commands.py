@@ -42,6 +42,7 @@ from ingatan.scope import (
     validate_business,
 )
 from ingatan.search import local as local_models
+from ingatan.search import shared as shared_process
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -965,6 +966,49 @@ def embeddings_enable(
     setup_steps.enable_semantic(
         model=model, use_home_config=use_home_config, reindex=reindex_facts, echo=typer.echo
     )
+
+
+@embeddings_app.command("serve")
+@cli_command
+def embeddings_serve(
+    idle_seconds: Annotated[
+        int | None,
+        typer.Option(
+            "--idle-seconds",
+            min=0,
+            help="Leave after this many seconds without a request (0 = stay). "
+            "Default: idle_unload_seconds of the configuration.",
+        ),
+    ] = None,
+) -> None:
+    """Run the shared model process in the foreground (`[embeddings] shared`).
+
+    One process holds the local model for every Ingatan server of this data folder. A
+    server with `shared = true` starts it by itself; this command is for running it by
+    hand. It listens on 127.0.0.1 only and never downloads a model.
+    """
+    existing = shared_process.status()
+    if existing is not None:
+        typer.echo(
+            f"A shared model process is already running (pid {existing.pid}, port {existing.port})."
+        )
+        return
+    idle = load_embeddings().idle_unload_seconds if idle_seconds is None else idle_seconds
+    leaves = f"leaves after {idle}s without a request" if idle > 0 else "stays until stopped"
+    typer.echo(f"Serving vectors on 127.0.0.1 for {data_home()}; {leaves}.")
+    local_models.limit_math_threads()
+    shared_process.serve(idle_unload_seconds=idle)
+    typer.echo("The shared model process has stopped.")
+
+
+@embeddings_app.command("stop")
+@cli_command
+def embeddings_stop() -> None:
+    """Ask the shared model process of this data folder to leave."""
+    if shared_process.stop():
+        typer.echo("Stopped the shared model process.")
+    else:
+        typer.echo("The shared model process is not running.")
 
 
 @alias_app.command("add")
