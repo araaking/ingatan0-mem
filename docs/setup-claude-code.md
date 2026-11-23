@@ -52,10 +52,19 @@ claude mcp add --scope project ingatan -- ingatan serve
 ```
 
 Add `"env": { "INGATAN_BUSINESS": "tokoku", "INGATAN_AGENT": "claude-code" }` if you do not
-use `.ingatan.toml`. *not verified*: the `.mcp.json` shape and the `claude mcp add` flags are
-Claude Code's standard ones and were not fetched in HOOK_FINDINGS.md. Check with `/mcp` inside
-Claude Code. *not verified*: the exact tool prefix Claude Code shows (`mcp__ingatan__brief`
-is the usual form).
+use `.ingatan.toml`. **verified** against the Claude Code MCP page
+(https://code.claude.com/docs/en/mcp, read on 2026-11-23 through a summarizing fetch, not
+quoted word for word): a project-scoped server lives in `.mcp.json` at the project root, under
+the top-level key `mcpServers`, with `command`, `args` and `env` per server; an entry with no
+`type` is read as a stdio server; and in an interactive session Claude Code asks for approval
+before it uses a project-scoped server. *not verified*: the page gives the pattern
+`claude mcp add [options] <name> -- <command> [args...]` but no project-scoped stdio example,
+so the command above was not run. Check with `/mcp` inside Claude Code. *not verified*: the
+exact tool prefix Claude Code shows (`mcp__ingatan__brief` is the usual form).
+
+`ingatan setup --client claude-code` makes the same change to `.mcp.json` for you: it shows
+the difference, asks before it writes (`--yes` answers for a script), keeps every other
+server in the file, and changes nothing when the entry is already there.
 
 ## 3. The hooks
 

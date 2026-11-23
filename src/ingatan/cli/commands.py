@@ -211,33 +211,34 @@ def serve(
 # ---- init ----------------------------------------------------------------------------
 
 
-def _ask(label: str, flag: str | None, env_name: str, validate: Callable[[object], str]) -> str:
+def _ask(
+    label: str,
+    flag: str | None,
+    env_name: str,
+    validate: Callable[[object], str],
+    command: str = "init",
+) -> str:
     value = (flag or os.environ.get(env_name) or "").strip()
     if not value:
         if not _is_interactive():
             raise ConfigError(
-                f"init needs a {label} name. Pass --{label} NAME or set {env_name} "
+                f"{command} needs a {label} name. Pass --{label} NAME or set {env_name} "
                 "(there is no terminal to ask on)."
             )
         value = typer.prompt(f"{label.capitalize()} name").strip()
     return validate(value)
 
 
-@app.command()
-@cli_command
-def init(
-    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
-    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
-) -> None:
-    """Create .ingatan.toml here (if missing) and both database files. Safe to run twice."""
+def _init_project(business: str | None, agent: str | None, *, command: str = "init") -> Scope:
+    """Create `.ingatan.toml` here if it is missing, and both database files."""
     config_path = Path.cwd() / CONFIG_NAME
     if config_path.is_file():
         typer.echo(f"{config_path} already exists, left unchanged.")
         if business or agent:
             typer.echo("The --business and --agent values were ignored.")
     else:
-        business_name = _ask("business", business, "INGATAN_BUSINESS", validate_business)
-        agent_name = _ask("agent", agent, "INGATAN_AGENT", validate_agent)
+        business_name = _ask("business", business, "INGATAN_BUSINESS", validate_business, command)
+        agent_name = _ask("agent", agent, "INGATAN_AGENT", validate_agent, command)
         try:
             with config_path.open("x", encoding="utf-8", newline="\n") as handle:
                 handle.write(f'business = "{business_name}"\nagent = "{agent_name}"\n')
@@ -252,7 +253,136 @@ def init(
     for name, was_there in zip((scope.business, "global"), existed, strict=True):
         path = db_path(scope.home, name)
         typer.echo(f"{'Database ready' if was_there else 'Created database'}: {path}")
+    return scope
+
+
+@app.command()
+@cli_command
+def init(
+    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
+    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
+) -> None:
+    """Create .ingatan.toml here (if missing) and both database files. Safe to run twice."""
+    _init_project(business, agent)
     typer.echo("Next: run `ingatan doctor` to check the setup.")
+
+
+# ---- setup ---------------------------------------------------------------------------
+
+SETUP_CLIENTS = ("claude-code", "hermes", "none")
+_NO_TERMINAL = "(there is no terminal to ask on)"
+
+
+def _setup_claude_code(*, assume_yes: bool, interactive: bool) -> None:
+    module = "ingatan.integrations.claude_code.install"
+    change = _import(module, "mcp_entry_change")(Path.cwd())
+    if change is None:
+        typer.echo("Claude Code: .mcp.json already runs `ingatan serve`. Nothing to change.")
+    else:
+        typer.echo(f"Claude Code: this adds the Ingatan server to {change.path}:")
+        for line in _import(module, "diff_lines")(change):
+            typer.echo(line)
+        if assume_yes:
+            approved = True
+        elif interactive:
+            approved = typer.confirm(f"Write this change to {change.path}?", default=False)
+        else:
+            raise ConfigError(
+                f"setup needs your confirmation before it writes {change.path}. "
+                f"Pass --yes {_NO_TERMINAL}."
+            )
+        if approved:
+            _import(module, "write_change")(change)
+            typer.echo(
+                f"Wrote {change.path}. Claude Code asks you to approve a project server "
+                "the first time it sees one."
+            )
+        else:
+            typer.echo(
+                f"Left {change.path} unchanged. To add the server yourself: "
+                "claude mcp add --scope project ingatan -- ingatan serve"
+            )
+    typer.echo("Optional hooks (brief at session start, turn capture): docs/setup-claude-code.md")
+
+
+@app.command()
+@cli_command
+def setup(
+    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
+    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
+    semantic: Annotated[
+        bool | None,
+        typer.Option(
+            "--semantic/--no-semantic",
+            help="Use the offline semantic search (downloads the local model once).",
+        ),
+    ] = None,
+    client: Annotated[
+        str | None,
+        typer.Option(metavar="NAME", help=f"Client to configure: {', '.join(SETUP_CLIENTS)}."),
+    ] = None,
+    assume_yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Write into another application's config file without asking. "
+            "The change is still shown.",
+        ),
+    ] = False,
+) -> None:
+    """Guided setup: project, optional semantic search, client, then the health check.
+
+    Every question has an option, so a script can run this without a terminal. Safe to run
+    twice: what is already set up is left as it is.
+    """
+    interactive = _is_interactive()
+    if client is not None and client.strip().casefold() not in SETUP_CLIENTS:
+        raise ConfigError(f"Unknown client {client!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
+    if not interactive:
+        if semantic is None:
+            raise ConfigError(
+                "setup needs to know whether to use semantic search. "
+                f"Pass --semantic or --no-semantic {_NO_TERMINAL}."
+            )
+        if client is None:
+            raise ConfigError(
+                f"setup needs a client to configure. Pass --client NAME, one of: "
+                f"{', '.join(SETUP_CLIENTS)} {_NO_TERMINAL}."
+            )
+
+    scope = _init_project(business, agent, command="setup")
+
+    if semantic is None:
+        semantic = typer.confirm(
+            "Use semantic search? It downloads a model of about 123 MB once", default=False
+        )
+    if semantic:
+        setup_steps.enable_semantic(
+            model=None, use_home_config=False, reindex=True, echo=typer.echo
+        )
+
+    if client is None:
+        client = typer.prompt(f"Client to configure ({', '.join(SETUP_CLIENTS)})", default="none")
+    chosen = client.strip().casefold()
+    if chosen not in SETUP_CLIENTS:
+        raise ConfigError(f"Unknown client {client!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
+    if chosen == "claude-code":
+        _setup_claude_code(assume_yes=assume_yes, interactive=interactive)
+    elif chosen == "hermes":
+        block = _import("ingatan.integrations.hermes.install", "mcp_block")
+        typer.echo(
+            "Hermes: add this to $HERMES_HOME/config.yaml (Ingatan does not edit that file), "
+            "then run /reload-mcp:"
+        )
+        typer.echo(block(scope.business, scope.agent))
+        typer.echo("The memory-provider plugin is described in docs/setup-hermes.md.")
+
+    checks = doctor_checks.run_checks()
+    typer.echo(doctor_checks.render(checks))
+    if any(check.failed for check in checks):
+        raise typer.Exit(1)
+    typer.echo("Setup complete.")
 
 
 # ---- doctor --------------------------------------------------------------------------
