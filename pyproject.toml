@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
+keywords = ["mcp", "memory", "ai-agents", "sqlite", "fts5", "local-first"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -38,6 +39,8 @@ vector = [
 [project.urls]
 Repository = "https://github.com/araaking/ingatan0-mem"
 Issues = "https://github.com/araaking/ingatan0-mem/issues"
+Changelog = "https://github.com/araaking/ingatan0-mem/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/araaking/ingatan0-mem#readme"
 
 [project.scripts]
 ingatan = "ingatan.cli:main"
