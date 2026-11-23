@@ -1,0 +1,12 @@
+{
+  "id": "ex-02-basa-basi",
+  "title": "Tidak ada yang perlu diingat: jawaban yang benar adalah daftar kosong",
+  "episodes": [
+    {
+      "user": "Halo, selamat pagi. Gimana kabarnya hari ini?",
+      "assistant": "Selamat pagi! Baik, terima kasih. Ada yang bisa saya bantu?"
+    }
+  ],
+  "expected": [],
+  "forbidden": []
+}

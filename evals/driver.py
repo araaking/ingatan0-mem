@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ingatan import facts, proposals, search, timeutil
+from ingatan.facts import backfill
 from ingatan.scope import Context, EmbeddingConfig, Scope, open_context
 
 from .scenarios import Actor
@@ -93,6 +94,8 @@ class MemoryDriver(Protocol):
         self, actor: Actor, query: str, *, limit: int, include_closed: bool
     ) -> list[Hit]: ...
 
+    def link(self, actor: Actor, src_id: str, dst_id: str, relation: str) -> None: ...
+
     def brief(self, actor: Actor) -> BriefResult: ...
 
     def inspect(self, actor: Actor, item_id: str, text: str) -> Inspection: ...
@@ -120,6 +123,9 @@ class InProcessDriver:
         self.require_approval = require_approval
         self.embeddings = embeddings if embeddings is not None else EmbeddingConfig()
         self._contexts: dict[Actor, Context] = {}
+        # The related facts the last `recall` returned beside its hits. The runner reads
+        # this: they reach the caller like any result and are judged the same way.
+        self.last_related: list[Hit] = []
 
     # -- plumbing ---------------------------------------------------------
 
@@ -168,6 +174,10 @@ class InProcessDriver:
             kind=kind,
             review_after=review_after,
         )
+        if self.embeddings_enabled and self.embeddings.defer:
+            # A server's background worker does this a moment after `remember` returns.
+            # The harness has no worker, and its next step must see what a user would.
+            backfill.fill_pending(self.ctx(actor))
         return Remembered(result.fact_id, result.proposal_id)
 
     def supersede(self, actor: Actor, old_id: str, new_id: str) -> str | None:
@@ -188,7 +198,11 @@ class InProcessDriver:
 
     def recall(self, actor: Actor, query: str, *, limit: int, include_closed: bool) -> list[Hit]:
         result = search.recall(self.ctx(actor), query, limit=limit, include_closed=include_closed)
+        self.last_related = [Hit(h.id, h.text, h.status, h.tier) for h in result.related]
         return [Hit(h.id, h.text, h.status, h.tier) for h in result.facts]
+
+    def link(self, actor: Actor, src_id: str, dst_id: str, relation: str) -> None:
+        facts.link_facts(self.ctx(actor), src_id, dst_id, relation=relation)
 
     def brief(self, actor: Actor) -> BriefResult:
         try:

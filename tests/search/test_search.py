@@ -8,6 +8,7 @@ import pytest
 
 from ingatan import facts, search, timeutil
 from ingatan.scope import Context
+from ingatan.search import core
 
 MakeContext = Callable[..., Context]
 InsertFact = Callable[..., str]
@@ -630,3 +631,70 @@ def test_recall_with_only_notes_matching_still_returns_them(ctx: Context) -> Non
     note = insert_note(ctx.business, "Kebijakan", "garansi satu tahun")
     result = search.recall(ctx, "garansi")
     assert result.facts == [] and [n.id for n in result.notes] == [note]
+
+
+# ---- related facts: one hop, then two ------------------------------------------------------
+
+
+def related_ids(ctx: Context, query: str) -> list[str]:
+    return [h.id for h in search.recall(ctx, query, touch=False).related]
+
+
+def chain(ctx: Context) -> tuple[str, str, str]:
+    """An order, the vendor that prints for it, and when that vendor is closed."""
+    order = rem(ctx, "Pesanan besar minggu ini memakai kaos sablon.", ["order"], tier="business")
+    printer = rem(ctx, "Kaos sablon dicetak oleh toko-b.", ["cetak"], tier="business")
+    closed_day = rem(ctx, "Toko-b tutup tiap tanggal 25.", ["jadwal"], tier="business")
+    facts.link_facts(ctx, order, printer)
+    facts.link_facts(ctx, printer, closed_day)
+    return order, printer, closed_day
+
+
+def test_second_hop_is_returned_after_first_hops(ctx: Context) -> None:
+    order, printer, closed_day = chain(ctx)
+    sizes = rem(ctx, "Ukuran yang diminta: M dan L.", ["ukuran"], tier="business")
+    facts.link_facts(ctx, order, sizes)
+    result = search.recall(ctx, "pesanan besar minggu ini", touch=False)
+    assert ids(result) == [order]
+    # Both direct neighbours first, in the order they were linked, then the one behind them.
+    assert [h.id for h in result.related] == [printer, sizes, closed_day]
+
+
+def test_there_is_no_third_hop(ctx: Context) -> None:
+    _order, printer, closed_day = chain(ctx)
+    beyond = rem(ctx, "Tanggal 25 adalah hari gajian.", ["gaji"], tier="business")
+    facts.link_facts(ctx, closed_day, beyond)
+    assert related_ids(ctx, "pesanan besar minggu ini") == [printer, closed_day]
+
+
+def test_related_is_capped(ctx: Context) -> None:
+    _order, printer, _closed_day = chain(ctx)
+    extra = [rem(ctx, f"Catatan cetak nomor {n}.", ["catatan"], tier="business") for n in range(4)]
+    for fact_id in extra:
+        facts.link_facts(ctx, printer, fact_id)
+    found = related_ids(ctx, "pesanan besar minggu ini")
+    assert len(found) == core.MAX_RELATED
+    assert found[0] == printer  # the direct neighbour is never pushed out by what is behind it
+
+
+def test_related_never_includes_a_closed_or_invisible_fact(
+    ctx: Context, make_ctx: MakeContext
+) -> None:
+    _order, printer, closed_day = chain(ctx)
+    # Another agent hangs a private note on the shared vendor fact.
+    other = make_ctx(agent="hermes")
+    private = rem(other, "Catatan pribadi hermes soal toko-b.", ["pribadi"])
+    behind_private = rem(
+        ctx, "Ini hanya terhubung lewat catatan pribadi.", ["lain"], tier="business"
+    )
+    facts.link_facts(other, printer, private)
+    facts.link_facts(other, private, behind_private)
+    found = related_ids(ctx, "pesanan besar minggu ini")
+    assert private not in found
+    assert behind_private not in found  # nothing is reached through a fact one cannot see
+    assert found == [printer, closed_day]
+
+    # A closed fact is not shown, and nothing is reached through it either.
+    newer = rem(ctx, "Kaos sablon sekarang dicetak oleh toko-c.", ["cetak"], tier="business")
+    facts.supersede(ctx, printer, newer)
+    assert related_ids(ctx, "pesanan besar minggu ini") == []

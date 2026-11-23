@@ -13,6 +13,7 @@ from typing import Any
 from ingatan import audit, timeutil
 from ingatan.db import fact_text_key, normalize_fact_text, transaction
 from ingatan.errors import NotFoundError, ValidationError
+from ingatan.facts import backfill
 from ingatan.facts._util import (
     DEFAULT_REVIEW_DAYS,
     clean_list,
@@ -145,7 +146,9 @@ def _source(
     if isinstance(raw_date, str) and raw_date.strip():
         date_value = timeutil.iso(timeutil.parse(raw_date))[:10]
     out: dict[str, Any] = {"agent": ctx.scope.agent, "date": date_value}
-    for key in ("session", "document"):
+    # `extracted_by` names the model that proposed the fact (`ingatan extract`): a fact a
+    # model read out of a conversation keeps saying so, also after it was approved.
+    for key in ("session", "document", "extracted_by"):
         value = extra.get(key)
         if value:
             out[key] = redact(str(value))
@@ -294,11 +297,27 @@ def remember(
     valid_from: str | None = None,
     check_conflicts: bool = True,
     related_to: Sequence[str] | None = None,
+    part_of: Sequence[str] | None = None,
     dedup: bool = True,
+    as_proposal: bool = False,
 ) -> RememberResult:
-    """Save a fact immediately (write-then-undo), or queue a proposal if approval is required."""
+    """Save a fact immediately (write-then-undo), or queue a proposal if approval is required.
+
+    `as_proposal` queues a proposal for the business or global tier whatever
+    `require_approval` says. It is how something that is not yet known to be true (a fact a
+    model extracted) reaches the user instead of the store.
+
+    `related_to` and `part_of` name existing facts to link the new one to. A fact that is
+    saved is linked at once; a proposal carries the links and they are made when it is
+    approved, for every target that is still an open fact then.
+    """
     if tier not in TIERS:
         raise ValidationError(f"Unknown tier '{tier}'. Use agent, business or global.")
+    if as_proposal and tier == "agent":
+        raise ValidationError(
+            "A proposal is for the business or global tier: nobody reviews an agent's own "
+            "notes. Pass tier='business' or tier='global' together with as_proposal."
+        )
     if kind is not None and kind not in KINDS:
         raise ValidationError(f"Unknown kind '{kind}'. Use stable or volatile.")
     if category not in CATEGORIES:
@@ -324,16 +343,18 @@ def remember(
     _check_episode(ctx, episode)
     resolved_source = _source(ctx, source, episode)
 
-    link_targets: list[str] = []
-    for target_id in dict.fromkeys(related_to or []):
-        tid = str(target_id).strip()
-        if not tid:
-            continue
-        if find_fact(ctx, tid) is None:
-            raise NotFoundError(f"No related fact {tid}.")
-        link_targets.append(tid)
+    links: list[tuple[str, str]] = []
+    for relation, targets in (("related_to", related_to), ("part_of", part_of)):
+        for target_id in dict.fromkeys(targets or []):
+            tid = str(target_id).strip()
+            if not tid or any(tid == linked for linked, _ in links):
+                continue
+            if find_fact(ctx, tid) is None:
+                raise NotFoundError(f"No related fact {tid}.")
+            links.append((tid, relation))
+    link_targets = [tid for tid, _ in links]
 
-    needs_approval = tier != "agent" and ctx.scope.require_approval
+    needs_approval = as_proposal or (tier != "agent" and ctx.scope.require_approval)
     conn = ctx.conn_for_tier(tier)
 
     if dedup and not needs_approval and resolved_valid_from is None:
@@ -355,16 +376,22 @@ def remember(
                 pinned=pinned,
                 episode=episode,
             )
-            for tid in link_targets:
+            for tid, relation in links:
                 if tid != res.fact_id and res.fact_id is not None:
-                    link_facts(ctx, res.fact_id, tid, relation="related_to")
+                    link_facts(ctx, res.fact_id, tid, relation=relation)
             return res
 
-    # One model call, made before any write lock is taken and only for a fact that will be
-    # saved. The vector serves both the conflict check and storage.
+    # With `defer`, a fact that is saved directly is saved without a vector: the model is
+    # not called here at all, and `backfill` embeds the fact and runs the meaning-based
+    # conflict check afterwards. A proposal is not deferred: nothing is saved yet, and the
+    # similar facts shown to the approver are worked out now.
+    embeddings_on = embed_store.is_enabled(ctx.scope.embeddings)
+    deferred = embeddings_on and ctx.scope.embeddings.defer and not needs_approval
+    # Otherwise one model call, made before any write lock is taken and only for a fact
+    # that will be saved. The vector serves both the conflict check and storage.
     new_vec: list[float] | None = (
         embed_store.embed_text(ctx.scope.embeddings, clean_text, is_query=False)
-        if embed_store.is_enabled(ctx.scope.embeddings)
+        if embeddings_on and not deferred
         else None
     )
 
@@ -374,7 +401,10 @@ def remember(
             clean_text,
             entity_list,
             keyword_list,
-            linked_ids=link_targets,
+            # A caller that links two facts itself says they belong together, so they are
+            # not reported as a conflict. A model that extracted the fact has no such
+            # standing: what it calls "related" is still checked, and shown to the approver.
+            linked_ids=[] if resolved_source.get("extracted_by") else link_targets,
             query_vec=new_vec or [],
         )
         if check_conflicts
@@ -394,6 +424,10 @@ def remember(
     }
     if resolved_valid_from is not None:
         content["valid_from"] = resolved_valid_from
+    if links and needs_approval:
+        # A proposal is not a fact yet, so nothing can be linked to it. The links wait in
+        # the payload and `proposals.approve` makes them.
+        content["links"] = [{"to": tid, "relation": relation} for tid, relation in links]
     note = ""
     if similar:
         note = (
@@ -410,10 +444,19 @@ def remember(
                 embed_store.store_fact_embedding(
                     conn, fact_id, clean_text, ctx.scope.embeddings, vector=new_vec
                 )
-            for tid in link_targets:
+            elif deferred:
+                backfill.enqueue(conn, fact_id, check_conflicts=check_conflicts)
+            for tid, relation in links:
                 if tid != fact_id:
-                    link_facts(ctx, fact_id, tid, relation="related_to")
+                    link_facts(ctx, fact_id, tid, relation=relation)
             _mark_episode(ctx, episode)
+        if deferred:
+            backfill.notify(ctx.scope)
+            if check_conflicts:
+                note += (
+                    " The meaning-based check runs in the background: a conflict it finds "
+                    "shows as 'possible conflict' in recall."
+                )
         return RememberResult(fact_id, None, _similar_view(similar), f"Saved as {fact_id}." + note)
 
     with transaction(conn):

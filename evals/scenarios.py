@@ -38,6 +38,8 @@ CATEGORIES = (
     "forget",
     "noise",
     "semantic",
+    "usage",
+    "graph",
 )
 SOURCES = ("pattern", "incident")
 NEEDS = ("keywords", "trigram", "embeddings")
@@ -50,9 +52,11 @@ OPS = (
     "approve",
     "reject",
     "advance_days",
+    "link",
     "recall",
     "brief",
 )
+RELATIONS = ("related_to", "part_of")
 TIERS = ("agent", "business", "global")
 KINDS = ("stable", "volatile")
 
@@ -71,6 +75,7 @@ _FIELDS: dict[str, tuple[set[str], set[str]]] = {
     "approve": ({"key"}, set()),
     "reject": ({"key"}, set()),
     "advance_days": ({"days"}, set()),
+    "link": ({"from", "to"}, {"relation"}),
     "recall": (
         set(),
         {
@@ -82,6 +87,9 @@ _FIELDS: dict[str, tuple[set[str], set[str]]] = {
             "expect_absent",
             "expect_status",
             "expect_none",
+            "expect_first",
+            "expect_related",
+            "repeat",
         },
     ),
     "brief": (
@@ -357,6 +365,11 @@ def _validate_step(
         days = body["days"]
         if isinstance(days, bool) or not isinstance(days, (int, float)) or days <= 0:
             raise _fail(at, "'days' must be a positive number")
+    elif op == "link":
+        known("from", fact=True)
+        known("to", fact=True)
+        if body.get("relation", "related_to") not in RELATIONS:
+            raise _fail(at, f"'relation' must be one of: {', '.join(RELATIONS)}")
     elif op == "recall":
         _validate_recall(at, body, keys)
     elif op == "brief":
@@ -377,7 +390,7 @@ def _validate_recall(at: str, body: dict[str, Any], keys: dict[str, str]) -> Non
         raise _fail(at, "'limit' must be an integer of at least 5")
     if not isinstance(body.get("include_closed", False), bool):
         raise _fail(at, "'include_closed' must be true or false")
-    for name in ("expect_top5", "expect_absent"):
+    for name in ("expect_top5", "expect_absent", "expect_related"):
         if name in body:
             for key in _str_list(at, name, body[name], non_empty=True):
                 if key not in keys:
@@ -395,14 +408,38 @@ def _validate_recall(at: str, body: dict[str, Any], keys: dict[str, str]) -> Non
         for key in status:  # pyright: ignore[reportUnknownVariableType]
             if key not in keys:
                 raise _fail(at, f"'expect_status' refers to unknown key '{key}'")
+    if "expect_first" in body:
+        first = body["expect_first"]
+        if not isinstance(first, str):
+            raise _fail(at, "'expect_first' must be one key: the fact that has to come first")
+        if first not in keys:
+            raise _fail(at, f"'expect_first' refers to unknown key '{first}'")
+    if "repeat" in body:
+        repeat = body["repeat"]
+        if isinstance(repeat, bool) or not isinstance(repeat, int) or not 1 <= repeat <= 50:
+            raise _fail(at, "'repeat' must be an integer from 1 to 50")
     if "expect_none" in body:
         if body["expect_none"] is not True:
             raise _fail(at, "'expect_none' must be true (leave it out otherwise)")
-        if {"expect_top5", "expect_status"} & set(body):
-            raise _fail(at, "'expect_none' cannot be combined with expect_top5 or expect_status")
-    if not {"expect_top5", "expect_absent", "expect_status", "expect_none"} & set(body):
+        if {"expect_top5", "expect_status", "expect_first", "expect_related"} & set(body):
+            raise _fail(
+                at,
+                "'expect_none' cannot be combined with expect_top5, expect_status, "
+                "expect_first or expect_related",
+            )
+    wanted = {
+        "expect_top5",
+        "expect_absent",
+        "expect_status",
+        "expect_none",
+        "expect_first",
+        "expect_related",
+    }
+    if not wanted & set(body):
         raise _fail(
-            at, "a recall check needs expect_top5, expect_absent, expect_status or expect_none"
+            at,
+            "a recall check needs expect_top5, expect_absent, expect_status, expect_none, "
+            "expect_first or expect_related",
         )
 
 

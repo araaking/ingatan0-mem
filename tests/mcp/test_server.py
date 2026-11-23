@@ -24,7 +24,7 @@ except ImportError as exc:  # pragma: no cover - only on machines that block pyd
         pytest.skip(f"the mcp SDK cannot be imported here: {exc}", allow_module_level=True)
     raise
 
-from ingatan import episodes
+from ingatan import episodes, facts
 from ingatan.mcp.server import build_server
 from ingatan.scope import Context, Scope, open_context
 
@@ -452,3 +452,155 @@ def test_other_database_errors_are_not_retried(
     monkeypatch.setattr(server, "open_context", broken)
     with pytest.raises(sqlite3.OperationalError):
         server._open_with_retry(Scope(business="x", agent="y", home=ingatan_home))  # pyright: ignore[reportPrivateUsage]
+
+
+# ----------------------------------------------------------- deferred embedding
+
+
+def test_background_fill_runs_the_worker_and_catches_up(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import background_fill
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import embed as embed_store
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    scope = Scope(
+        business="tokoku",
+        agent="claude-code",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", defer=True),
+    )
+
+    def alive() -> list[str]:
+        return [t.name for t in threading.enumerate() if t.name == "ingatan-backfill"]
+
+    with open_context(scope) as ctx:
+        # Saved before any server ran: only the queue row says a vector is owed.
+        saved = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+        assert ctx.business.execute("SELECT count(*) FROM fact_embeddings").fetchone()[0] == 0
+        with background_fill([scope]):
+            assert alive() == ["ingatan-backfill"]
+            deadline = time.monotonic() + 3
+            row = None
+            while row is None and time.monotonic() < deadline:
+                row = ctx.business.execute(
+                    "SELECT fact_id FROM fact_embeddings WHERE fact_id = ?", (saved.fact_id,)
+                ).fetchone()
+                if row is None:
+                    time.sleep(0.02)
+            assert row is not None
+        assert alive() == []
+        assert backfill.last_worker_error() == ""
+
+
+def test_background_fill_leaves_a_scope_without_defer_alone(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import background_fill
+
+    notified: list[Scope] = []
+    monkeypatch.setattr(backfill, "notify", notified.append)
+    scope = Scope(business="tokoku", agent="claude-code", home=ingatan_home)
+    with background_fill([scope]):
+        pass
+    assert notified == []
+
+
+def test_multi_server_catches_up_when_a_business_is_opened(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import build_multi_server
+    from ingatan.scope import EmbeddingConfig
+
+    notified: list[str] = []
+    monkeypatch.setattr(backfill, "notify", lambda scope: notified.append(scope.business))
+    server, opened = build_multi_server(
+        ["toko-a", "toko-b"],
+        agent="hermes",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", defer=True),
+    )
+
+    async def go() -> None:
+        async with Client(server) as client:
+            await client.call_tool("brief", {"business": "toko-a"})
+            await client.call_tool("brief", {"business": "toko-a"})
+
+    try:
+        run_async(go())
+    finally:
+        for ctx in opened.values():
+            ctx.close()
+    assert notified == ["toko-a"]  # once, when its files were opened; toko-b never was
+
+
+# ----------------------------------------------------------- the shared model process
+
+
+@pytest.fixture
+def unreachable_process(ingatan_home: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A server told to use the shared model process, which cannot be reached."""
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import local, shared
+
+    def unreachable(texts: Any, **_kwargs: Any) -> list[list[float]]:
+        raise shared.Unavailable("the shared embedding process is not running")
+
+    def in_process(texts: Any, **_kwargs: Any) -> list[list[float]]:
+        raise AssertionError(
+            "falling back to a model inside the server brings back the memory `shared` saves"
+        )
+
+    monkeypatch.setattr(shared, "embed", unreachable)
+    monkeypatch.setattr(local, "embed", in_process)
+    scope = Scope(
+        business="tokoku",
+        agent="claude-code",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", shared=True),
+    )
+    with open_context(scope) as ctx:
+        yield ctx
+
+
+def test_remember_saves_when_the_process_is_unreachable(unreachable_process: Context) -> None:
+    from ingatan import search
+
+    result = call(
+        unreachable_process,
+        "remember",
+        {"text": "Ongkir ke Bandung Rp 15.000 per kg.", "entities": ["ongkir Bandung"]},
+    )
+    assert not result.is_error, text_of(result)
+    assert FACT_ID.search(text_of(result))
+    assert "not running" in search.last_embed_error()
+
+
+def test_recall_answers_from_words_when_the_process_is_unreachable(
+    unreachable_process: Context,
+) -> None:
+    from ingatan import search
+
+    saved = call(
+        unreachable_process,
+        "remember",
+        {"text": "Ongkir ke Bandung Rp 15.000 per kg.", "entities": ["ongkir Bandung"]},
+    )
+    fact_id = FACT_ID.search(text_of(saved))
+    assert fact_id is not None
+    result = call(unreachable_process, "recall", {"query": "ongkir Bandung"})
+    assert not result.is_error, text_of(result)
+    assert fact_id.group(0) in text_of(result)
+    assert "not running" in search.last_embed_error()
+    count = unreachable_process.business.execute("SELECT count(*) FROM fact_embeddings")
+    assert count.fetchone()[0] == 0

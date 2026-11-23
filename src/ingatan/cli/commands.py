@@ -21,11 +21,15 @@ from typing import Annotated, Any, TypeVar
 import typer
 
 from ingatan import __version__, audit, facts, proposals, search
+from ingatan import extract as extraction
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
+from ingatan.cli import review as review_ui
+from ingatan.cli import setup as setup_steps
 from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
 from ingatan.cli.render import log_line, render_diff, shorten
 from ingatan.errors import ConfigError, IngatanError, NotFoundError, ValidationError
+from ingatan.facts import review as review_logic
 from ingatan.facts._util import fact_dict
 from ingatan.scope import (
     CONFIG_NAME,
@@ -41,6 +45,7 @@ from ingatan.scope import (
     validate_business,
 )
 from ingatan.search import local as local_models
+from ingatan.search import shared as shared_process
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -210,33 +215,34 @@ def serve(
 # ---- init ----------------------------------------------------------------------------
 
 
-def _ask(label: str, flag: str | None, env_name: str, validate: Callable[[object], str]) -> str:
+def _ask(
+    label: str,
+    flag: str | None,
+    env_name: str,
+    validate: Callable[[object], str],
+    command: str = "init",
+) -> str:
     value = (flag or os.environ.get(env_name) or "").strip()
     if not value:
         if not _is_interactive():
             raise ConfigError(
-                f"init needs a {label} name. Pass --{label} NAME or set {env_name} "
+                f"{command} needs a {label} name. Pass --{label} NAME or set {env_name} "
                 "(there is no terminal to ask on)."
             )
         value = typer.prompt(f"{label.capitalize()} name").strip()
     return validate(value)
 
 
-@app.command()
-@cli_command
-def init(
-    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
-    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
-) -> None:
-    """Create .ingatan.toml here (if missing) and both database files. Safe to run twice."""
+def _init_project(business: str | None, agent: str | None, *, command: str = "init") -> Scope:
+    """Create `.ingatan.toml` here if it is missing, and both database files."""
     config_path = Path.cwd() / CONFIG_NAME
     if config_path.is_file():
         typer.echo(f"{config_path} already exists, left unchanged.")
         if business or agent:
             typer.echo("The --business and --agent values were ignored.")
     else:
-        business_name = _ask("business", business, "INGATAN_BUSINESS", validate_business)
-        agent_name = _ask("agent", agent, "INGATAN_AGENT", validate_agent)
+        business_name = _ask("business", business, "INGATAN_BUSINESS", validate_business, command)
+        agent_name = _ask("agent", agent, "INGATAN_AGENT", validate_agent, command)
         try:
             with config_path.open("x", encoding="utf-8", newline="\n") as handle:
                 handle.write(f'business = "{business_name}"\nagent = "{agent_name}"\n')
@@ -251,7 +257,150 @@ def init(
     for name, was_there in zip((scope.business, "global"), existed, strict=True):
         path = db_path(scope.home, name)
         typer.echo(f"{'Database ready' if was_there else 'Created database'}: {path}")
+    return scope
+
+
+@app.command()
+@cli_command
+def init(
+    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
+    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
+) -> None:
+    """Create .ingatan.toml here (if missing) and both database files. Safe to run twice."""
+    _init_project(business, agent)
     typer.echo("Next: run `ingatan doctor` to check the setup.")
+
+
+# ---- setup ---------------------------------------------------------------------------
+
+SETUP_CLIENTS = ("claude-code", "hermes", "none")
+_NO_TERMINAL = "(there is no terminal to ask on)"
+
+
+def _setup_claude_code(*, assume_yes: bool, interactive: bool) -> None:
+    module = "ingatan.integrations.claude_code.install"
+    change = _import(module, "mcp_entry_change")(Path.cwd())
+    own = _import(module, "own_start")(Path.cwd()) if change is None else None
+    if own is not None:
+        typer.echo(
+            f"Claude Code: .mcp.json already has an `ingatan` server, started with `{own}`. "
+            "Left as it is. To get the default (`ingatan serve`), remove that entry and run "
+            "setup again."
+        )
+    elif change is None:
+        typer.echo("Claude Code: .mcp.json already runs `ingatan serve`. Nothing to change.")
+    else:
+        typer.echo(f"Claude Code: this adds the Ingatan server to {change.path}:")
+        for line in _import(module, "diff_lines")(change):
+            typer.echo(line)
+        if assume_yes:
+            approved = True
+        elif interactive:
+            approved = typer.confirm(f"Write this change to {change.path}?", default=False)
+        else:
+            raise ConfigError(
+                f"setup needs your confirmation before it writes {change.path}. "
+                f"Pass --yes {_NO_TERMINAL}."
+            )
+        if approved:
+            _import(module, "write_change")(change)
+            typer.echo(
+                f"Wrote {change.path}. Claude Code asks you to approve a project server "
+                "the first time it sees one."
+            )
+        else:
+            typer.echo(
+                f"Left {change.path} unchanged. To add the server yourself: "
+                "claude mcp add --scope project ingatan -- ingatan serve"
+            )
+    typer.echo("Optional hooks (brief at session start, turn capture): docs/setup-claude-code.md")
+
+
+@app.command()
+@cli_command
+def setup(
+    business: Annotated[str | None, typer.Option(help="Business name for this project.")] = None,
+    agent: Annotated[str | None, typer.Option(help="Agent name for this project.")] = None,
+    semantic: Annotated[
+        bool | None,
+        typer.Option(
+            "--semantic/--no-semantic",
+            help="Use the offline semantic search (downloads the local model once).",
+        ),
+    ] = None,
+    client: Annotated[
+        str | None,
+        typer.Option(metavar="NAME", help=f"Client to configure: {', '.join(SETUP_CLIENTS)}."),
+    ] = None,
+    assume_yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Write into another application's config file without asking. "
+            "The change is still shown.",
+        ),
+    ] = False,
+) -> None:
+    """Guided setup: project, optional semantic search, client, then the health check.
+
+    Every question has an option, so a script can run this without a terminal. Safe to run
+    twice: what is already set up is left as it is.
+    """
+    interactive = _is_interactive()
+    if client is not None and client.strip().casefold() not in SETUP_CLIENTS:
+        raise ConfigError(f"Unknown client {client!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
+    if not interactive:
+        if semantic is None:
+            raise ConfigError(
+                "setup needs to know whether to use semantic search. "
+                f"Pass --semantic or --no-semantic {_NO_TERMINAL}."
+            )
+        if client is None:
+            raise ConfigError(
+                f"setup needs a client to configure. Pass --client NAME, one of: "
+                f"{', '.join(SETUP_CLIENTS)} {_NO_TERMINAL}."
+            )
+
+    scope = _init_project(business, agent, command="setup")
+
+    if semantic is None:
+        semantic = typer.confirm(
+            "Use semantic search? It downloads a model of about 123 MB once", default=False
+        )
+    if semantic:
+        setup_steps.enable_semantic(
+            model=None, use_home_config=False, reindex=True, echo=typer.echo
+        )
+
+    answer = (
+        client
+        if client is not None
+        else str(typer.prompt(f"Client to configure ({', '.join(SETUP_CLIENTS)})", default="none"))
+    )
+    chosen = answer.strip().casefold()
+    if chosen not in SETUP_CLIENTS:
+        raise ConfigError(f"Unknown client {answer!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
+    if chosen == "claude-code":
+        _setup_claude_code(assume_yes=assume_yes, interactive=interactive)
+    elif chosen == "hermes":
+        block = _import("ingatan.integrations.hermes.install", "mcp_block")
+        typer.echo(
+            "Hermes: add this to $HERMES_HOME/config.yaml (Ingatan does not edit that file), "
+            "then run /reload-mcp:"
+        )
+        # Only when the data folder was chosen: the default needs no line, and a block
+        # without a path in it can be shared as it is.
+        # As a full path: Hermes starts the server from a folder of its own.
+        home = str(scope.home.resolve()) if os.environ.get("INGATAN_HOME", "").strip() else None
+        typer.echo(block(scope.business, scope.agent, home))
+        typer.echo("The memory-provider plugin is described in docs/setup-hermes.md.")
+
+    checks = doctor_checks.run_checks()
+    typer.echo(doctor_checks.render(checks))
+    if any(check.failed for check in checks):
+        raise typer.Exit(1)
+    typer.echo("Setup complete.")
 
 
 # ---- doctor --------------------------------------------------------------------------
@@ -394,10 +543,27 @@ def proposals_list(business: BusinessOption = None, agent: AgentOption = None) -
         for p in pending:
             typer.echo(f"{p.id}  [{p.tier}]  {p.agent}  {p.created_at[:10]}")
             typer.echo(f"    {p.text}")
+            source = p.payload.get("source")
+            if isinstance(source, dict) and source.get("extracted_by"):  # pyright: ignore[reportUnknownMemberType]
+                by = source["extracted_by"]  # pyright: ignore[reportUnknownVariableType]
+                typer.echo(f"    extracted by {by}: a model read this out of a text, check it")
+            for link in p.payload.get("links") or []:
+                target = str(link.get("to"))
+                found = find_fact(ctx, target)
+                shown = f': "{shorten(str(found[1]["text"]), 80)}"' if found else " (gone)"
+                typer.echo(f"    would link to {target} ({link.get('relation')}){shown}")
             if p.supersedes:
                 old = _replaced_text(ctx, p.supersedes)
                 shown = f': "{shorten(old, 80)}"' if old is not None else " (no longer exists)"
                 typer.echo(f"    would supersede {p.supersedes}{shown}")
+
+
+def _echo_skipped_links(ctx: Context, fact_id: str) -> None:
+    for target in proposals.skipped_links(ctx, fact_id):
+        typer.echo(
+            f"  Not linked to {target}: that fact is closed or gone, or the new fact is a "
+            "possible conflict with it. A conflict is settled by you, not by a link."
+        )
 
 
 @proposals_app.command("approve")
@@ -428,10 +594,12 @@ def proposals_approve(
             for idx, p in enumerate(pending_items, start=1):
                 fact_id = proposals.approve(ctx, p.id)
                 typer.echo(f"[{idx}/{total}] Approved {p.id}. The new fact is {fact_id}.")
+                _echo_skipped_links(ctx, fact_id)
             return
         for pid in ids:
             fact_id = proposals.approve(ctx, pid)
             typer.echo(f"Approved {pid}. The new fact is {fact_id}.")
+            _echo_skipped_links(ctx, fact_id)
 
 
 @proposals_app.command("reject")
@@ -469,6 +637,81 @@ def forget(
                 raise typer.Exit(1)
         facts.forget(ctx, fact_id, by_user=True)
     typer.echo(f"Forgotten {fact_id}. Its content is gone from the database and the log.")
+
+
+# ---- extract --------------------------------------------------------------------------
+
+
+@app.command()
+@cli_command
+def extract(
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, help="How many pending episodes to read.")
+    ] = 10,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be proposed and write nothing."),
+    ] = False,
+    documents: Annotated[
+        bool,
+        typer.Option(
+            "--documents", help="Read ingested notes that were not read yet, not episodes."
+        ),
+    ] = False,
+    retry_failed: Annotated[
+        bool,
+        typer.Option(
+            "--retry-failed",
+            help="Also read the texts that were left out after repeated failed readings.",
+        ),
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Let the configured model read captured conversations and propose facts (optional).
+
+    Off by default: it needs `[llm] provider` and `model` (an Ollama model, or any
+    OpenAI-compatible endpoint). The model reads this agent's pending episodes (or, with
+    --documents, the ingested notes it has not read), and what it finds goes to the proposal
+    queue, marked with the model's name. Nothing becomes a fact until you approve it with
+    `ingatan proposals approve`.
+    """
+    with _open(agent, business) as ctx:
+        report = extraction.extract_pending(
+            ctx, limit=limit, dry_run=dry_run, documents=documents, retry_failed=retry_failed
+        )
+    verb = "would be proposed" if dry_run else "proposed"
+    read = report.notes_read if documents else report.episodes_read
+    what = "note(s)" if documents else "episode(s)"
+    typer.echo(
+        f"Read {read} {what} with {report.model}: "
+        f"{report.proposed} fact(s) {verb}, {report.rejected} dropped, "
+        f"{report.known} already known, {report.errors} failed."
+    )
+    for text in report.texts:
+        typer.echo(f"  {'would propose' if dry_run else 'proposed'}: {shorten(text, 100)}")
+    if report.errors:
+        typer.echo(f"ingatan: the model failed on a text: {report.last_error}", err=True)
+    if report.proposed and not dry_run:
+        typer.echo(
+            "Nothing is a fact yet. Review with `ingatan proposals list`, then "
+            "`ingatan proposals approve <id>` or `reject <id>`."
+        )
+    if report.left_out:
+        again = "ingatan extract --documents" if documents else "ingatan extract"
+        typer.echo(
+            f"{report.left_out} {what} left out after {extraction.MAX_READ_FAILURES} failed "
+            f"readings. `{again} --retry-failed` reads them again."
+        )
+    if report.unreachable:
+        typer.echo(
+            f"ingatan: stopped after {extraction.MAX_UNREACHABLE} calls in a row without an "
+            "answer. A call that timed out counts as a failed reading of its text; a model "
+            "that could not be reached is held against no text. Run it again when it answers.",
+            err=True,
+        )
+    if report.unreachable or (report.errors and report.errors == read):
+        raise typer.Exit(1)
 
 
 # ---- ingest, import, move, conflicts, hook -------------------------------------------
@@ -713,6 +956,134 @@ def conflicts_scan(
             typer.echo(f"  {a} <-> {b}")
 
 
+def _review_forget(ctx: Context, pair: review_logic.OpenConflict) -> None:
+    """Forget one fact of the pair, with the question and the confirmation `forget` has."""
+    side: str | None = None
+    while side is None:
+        side = review_ui.parse_side(str(typer.prompt("Forget which one? (newer/older)")))
+    fact_id = pair.newer_id if side == "newer" else pair.older_id
+    found = find_fact(ctx, fact_id)
+    if found is None:
+        typer.echo("  That fact is no longer there.")
+        return
+    row = found[1]
+    typer.echo(f"  {fact_id}  [{row['tier']}]  {row['agent']}")
+    typer.echo(f"      {shorten(str(row['text']), 300)}")
+    if not typer.confirm("Forget this fact for good? This cannot be undone."):
+        typer.echo("  Nothing was forgotten.")
+        return
+    facts.forget(ctx, fact_id, by_user=True)
+    typer.echo(f"  Forgotten {fact_id}. Its content is gone from the database and the log.")
+
+
+def _review_answer() -> review_ui.Answer:
+    """One understood answer from the terminal. A capital F is refused: see below."""
+    while True:
+        answer = review_ui.parse_answer(str(typer.prompt("Answer", default="", show_default=False)))
+        if answer is None:
+            typer.echo(f"  {review_ui.MENU}")
+        elif answer.letter == "f" and answer.for_all:
+            typer.echo("  Forgetting is never applied to several pairs. Type f for this pair.")
+        else:
+            return answer
+
+
+@conflicts_app.command("review")
+@cli_command
+def conflicts_review(
+    apply: Annotated[
+        str | None,
+        typer.Option(
+            "--apply",
+            metavar="ACTION",
+            help=f"Answer without asking: {', '.join(review_logic.ACTIONS)}. Needs --all.",
+        ),
+    ] = None,
+    every_pair: Annotated[
+        bool, typer.Option("--all", help="With --apply: yes, change every open pair.")
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Go through the open conflict pairs and settle each one, without typing a fact id.
+
+    For each pair both facts are shown in full and one answer is asked: keep both (they are
+    linked), let the newer or the older replace the other, forget one, or skip. Every answer
+    but forget goes through `confirm` or `supersede`, so it is logged and `ingatan undo`
+    takes it back. Forgetting asks for its own confirmation and is never applied in bulk.
+    """
+    if apply is not None and apply not in review_logic.ACTIONS:
+        raise ValidationError(
+            f"Unknown action {apply!r}. Use one of: {', '.join(review_logic.ACTIONS)}."
+        )
+    if every_pair and apply is None:
+        raise ConfigError("--all goes with --apply ACTION: it says which answer to give.")
+    with _open(agent, business) as ctx:
+        pairs = review_logic.open_pairs(ctx)
+        if not pairs:
+            typer.echo("No open conflicts.")
+            return
+        if apply is not None and not every_pair:
+            raise ConfigError(
+                f"--apply {apply} would change every open pair ({len(pairs)} now). "
+                "Add --all to confirm that."
+            )
+        if apply is None and not _is_interactive():
+            raise ConfigError(
+                "conflicts review asks one question per pair, and there is no terminal to ask "
+                f"on. Pass --apply ACTION --all ({', '.join(review_logic.ACTIONS)})."
+            )
+        for_the_rest = apply
+        resolved = failed = 0
+        if for_the_rest is None:
+            typer.echo(review_ui.MENU)
+        for position, pair in enumerate(pairs, start=1):
+            if pair.id not in {open_pair.id for open_pair in review_logic.open_pairs(ctx)}:
+                typer.echo(f"Pair #{pair.id} was settled by an earlier answer.")
+                continue
+            typer.echo("")
+            for line in review_ui.describe(ctx, pair, position, len(pairs)):
+                typer.echo(line)
+            action = for_the_rest
+            if action is None:
+                answer = _review_answer()
+                if answer.letter == "q":
+                    break
+                if answer.letter == "s":
+                    continue
+                if answer.letter != "f":
+                    action = review_ui.ANSWERS[answer.letter]
+                    if answer.for_all:
+                        for_the_rest = action
+            # One pair that cannot be changed (a fact that is not the caller's to replace,
+            # one that was closed a moment ago) is said and left open. The rest of the pass
+            # goes on: the pairs behind it have nothing to do with it.
+            try:
+                if action is None:
+                    _review_forget(ctx, pair)
+                    continue
+                outcome = review_logic.resolve_pair(ctx, pair, action)
+                if outcome.proposal_id is not None:
+                    # Approval mode queues the change. The person at this terminal is the
+                    # approver, so asking again in `proposals approve` would be asking twice.
+                    proposals.approve(ctx, outcome.proposal_id)
+                    typer.echo(f"  {outcome.message} Approved here.")
+                else:
+                    typer.echo(f"  {outcome.message}")
+            except IngatanError as exc:
+                failed += 1
+                typer.echo(f"  Not changed: {exc.message}")
+                continue
+            if not outcome.message.startswith("Skipped"):
+                resolved += 1
+        left = len(review_logic.open_pairs(ctx))
+    typer.echo("")
+    typer.echo(f"{resolved} pair(s) resolved, {left} still open.")
+    if failed:
+        typer.echo(f"ingatan: {failed} pair(s) could not be changed (see above).", err=True)
+        raise typer.Exit(1)
+
+
 # ---- reindex, alias, link, pin -------------------------------------------------------
 
 
@@ -740,12 +1111,7 @@ def reindex(
             )
             return
         report = search.reindex(ctx, force=force)
-    typer.echo(
-        f"Reindex ({provider} / {report.model}): "
-        f"facts indexed={report.facts_indexed} skipped={report.facts_skipped}, "
-        f"notes indexed={report.notes_indexed} skipped={report.notes_skipped}"
-        + (f", errors={report.errors}" if report.errors else "")
-    )
+    typer.echo(setup_steps.reindex_summary(provider, report))
     if report.errors > 0:
         if report.last_error:
             typer.echo(f"ingatan: embedding error: {report.last_error}", err=True)
@@ -766,8 +1132,9 @@ def embeddings_pull(
 ) -> None:
     """Download the local embedding model once and verify its checksums.
 
-    This is the only Ingatan command that downloads anything. The server itself never
-    does: without the model it simply answers from the word index.
+    Nothing is downloaded except by this command and the two that run it for you
+    (`embeddings enable` and `setup`). The server itself never downloads anything: without
+    the model it simply answers from the word index.
     """
     cfg = load_embeddings()
     name = (model or (cfg.model if cfg.provider == "local" else "")).strip()
@@ -776,15 +1143,7 @@ def embeddings_pull(
     typer.echo(f"Model:  {spec.name} ({spec.summary})")
     typer.echo(f"Folder: {folder}")
 
-    shown: dict[str, int] = {}
-
-    def progress(file: local_models.ModelFile, received: int) -> None:
-        tenth = received * 10 // max(1, file.size)
-        if shown.get(file.name) != tenth:
-            shown[file.name] = tenth
-            typer.echo(f"  {file.name}: {received / 1e6:.0f} of {file.size / 1e6:.0f} MB", err=True)
-
-    fetched = local_models.pull(spec.name, cfg.model_dir, progress=progress)
+    fetched = setup_steps.pull_model(spec, cfg.model_dir, lambda line: typer.echo(line, err=True))
     if fetched:
         size = sum(path.stat().st_size for path in fetched) / 1e6
         typer.echo(f"Downloaded {len(fetched)} file(s), {size:.0f} MB. Checksums verified.")
@@ -805,6 +1164,87 @@ def embeddings_pull(
             f'  model = "{spec.name}"'
         )
     typer.echo("Then run `ingatan reindex` to embed the facts that already exist.")
+
+
+@embeddings_app.command("enable")
+@cli_command
+def embeddings_enable(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            metavar="NAME",
+            help="Local model to use. Default: the configured one, else the built-in default.",
+        ),
+    ] = None,
+    use_home_config: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Write the setting to config.toml of the data folder (every project) "
+            "instead of .ingatan.toml here.",
+        ),
+    ] = False,
+    reindex_facts: Annotated[
+        bool,
+        typer.Option(
+            "--reindex/--no-reindex",
+            help="Embed the facts that already exist once the model is switched on.",
+        ),
+    ] = True,
+) -> None:
+    """Switch semantic search on in one step: model, setting, vectors.
+
+    Downloads the local model if it is not on disk, sets `provider = "local"`, embeds the
+    facts that already exist and checks the result. It needs the packages of the `vector`
+    extra and stops before downloading anything when they are missing.
+    """
+    setup_steps.enable_semantic(
+        model=model, use_home_config=use_home_config, reindex=reindex_facts, echo=typer.echo
+    )
+
+
+@embeddings_app.command("serve")
+@cli_command
+def embeddings_serve(
+    idle_seconds: Annotated[
+        int | None,
+        typer.Option(
+            "--idle-seconds",
+            min=0,
+            help="Leave after this many seconds without a request (0 = stay). "
+            "Default: idle_unload_seconds of the configuration.",
+        ),
+    ] = None,
+) -> None:
+    """Run the shared model process in the foreground (`[embeddings] shared`).
+
+    One process holds the local model for every Ingatan server of this data folder. A
+    server with `shared = true` starts it by itself; this command is for running it by
+    hand. It listens on 127.0.0.1 only and never downloads a model.
+    """
+    existing = shared_process.status()
+    if existing is not None:
+        typer.echo(
+            f"A shared model process is already running (pid {existing.pid}, port {existing.port})."
+        )
+        return
+    idle = load_embeddings().idle_unload_seconds if idle_seconds is None else idle_seconds
+    leaves = f"leaves after {idle}s without a request" if idle > 0 else "stays until stopped"
+    typer.echo(f"Serving vectors on 127.0.0.1 for {data_home()}; {leaves}.")
+    local_models.limit_math_threads()
+    shared_process.serve(idle_unload_seconds=idle)
+    typer.echo("The shared model process has stopped.")
+
+
+@embeddings_app.command("stop")
+@cli_command
+def embeddings_stop() -> None:
+    """Ask the shared model process of this data folder to leave."""
+    if shared_process.stop():
+        typer.echo("Stopped the shared model process.")
+    else:
+        typer.echo("The shared model process is not running.")
 
 
 @alias_app.command("add")

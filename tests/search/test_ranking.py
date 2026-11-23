@@ -111,3 +111,144 @@ def test_a_weak_tail_hit_is_judged_against_its_own_file(make_ctx: MakeContext) -
     assert only_global.fact_id in found
     # Inside one file the comparison is fair: a one-word match far below the best is dropped.
     assert weak_business.fact_id not in found
+
+
+# ---- usage: how often and how recently a fact was recalled ---------------------------------
+
+
+def _used(count: int, idle_days: float | None) -> Any:
+    last = (
+        None
+        if idle_days is None
+        else (NOW - timedelta(days=idle_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    return {"use_count": count, "last_used": last}
+
+
+def test_never_used_fact_is_neutral() -> None:
+    assert core._usage_factor(_used(0, None), NOW) == 1.0
+    # A repeat of `remember` sets `last_used` without a recall ever having returned the fact.
+    assert core._usage_factor(_used(0, 0), NOW) == 1.0
+    assert core._usage_factor(_used(3, None), NOW) == 1.0
+
+
+def test_factor_is_bounded() -> None:
+    hot = core._usage_factor(_used(10_000, 0), NOW)
+    assert 1.0 < hot <= 1.0 + core.USAGE_BOOST
+    assert hot == pytest.approx(1.0 + core.USAGE_BOOST)
+    assert core._usage_factor(_used(1, 0), NOW) < core._usage_factor(_used(5, 0), NOW) < hot
+
+
+def test_usage_boost_stays_below_freshness() -> None:
+    # Usage weighs at most half of what freshness can give or take. It does not follow that
+    # a newer fact always leads a much used one: freshness separates two volatile facts by
+    # less than this until they are about twelve days apart. What keeps a corrected value
+    # behind its correction is the rule for doubted facts, tested further down.
+    assert core.USAGE_BOOST <= core.RECENCY_BOOST / 2
+
+
+def test_usage_cannot_pass_a_neighbour_one_place_higher() -> None:
+    # Under rank fusion the closest two different ranks can be among the first forty is 1%.
+    assert core.USAGE_BOOST <= (1 / 100 - 1 / 101) / (1 / 101)
+    assert core.USAGE_BOOST < (1 / 61 - 1 / 62) / (1 / 62)
+
+
+def test_old_popularity_fades() -> None:
+    assert core._usage_factor(_used(10_000, 365), NOW) < 1.001
+    recent = core._usage_factor(_used(5, 1), NOW)
+    assert recent > core._usage_factor(_used(5, core.USAGE_HALF_LIFE_DAYS), NOW) > 1.0
+    undated: Any = {"use_count": 5, "last_used": "not a date"}
+    assert core._usage_factor(undated, NOW) == 1.0
+
+
+def _remember(ctx: Context, text: str, entity: str, **kw: Any) -> str:
+    result = facts.remember(ctx, text, entities=[entity], kind="stable", **kw)
+    assert result.fact_id is not None
+    return result.fact_id
+
+
+def _order(ctx: Context, query: str, **kw: Any) -> list[str]:
+    return [hit.id for hit in search.recall(ctx, query, touch=False, **kw).facts]
+
+
+def test_usage_breaks_a_tie_between_two_equal_matches(ctx: Context, frozen_clock: Any) -> None:
+    first = _remember(ctx, "Jadwal antar barang dari toko-a tiap Senin pagi.", "toko-a")
+    frozen_clock.advance(days=1)
+    second = _remember(ctx, "Jadwal antar barang dari toko-b tiap Kamis pagi.", "toko-b")
+    # Equal matches: the one written last comes first.
+    assert _order(ctx, "jadwal antar barang") == [second, first]
+    for _ in range(5):
+        assert [hit.id for hit in search.recall(ctx, "senin").facts] == [first]
+    frozen_clock.advance(days=7)
+    assert _order(ctx, "jadwal antar barang") == [first, second]
+    # Seen as of a past moment, today's usage says nothing.
+    past = "2026-11-12T12:00:00Z"
+    assert _order(ctx, "jadwal antar barang", as_of=past) == [second, first]
+
+
+def test_a_much_used_fact_does_not_pass_the_fact_that_corrects_it(
+    ctx: Context, frozen_clock: Any
+) -> None:
+    # Stable facts: nothing but the order of writing separates the two. Without a rule for
+    # doubted facts the older, much recalled one would lead, and be recalled even more.
+    old = _remember(ctx, "Ongkir ke Surabaya Rp 12.000 per kg.", "ongkir Surabaya")
+    for _ in range(8):
+        search.recall(ctx, "ongkir Surabaya")
+    frozen_clock.advance(days=2)
+    new = _remember(ctx, "Ongkir ke Surabaya Rp 14.000 per kg.", "ongkir Surabaya")
+    hits = search.recall(ctx, "ongkir Surabaya", touch=False).facts
+    assert [hit.id for hit in hits] == [new, old]
+    assert {hit.status for hit in hits} == {"possible conflict"}
+
+
+def _pair(ctx: Context, fact_a: str, fact_b: str) -> None:
+    ctx.business.execute(
+        "INSERT INTO conflicts (fact_a, fact_b, created_at) VALUES (?, ?, ?)",
+        (fact_a, fact_b, "2026-11-11T09:00:00Z"),
+    )
+
+
+def test_usage_counts_again_once_the_other_fact_of_a_pair_is_closed(
+    ctx: Context, frozen_clock: Any
+) -> None:
+    """What takes the boost away is the status `possible conflict`, and nothing wider."""
+    first = _remember(ctx, "Jadwal antar barang dari toko-a tiap Senin pagi.", "toko-a")
+    gone = _remember(ctx, "Kurir toko-a libur pada hari raya.", "toko-a", check_conflicts=False)
+    _pair(ctx, first, gone)
+    frozen_clock.advance(days=1)
+    second = _remember(ctx, "Jadwal antar barang dari toko-b tiap Kamis pagi.", "toko-b")
+    ctx.business.execute(
+        "UPDATE facts SET valid_to = ? WHERE id = ?", ("2026-11-12T00:00:00Z", gone)
+    )
+    for _ in range(5):
+        hits = search.recall(ctx, "senin").facts
+        assert [(hit.id, hit.status) for hit in hits] == [(first, "valid")]
+    frozen_clock.advance(days=7)
+    assert _order(ctx, "jadwal antar barang") == [first, second]
+
+
+def test_a_pair_with_a_fact_the_caller_cannot_see_is_no_doubt_for_the_caller(
+    make_ctx: MakeContext,
+) -> None:
+    mine = make_ctx()
+    theirs = make_ctx(agent="hermes")
+    shared = facts.remember(theirs, "Ongkir ke Surabaya Rp 14.000 per kg.", tier="business")
+    private = facts.remember(theirs, "Catatan pribadi soal tarif kurir.", check_conflicts=False)
+    assert shared.fact_id is not None and private.fact_id is not None
+    _pair(theirs, shared.fact_id, private.fact_id)
+    assert core._open_conflict_ids(theirs) == {shared.fact_id, private.fact_id}
+    assert core._open_conflict_ids(mine) == set()
+    statuses = [hit.status for hit in search.recall(mine, "ongkir Surabaya", touch=False).facts]
+    assert statuses == ["valid"]
+
+
+def test_off_topic_fact_is_not_lifted(ctx: Context, frozen_clock: Any) -> None:
+    popular = _remember(ctx, "Jadwal libur karyawan diumumkan tiap Jumat.", "karyawan")
+    for _ in range(20):
+        search.recall(ctx, "libur karyawan")
+    wanted = _remember(ctx, "Supplier gula pasir adalah toko-a.", "gula pasir")
+    for n in range(8):
+        _remember(ctx, f"Stok barang nomor {n} tinggal sedikit.", f"barang {n}")
+    found = _order(ctx, "supplier gula pasir")
+    assert found[0] == wanted
+    assert popular not in found

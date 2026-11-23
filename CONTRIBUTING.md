@@ -36,7 +36,7 @@ folder through `INGATAN_HOME` (autouse fixture in `tests/conftest.py`); never to
 A module imports only from modules earlier in this list:
 
 `timeutil`, `errors`, `db`, `redact`, `scope`, `audit`, `search`, `facts`, `proposals`, `episodes`,
-`brief`, `ingest`, `mcp`, `cli`, `integrations`
+`brief`, `ingest`, `extract`, `mcp`, `cli`, `integrations`
 
 The reason is that each module can then be understood, tested and changed without the ones above
 it. When a lower module needs something a higher one owns (for example `audit.undo` has to change
@@ -60,6 +60,7 @@ of importing upward. `mcp` and `cli` stay thin: no business logic that a test of
 | `src/ingatan/episodes/` | Capture storage, truncation, offers, processed marks, retention | `tests/episodes/` |
 | `src/ingatan/brief/` | Brief builder, "check first" section, token budget | `tests/brief/` |
 | `src/ingatan/ingest/` | Markdown ingest into notes | `tests/ingest/` |
+| `src/ingatan/extract/` | Optional fact extraction with a model of your choice (`llm.py` is the chat client); off by default, never part of the server | `tests/extract/` |
 | `src/ingatan/mcp/` | MCP stdio server (`MCPServer`) and the seven tool schemas | `tests/mcp/` |
 | `src/ingatan/cli/` | `typer` commands (`commands.py`), `doctor.py`, `conflicts.py`, `render.py` | `tests/cli/` |
 | `src/ingatan/integrations/claude_code/` | `ingatan hook <event>` handlers | `tests/integrations/test_claude_code_hooks.py` |

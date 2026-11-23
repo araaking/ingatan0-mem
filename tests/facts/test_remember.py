@@ -9,7 +9,8 @@ import pytest
 from ingatan import audit, episodes, facts, proposals, search
 from ingatan.errors import NotFoundError, ValidationError
 from ingatan.redact import MARKER
-from ingatan.scope import Context
+from ingatan.scope import Context, EmbeddingConfig
+from ingatan.search import embed as embed_store
 
 MakeContext = Callable[..., Context]
 
@@ -402,3 +403,191 @@ def test_proposal_writes_a_propose_entry_in_the_tier_file(approval_ctx: Context)
     assert [(r["op"], r["fact_id"], r["tier"], r["owner"]) for r in glo_log] == [
         ("propose", glo.proposal_id, "global", "claude-code")
     ]
+
+
+# ---- deferred embedding ([embeddings] defer = true) -------------------------------------
+
+DEFER = EmbeddingConfig(provider="local", defer=True)
+
+
+@pytest.fixture
+def model_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """A stand-in model that records every text it is asked to embed."""
+    calls: list[str] = []
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    return calls
+
+
+def queue_rows(ctx: Context) -> list[tuple[str, int]]:
+    return [
+        (str(r["fact_id"]), int(r["check_conflicts"]))
+        for conn in ctx.connections()
+        for r in conn.execute("SELECT fact_id, check_conflicts FROM embed_queue")
+    ]
+
+
+def test_remember_with_defer_makes_no_model_call(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert result.fact_id is not None
+    assert model_calls == []
+    assert count(ctx.business, "fact_embeddings") == 0
+    assert queue_rows(ctx) == [(result.fact_id, 1)]
+
+
+def test_remember_with_defer_still_reports_word_conflicts(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    first = facts.remember(ctx, "Harga kopi susu Rp 15.000.", entities=["kopi susu"])
+    second = facts.remember(ctx, "Harga kopi susu Rp 18.000.", entities=["kopi susu"])
+    assert [item["id"] for item in second.similar] == [first.fact_id]
+    assert model_calls == []
+
+
+def test_remember_with_defer_says_the_meaning_check_is_pending(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert "meaning-based check runs in the background" in result.message
+
+
+def test_remember_with_defer_and_no_conflict_check_queues_only_the_vector(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(
+        ctx, "Catatan harian: 12 pesanan masuk.", entities=["pesanan"], check_conflicts=False
+    )
+    assert result.fact_id is not None
+    assert queue_rows(ctx) == [(result.fact_id, 0)]
+    assert "meaning-based" not in result.message
+    assert model_calls == []
+
+
+def test_remember_without_defer_embeds_at_once_and_queues_nothing(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=EmbeddingConfig(provider="local"))
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert model_calls == ["Ongkir ke Bandung Rp 15.000 per kg."]
+    assert count(ctx.business, "fact_embeddings") == 1
+    assert queue_rows(ctx) == []
+    assert "meaning-based" not in result.message
+
+
+def test_remember_with_defer_and_no_embeddings_queues_nothing(make_ctx: MakeContext) -> None:
+    ctx = make_ctx(embeddings=EmbeddingConfig(provider="none", defer=True))
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert queue_rows(ctx) == []
+    assert "meaning-based" not in result.message
+
+
+def test_a_proposal_is_not_deferred(make_ctx: MakeContext, model_calls: list[str]) -> None:
+    # In approval mode nothing is saved yet: the similar facts shown to the approver are
+    # worked out now, with the model, and approval embeds the fact it creates.
+    ctx = make_ctx(embeddings=DEFER, require_approval=True)
+    result = facts.remember(
+        ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"], tier="business"
+    )
+    assert result.proposal_id is not None
+    assert model_calls == ["Ongkir ke Bandung Rp 15.000 per kg."]
+    assert queue_rows(ctx) == []
+
+
+# ---- proposals that say where they came from (the optional fact extraction) ---------------
+
+
+def test_as_proposal_queues_even_without_require_approval(ctx: Context) -> None:
+    result = facts.remember(
+        ctx,
+        "Supplier gula pasir adalah toko-a.",
+        entities=["gula pasir"],
+        tier="business",
+        as_proposal=True,
+    )
+    assert result.fact_id is None
+    assert result.proposal_id is not None
+    assert "waiting for the user's approval" in result.message
+    assert count(ctx.business, "facts") == 0
+    (pending,) = proposals.pending(ctx)
+    assert pending.id == result.proposal_id and pending.tier == "business"
+
+
+def test_as_proposal_on_agent_tier_is_a_validation_error(ctx: Context) -> None:
+    with pytest.raises(ValidationError, match="business or global"):
+        facts.remember(ctx, "Catatan pribadi.", entities=["catatan"], as_proposal=True)
+    assert count(ctx.business, "proposals") == 0
+
+
+def test_as_proposal_goes_to_the_global_file_for_the_global_tier(ctx: Context) -> None:
+    result = facts.remember(
+        ctx, "Budi suka kopi tanpa gula.", entities=["Budi"], tier="global", as_proposal=True
+    )
+    assert result.proposal_id is not None
+    assert count(ctx.glob, "proposals") == 1 and count(ctx.business, "proposals") == 0
+
+
+def test_extracted_by_survives_to_the_approved_fact(ctx: Context) -> None:
+    result = facts.remember(
+        ctx,
+        "Supplier gula pasir adalah toko-a.",
+        entities=["gula pasir"],
+        tier="business",
+        as_proposal=True,
+        source={"session": "sesi-1", "extracted_by": "ollama/local-model"},
+    )
+    assert result.proposal_id is not None
+    (pending,) = proposals.pending(ctx)
+    assert pending.payload["source"]["extracted_by"] == "ollama/local-model"
+    fact_id = proposals.approve(ctx, result.proposal_id)
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (fact_id,)).fetchone()
+    source = json.loads(row["source"])
+    assert source["extracted_by"] == "ollama/local-model"
+    assert source["session"] == "sesi-1"
+    hit = search.recall(ctx, "supplier gula pasir").facts[0]
+    assert hit.source["extracted_by"] == "ollama/local-model"
+
+
+def test_extracted_by_is_redacted_and_absent_unless_given(ctx: Context) -> None:
+    plain = facts.remember(ctx, "Stok gula 20 karung.", entities=["gula"])
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (plain.fact_id,))
+    assert "extracted_by" not in json.loads(row.fetchone()["source"])
+    secret = facts.remember(
+        ctx,
+        "Stok tepung 12 karung.",
+        entities=["tepung"],
+        source={"extracted_by": "openai/model api_key=sk-abcdefghijklmnopqrstuvwxyz123456"},
+    )
+    row = ctx.business.execute("SELECT source FROM facts WHERE id = ?", (secret.fact_id,))
+    assert "sk-abcdefghijklmnop" not in row.fetchone()["source"]
+
+
+# ---- part_of, beside related_to -------------------------------------------------------------
+
+
+def test_remember_links_part_of_at_once(ctx: Context) -> None:
+    whole = facts.remember(ctx, "Gudang utama ada di cabang dua.", entities=["gudang"])
+    assert whole.fact_id is not None
+    part = facts.remember(
+        ctx,
+        "Rak gula ada di sisi kiri gudang utama.",
+        entities=["rak gula"],
+        part_of=[whole.fact_id],
+    )
+    rows = ctx.business.execute("SELECT src_id, dst_id, relation FROM edges").fetchall()
+    assert [tuple(r) for r in rows] == [(part.fact_id, whole.fact_id, "part_of")]
+
+
+def test_a_part_of_target_must_exist(ctx: Context) -> None:
+    with pytest.raises(NotFoundError, match="f_000000000000"):
+        facts.remember(ctx, "Rak gula ada di gudang.", entities=["rak"], part_of=["f_000000000000"])
+    assert count(ctx.business, "facts") == 0

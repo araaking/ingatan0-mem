@@ -1,0 +1,34 @@
+{
+  "id": "ex-07-dua-giliran",
+  "title": "Fakta tersebar di dua giliran percakapan yang direkam terpisah",
+  "episodes": [
+    {
+      "user": "Budi sekarang pegang kasir cabang dua.",
+      "assistant": "Oke, Budi di kasir cabang dua."
+    },
+    {
+      "user": "Oh ya, libur karyawan bulan ini tanggal 25.",
+      "assistant": "Baik, libur karyawan tanggal 25."
+    }
+  ],
+  "expected": [
+    {
+      "name": "kasir",
+      "all_of": [
+        "Budi",
+        "kasir"
+      ],
+      "values": []
+    },
+    {
+      "name": "libur",
+      "all_of": [
+        "libur"
+      ],
+      "values": [
+        "25"
+      ]
+    }
+  ],
+  "forbidden": []
+}

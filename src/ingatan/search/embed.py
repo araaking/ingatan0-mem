@@ -19,6 +19,7 @@ Cosine scores are not comparable between model families, so every cut-off comes 
 from __future__ import annotations
 
 import array
+import dataclasses
 import json
 import math
 import os
@@ -36,7 +37,7 @@ from ingatan import timeutil
 from ingatan.db import transaction
 from ingatan.errors import IngatanError
 from ingatan.scope import Context, EmbeddingConfig
-from ingatan.search import local
+from ingatan.search import local, shared
 
 __all__ = [
     "DEFAULT_MODELS",
@@ -89,6 +90,8 @@ DEFAULT_KEY_ENVS: dict[str, str] = {
 MAX_SEMANTIC_CANDIDATES = 50
 # Texts handed to the provider, and rows written, per `reindex` step.
 REINDEX_BATCH_SIZE = 32
+# Texts per request to the shared model process (`[embeddings] shared`).
+SHARED_BATCH_SIZE = 8
 # Bounded LRU cache of query vectors, kept packed (about 1.5 KiB per 384-dim entry).
 _QUERY_CACHE_MAX = 128
 
@@ -318,13 +321,32 @@ def _embed_local_batch(
     cfg: EmbeddingConfig, model_name: str, texts: Sequence[str], *, is_query: bool
 ) -> list[list[float] | None]:
     prepared = [_apply_model_prefix(model_name, t, is_query=is_query) for t in texts]
-    vectors = local.embed(
-        prepared,
-        model_name=model_name,
-        model_dir=cfg.model_dir,
-        threads=cfg.threads,
-        idle_unload_seconds=cfg.idle_unload_seconds,
-    )
+    if cfg.shared:
+        # One process holds the model for every server of this data folder. When it cannot
+        # be reached this raises an `OSError`, which the callers turn into "no vector": the
+        # model is never loaded into this process as a fallback.
+        # In small batches: one request then never holds the shared model for long, and
+        # another session's query gets its turn between two of them.
+        vectors: list[list[float]] = []
+        for start in range(0, len(prepared), SHARED_BATCH_SIZE):
+            vectors.extend(
+                shared.embed(
+                    prepared[start : start + SHARED_BATCH_SIZE],
+                    model_name=model_name,
+                    model_dir=cfg.model_dir,
+                    threads=cfg.threads,
+                    idle_unload_seconds=cfg.idle_unload_seconds,
+                    timeout=cfg.timeout,
+                )
+            )
+    else:
+        vectors = local.embed(
+            prepared,
+            model_name=model_name,
+            model_dir=cfg.model_dir,
+            threads=cfg.threads,
+            idle_unload_seconds=cfg.idle_unload_seconds,
+        )
     return [vec if vec else None for vec in vectors]
 
 
@@ -448,9 +470,17 @@ def embed_text(cfg: EmbeddingConfig, text: str, *, is_query: bool = False) -> li
 
 
 def probe_embedding(cfg: EmbeddingConfig) -> int:
-    """Embed one test sentence and return its vector dimensions, or raise `IngatanError`."""
+    """Embed one test sentence and return its vector dimensions, or raise `IngatanError`.
+
+    A health check (`ingatan doctor`, `setup`, `embeddings enable`). With `shared` on it
+    still loads the local model in this process: a check that started the shared process
+    would leave it running, holding the model, long after the command that asked is gone.
+    Whether that process answers is a question of its own (`shared.status`).
+    """
     if not is_enabled(cfg):
         return 0
+    if cfg.shared:
+        cfg = dataclasses.replace(cfg, shared=False)
     model_name = effective_model(cfg)
     try:
         vec = _embed_raw(cfg, "ingatan embedding health check", is_query=True)
@@ -509,6 +539,9 @@ def store_fact_embedding(
 
     Pass `vector` when calling inside a write transaction: without it the text is embedded
     here, and a model call must never run while the database is locked for writing.
+
+    Nothing is stored, and False is returned, when the fact row is gone: a vector that
+    arrives after `forget` must not bring a trace of the fact back.
     """
     if not is_enabled(cfg):
         return False
@@ -521,15 +554,15 @@ def store_fact_embedding(
     model = effective_model(cfg)
     now = timeutil.iso(timeutil.now())
     with transaction(conn):
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO fact_embeddings (fact_id, model, dims, vec, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM facts WHERE id = ?) "
             "ON CONFLICT(fact_id) DO UPDATE SET "
             "model = excluded.model, dims = excluded.dims, vec = excluded.vec, "
             "updated_at = excluded.updated_at",
-            (fact_id, model, len(vec), blob, now),
+            (fact_id, model, len(vec), blob, now, fact_id),
         )
-    return True
+    return cursor.rowcount > 0
 
 
 def store_note_embedding(

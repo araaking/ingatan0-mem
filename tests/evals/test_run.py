@@ -313,3 +313,166 @@ def test_whole_suite_metrics_are_reported(suite: RunResult, tmp_path: Path):
 def test_every_brief_is_within_its_budget(suite: RunResult):
     briefs = [r for r in suite.records if r.kind == "brief" and r.tokens is not None]
     assert all(r.budget is not None and (r.tokens or 0) <= r.budget for r in briefs)
+
+
+# ---- deferred embedding in the harness ------------------------------------------------------
+
+
+def test_defer_flag_needs_the_local_model(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--defer"]) == 2
+    assert "--defer needs --embeddings local" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("fill", "expected"), [(True, PASS), (False, FAIL)])
+def test_in_process_driver_fills_deferred_vectors_after_each_remember(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fill: bool, expected: str
+) -> None:
+    """With `defer`, the harness does at once what a server's worker does a moment later.
+
+    The scenario needs a conflict only a model can see. Every text gets the same vector
+    here, so the pair that shares an entity is flagged as soon as both vectors exist, and
+    without the fill it never is.
+    """
+    from ingatan.facts import backfill
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import embed as embed_store
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    if not fill:
+        monkeypatch.setattr(backfill, "fill_pending", lambda ctx, **_: backfill.FillReport(0, 0, 0))
+    cfg = EmbeddingConfig(provider="local", defer=True)
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return InProcessDriver(home, token_budget=scenario.token_budget, embeddings=cfg)
+
+    scenario = next(
+        s for s in load_dir(SCENARIO_DIR) if s.id == "semantic-01-konflik-entitas-sama-kata-berbeda"
+    )
+    result = run_scenario(scenario, tmp_path / "home", factory)
+    assert result.status == expected, result.failures
+
+
+# ---- expect_first and repeat --------------------------------------------------------------------
+
+ORDER_SCENARIO: dict[str, Any] = {
+    "id": "usage-fake",
+    "title": "urutan hasil",
+    "category": "usage",
+    "source": "pattern",
+    "actors": {"asisten": TOKO},
+    "steps": [
+        {
+            "op": "remember",
+            "key": "tepat",
+            "text": "Supplier gula pasir adalah toko-a.",
+            "keywords": ["pemasok"],
+            "entities": ["gula pasir"],
+            "kind": "stable",
+        },
+        {
+            "op": "remember",
+            "key": "lain",
+            "text": "Jadwal libur karyawan diumumkan tiap Jumat.",
+            "keywords": ["cuti"],
+            "entities": ["karyawan"],
+            "kind": "stable",
+        },
+    ],
+}
+
+
+def _ordered(first: str, **extra: Any) -> Scenario:
+    data = json.loads(json.dumps(ORDER_SCENARIO))
+    data["steps"].append(
+        {"op": "recall", "query": "supplier gula pasir", "expect_first": first, **extra}
+    )
+    return parse_scenario(data)
+
+
+def test_expect_first_passes_when_that_fact_leads_and_fails_otherwise(tmp_path: Path) -> None:
+    right = run_scenario(_ordered("tepat"), tmp_path / "right")
+    assert right.status == PASS, right.failures
+    wrong = run_scenario(_ordered("lain"), tmp_path / "wrong")
+    assert wrong.status == FAIL
+    assert "expected first: lain" in wrong.failures[0]
+
+
+def test_repeat_recalls_that_many_times_and_judges_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class Counting(InProcessDriver):
+        def recall(
+            self, actor: Actor, query: str, *, limit: int, include_closed: bool
+        ) -> list[Hit]:
+            calls.append(query)
+            return super().recall(actor, query, limit=limit, include_closed=include_closed)
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return Counting(home, token_budget=scenario.token_budget)
+
+    result = run_scenario(_ordered("tepat", repeat=4), tmp_path / "home", factory)
+    assert result.status == PASS, result.failures
+    assert calls == ["supplier gula pasir"] * 4
+    assert len([r for r in result.records if r.kind == "recall"]) == 1
+
+
+# ---- links and related facts ---------------------------------------------------------------------
+
+GRAPH = "graph-01-dua-lompatan"
+
+
+def test_the_graph_scenario_passes_with_its_links_and_fails_without(tmp_path: Path) -> None:
+    path = SCENARIO_DIR / f"{GRAPH}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    with_links = run_scenario(parse_scenario(data), tmp_path / "with")
+    assert with_links.status == PASS, with_links.failures
+    # The same scenario without its `link` steps: the fact two hops away is out of reach.
+    data["steps"] = [step for step in data["steps"] if step["op"] != "link"]
+    without = run_scenario(parse_scenario(data), tmp_path / "without")
+    assert without.status == FAIL
+    assert "expected among the related facts" in without.failures[0]
+
+
+def test_a_related_fact_is_judged_for_leaks_like_any_result(tmp_path: Path) -> None:
+    class LeakyRelated(InProcessDriver):
+        """Hands back, as "related", a private fact of another agent."""
+
+        def recall(
+            self, actor: Actor, query: str, *, limit: int, include_closed: bool
+        ) -> list[Hit]:
+            hits = super().recall(actor, query, limit=limit, include_closed=include_closed)
+            other = Actor("tokoku", "seo-agent")
+            rows = self.ctx(other).business.execute(
+                "SELECT id, text, tier FROM facts WHERE agent = 'seo-agent'"
+            )
+            self.last_related = [Hit(r["id"], r["text"], "valid", r["tier"]) for r in rows]
+            return hits
+
+    def factory(home: Path, scenario: Scenario) -> MemoryDriver:
+        return LeakyRelated(home, token_budget=scenario.token_budget)
+
+    data = {
+        "id": "leak-related-fake",
+        "title": "fakta terkait milik agen lain",
+        "category": "leak-agent",
+        "source": "pattern",
+        "actors": {"asisten": TOKO, "seo": SEO},
+        "steps": [
+            {"op": "remember", "key": "mine", "text": "Harga kaos Rp 65.000.", "keywords": ["x"]},
+            {
+                "op": "remember",
+                "key": "theirs",
+                "actor": "seo",
+                "text": "Catatan pribadi agen SEO.",
+                "keywords": ["y"],
+            },
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["mine"]},
+        ],
+    }
+    result = run_scenario(parse_scenario(data), tmp_path / "home", factory)
+    assert result.status == FAIL
+    assert any("LEAK" in failure for failure in result.failures)
+    assert sum(r.leaked for r in result.records) == 1

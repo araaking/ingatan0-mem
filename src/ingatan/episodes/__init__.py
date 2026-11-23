@@ -20,8 +20,11 @@ __all__ = [
     "TRUNCATE_AT",
     "Episode",
     "capture",
+    "count_failure",
+    "left_out",
     "mark_processed",
     "offer",
+    "pending",
     "purge",
     "record",
 ]
@@ -149,6 +152,42 @@ def offer(ctx: Context, limit: int = MAX_OFFER) -> list[Episode]:
                 )
             )
     return offered
+
+
+def pending(ctx: Context, limit: int, *, max_failures: int | None = None) -> list[Episode]:
+    """The calling agent's oldest pending episodes, read without counting as an offer.
+
+    `offer` is for showing an episode to an agent, and retires it after a few showings. A
+    program that reads episodes (the optional fact extraction) uses this instead and marks
+    each one processed itself. With `max_failures`, an episode that program failed on that
+    often (`count_failure`) is left out, so it cannot keep newer ones from being read.
+    """
+    rows = ctx.business.execute(
+        "SELECT * FROM episodes WHERE agent = :agent AND status = 'pending' "
+        "AND (:max IS NULL OR extract_failures < :max) ORDER BY id ASC LIMIT :limit",
+        {"agent": ctx.scope.agent, "max": max_failures, "limit": max(limit, 0)},
+    ).fetchall()
+    return [_episode(row) for row in rows]
+
+
+def count_failure(ctx: Context, episode_id: int) -> None:
+    """Note that a program could not read one of the calling agent's episodes."""
+    with transaction(ctx.business):
+        ctx.business.execute(
+            "UPDATE episodes SET extract_failures = extract_failures + 1 "
+            "WHERE id = ? AND agent = ?",
+            (episode_id, ctx.scope.agent),
+        )
+
+
+def left_out(ctx: Context, max_failures: int) -> int:
+    """How many of the calling agent's pending episodes `pending` leaves out at that limit."""
+    row = ctx.business.execute(
+        "SELECT count(*) FROM episodes WHERE agent = ? AND status = 'pending' "
+        "AND extract_failures >= ?",
+        (ctx.scope.agent, max_failures),
+    ).fetchone()
+    return int(row[0])
 
 
 def mark_processed(ctx: Context, episode_id: int) -> None:

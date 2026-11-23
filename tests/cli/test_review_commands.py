@@ -444,3 +444,44 @@ def test_hook_that_calls_sys_exit_still_exits_zero(
     monkeypatch.setenv("INGATAN_HOME", str(tmp_path))
     fake_hooks(monkeypatch, run)
     assert invoke("hook", "Stop").exit_code == 0
+
+
+def test_proposals_list_marks_extracted(cli_ctx: Context, invoke: Invoke) -> None:
+    facts.remember(
+        cli_ctx,
+        "Supplier gula pasir adalah toko-a.",
+        keywords=["pemasok"],
+        tier="business",
+        as_proposal=True,
+        source={"extracted_by": "ollama/local-model"},
+    )
+    facts.remember(
+        cli_ctx, "Jam buka toko 08.00.", keywords=["jadwal"], tier="business", as_proposal=True
+    )
+    result = invoke("proposals", "list")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    marked = [ln for ln in lines if "extracted by ollama/local-model" in ln]
+    assert len(marked) == 1
+    assert sum("extracted by" in ln for ln in lines) == 1  # the hand-written one is not marked
+
+
+def test_approve_says_which_links_it_did_not_make(cli_ctx: Context, invoke: Invoke) -> None:
+    old = rem(
+        cli_ctx, "Ongkir ke Bandung Rp 12.000 per kg.", entities=["ongkir Bandung"], tier="business"
+    )
+    proposed = facts.remember(
+        cli_ctx,
+        "Ongkir ke Bandung Rp 15.000 per kg.",
+        keywords=["harga"],
+        entities=["ongkir Bandung"],
+        tier="business",
+        as_proposal=True,
+        related_to=[old],
+        source={"extracted_by": "ollama/local-model"},
+    )
+    assert proposed.proposal_id is not None
+    result = invoke("proposals", "approve", proposed.proposal_id)
+    assert result.exit_code == 0, result.output
+    assert f"Not linked to {old}" in result.output
+    assert "possible conflict" in result.output

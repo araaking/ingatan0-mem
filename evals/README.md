@@ -33,6 +33,33 @@ The default run uses no embedding model, like the default installation. `uv run 
 
 This is the check that enabling a model does not break anything the word index gets right: stale facts stay marked, nothing leaks, an off-topic question still returns nothing. A scenario with `"needs": "embeddings"` tests something only a model can do; it is `SKIP`ped in the default run, and `tests/evals` verifies that it fails when forced to run without a model. CI runs the default mode only, because it has no model.
 
+`--defer` (with `--embeddings local`) runs every scenario the way `[embeddings] defer = true` does: each fact is saved without a vector and filled in afterwards. A server does that in a background thread; the harness does it right after each `remember`, so the next step sees what a user would see a moment later. It writes `evals/reports/latest-semantic-defer.md`. The scenario that needs a model must still pass: a conflict found late is still found.
+
+## The extraction eval
+
+`uv run python -m evals.extraction` measures the optional fact extraction (`ingatan extract`). It needs the model configured under `[llm]`, so CI does not run it, and it writes `evals/reports/latest-extraction.md`. During the run a connection may go only to the host and port of `[llm] api_base` (or the provider's default); any other attempt is refused and fails the run.
+
+A case (`evals/extraction/cases/<id>.json`) is a few captured exchanges, the facts a careful reader would take from them, and what must not come out:
+
+```json
+{
+  "id": "ex-01-harga-berubah",
+  "title": "short description",
+  "episodes": [{"user": "...", "assistant": "..."}],
+  "expected": [{"name": "harga baru", "all_of": ["kopi susu"], "values": ["18.000"]}],
+  "forbidden": ["20.000", "kata sandi"]
+}
+```
+
+Each case runs in its own throwaway data folder: its episodes are recorded, extraction reads them, and what reached the proposal queue (after Ingatan's own checks, which is what a user would be asked to approve) is judged without a model:
+
+- **correct**: an extracted fact that contains every word of `all_of` and every value of `values` of one expected fact. Numbers are compared by value, the way `ingatan extract` compares them: "15.000", "15,000" and "15000" are one number, and "1.5" is not "15".
+- **wrong**: an extracted fact the case itself shows to be wrong. It contains a `forbidden` word or value, or it holds every word of `all_of` of an expected fact with other values, or the case expects nothing (an empty `expected` says the right answer is nothing).
+- **unlisted**: an extracted fact that matches no expected fact and holds nothing forbidden. It may be a true fact the case does not list, or an invention. A list cannot tell those apart, so the count stands on its own and is called neither: read the facts of a case before you call them inventions, and add the true ones to `expected`.
+- **found**: an expected fact that at least one extracted fact matches.
+
+The report gives the four as shares, plus how many items Ingatan dropped before the queue (a number that is not in the episode, a malformed item, more than eight per episode) and how many episodes the model could not be read for. `tests/evals/test_extraction_metrics.py` covers the judging and one run with a stand-in model.
+
 ## Scenario format
 
 One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-folders are read too, see `scenarios/incidents/`).
@@ -51,7 +78,7 @@ One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-fol
 }
 ```
 
-- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold) or `semantic` (what only an embedding model can do).
+- `category`: `stale`, `supersede`, `leak-agent`, `leak-business`, `inflection`, `partial-word`, `brief`, `conflict`, `proposal`, `forget`, `noise` (questions about things the memory does not hold), `semantic` (what only an embedding model can do) `usage` (how often and how recently a fact was recalled, and what that may and may not change in the order of results) or `graph` (facts reached through links, not through the words of the query).
 - `source`: `pattern` (written from a known pattern) or `incident` (a real incident from the project owner).
 - `needs` (optional): `keywords` means the scenario must depend on the agent-supplied keywords (the query shares no word or fragment with the expected fact's text or entities). `trigram` means it must depend on the trigram index (the query is only a fragment of a word, with no keyword help). `tests/evals` lints these two statically so a scenario cannot pass for the wrong reason. `embeddings` means it needs an embedding model: it is skipped without one, and `tests/evals` runs it without one to prove that it then fails.
 - `actors`: named callers, each a business and an agent. The first one is the default. The clock is frozen at 2026-11-11 09:00 UTC at the start of each scenario.
@@ -67,16 +94,17 @@ Steps run in order. Common fields: `op`, `actor` (default: the first actor), `ex
 | `forget` | `key`, optional `by_user` (the user's CLI forget) |
 | `approve`, `reject` | `key` of a proposal (the user's decision) |
 | `advance_days` | `days` |
-| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all) |
+| `link` | `from`, `to` (keys of facts), optional `relation` (`related_to`, the default, or `part_of`) |
+| `recall` | `query` or `query_text_of` (a key whose text is used verbatim), optional `limit` (default 10), `include_closed`, and at least one of `expect_top5` (keys that must be in the first five), `expect_absent` (keys that must not be returned at all, compared by id and by text), `expect_status` (key to exact status), `expect_none` (`true`: the query must return nothing at all), `expect_first` (one key: that fact must be result number one), `expect_related` (keys that must be among the related facts returned beside the results, which is where a fact reached through a link appears). Optional `repeat` (1 to 50): the query is run that many times and only the last result is judged, which is how a scenario makes a fact used, since every recall raises the use count of what it returns |
 | `brief` | optional `expect_in_section` (section to keys), `expect_not_in` (a list of keys that must be nowhere in the brief, or a section to keys map), `max_tokens`, `expect_pending` (the pending-proposals count the brief states) |
 
 Brief sections are `check first`, `global`, `business` and `agent`.
 
-Every `recall` and `brief` step is also judged for leaks and stale results, whatever its own expectations say.
+Every `recall` and `brief` step is also judged for leaks and stale results, whatever its own expectations say. The related facts of a `recall` are judged with its results: they reach the caller all the same.
 
 ## Driver
 
-`evals/driver.py` defines `MemoryDriver`, a small protocol (remember, supersede, confirm, forget, approve, reject, recall, brief, plus the oracle calls `inspect` and `pending_texts`). `InProcessDriver` calls `facts`, `search`, `proposals` and `brief` directly. A driver that goes through the MCP server only has to implement the same protocol. Pass it with `run_all(..., driver_factory)` or `main(argv, driver_factory=...)`.
+`evals/driver.py` defines `MemoryDriver`, a small protocol (remember, supersede, confirm, forget, approve, reject, recall, link, brief, plus the oracle calls `inspect` and `pending_texts`). A driver that returns related facts beside its recall results leaves them in `last_related` after each `recall`. `InProcessDriver` calls `facts`, `search`, `proposals` and `brief` directly. A driver that goes through the MCP server only has to implement the same protocol. Pass it with `run_all(..., driver_factory)` or `main(argv, driver_factory=...)`.
 
 ## Adding a scenario
 

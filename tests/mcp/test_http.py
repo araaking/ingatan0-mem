@@ -501,3 +501,18 @@ def test_the_lifespan_protocol_starts_and_stops_cleanly(ingatan_home: Path) -> N
 )
 def test_is_loopback(host: str, expected: bool) -> None:
     assert is_loopback(host) is expected
+
+
+def test_the_fill_worker_runs_for_as_long_as_the_app_does(ingatan_home: Path) -> None:
+    import threading
+
+    def alive() -> list[str]:
+        return [t.name for t in threading.enumerate() if t.name == "ingatan-backfill"]
+
+    async def go() -> list[str]:
+        async with serving(ingatan_home):
+            return alive()
+
+    assert alive() == []
+    assert run_async(go()) == ["ingatan-backfill"]
+    assert alive() == []

@@ -291,3 +291,74 @@ def test_lint_checks_trigram_scenarios():
     assert any("without the trigram index" in p for p in lint_dependencies(parse_scenario(data)))
     data["steps"][2]["query"] = "kao"  # a fragment of 'kaos'
     assert lint_dependencies(parse_scenario(data)) == []
+
+
+# ---- expect_first and repeat (the usage scenarios) ------------------------------------------
+
+
+def test_expect_first_and_repeat_are_accepted() -> None:
+    scenario = parse_scenario(
+        with_step({"op": "recall", "query": "harga kaos", "expect_first": "k", "repeat": 5})
+    )
+    assert scenario.steps[-1].data["expect_first"] == "k"
+    assert scenario.steps[-1].data["repeat"] == 5
+    assert "usage" in CATEGORIES
+
+
+@pytest.mark.parametrize(
+    ("step", "message"),
+    [
+        ({"op": "recall", "query": "harga kaos", "expect_first": "nope"}, "unknown key 'nope'"),
+        ({"op": "recall", "query": "harga kaos", "expect_first": ["k"]}, "'expect_first' must be"),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_first": "k", "expect_none": True},
+            "cannot be combined",
+        ),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["k"], "repeat": 0},
+            "'repeat' must be",
+        ),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_top5": ["k"], "repeat": True},
+            "'repeat' must be",
+        ),
+    ],
+)
+def test_expect_first_and_repeat_are_validated(step: dict[str, Any], message: str) -> None:
+    with pytest.raises(ScenarioError, match=message):
+        parse_scenario(with_step(step))
+
+
+# ---- link and expect_related (the graph scenarios) -----------------------------------------
+
+
+def test_link_and_expect_related_are_accepted() -> None:
+    data = copy.deepcopy(VALID)
+    data["steps"] = [
+        VALID["steps"][0],
+        {"op": "remember", "key": "m", "text": "Kaos dicetak toko-b.", "keywords": ["cetak"]},
+        {"op": "link", "from": "k", "to": "m"},
+        {"op": "link", "from": "m", "to": "k", "relation": "part_of"},
+        {"op": "recall", "query": "harga kaos", "expect_related": ["m"]},
+    ]
+    scenario = parse_scenario(data)
+    assert [s.op for s in scenario.steps] == ["remember", "remember", "link", "link", "recall"]
+    assert "graph" in CATEGORIES
+
+
+@pytest.mark.parametrize(
+    ("step", "message"),
+    [
+        ({"op": "link", "from": "k", "to": "nope"}, "unknown key 'nope'"),
+        ({"op": "link", "from": "k"}, "missing field"),
+        ({"op": "link", "from": "k", "to": "k", "relation": "owns"}, "'relation' must be one of"),
+        ({"op": "recall", "query": "harga kaos", "expect_related": ["nope"]}, "unknown key 'nope'"),
+        (
+            {"op": "recall", "query": "harga kaos", "expect_related": ["k"], "expect_none": True},
+            "cannot be combined",
+        ),
+    ],
+)
+def test_link_and_expect_related_are_validated(step: dict[str, Any], message: str) -> None:
+    with pytest.raises(ScenarioError, match=message):
+        parse_scenario(with_step(step))

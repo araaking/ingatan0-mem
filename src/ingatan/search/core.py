@@ -55,6 +55,33 @@ EXPANDED_WEIGHT = 0.25
 # default review interval, so a fact starts to lose ground about when it is due for review.
 RECENCY_BOOST = 0.04
 RECENCY_HALF_LIFE_DAYS = 30.0
+# Usage: a fact that `recall` returned often and recently gains up to USAGE_BOOST. The score
+# is multiplied by 1 + USAGE_BOOST * often * recent, where `often` is
+# 1 - 0.5 ** (use_count / USAGE_COUNT_SATURATION) and `recent` is
+# 0.5 ** (days_since_last_used / USAGE_HALF_LIFE_DAYS). A fact never recalled keeps its score.
+#
+# What the 1% bound gives. It is smaller than the gap between two neighbouring ranks of one
+# signal among the first forty (1/100 against 1/101), so within a single signal usage cannot
+# reorder two facts. Fused scores of facts that several signals rank differently can be
+# closer than 1%, and there usage decides: that is what it is for, and it is why the bound
+# is no larger. The count saturates (five recalls give half the effect, twenty give 94%) and
+# the effect halves every 30 days without use, because `recall` itself raises the count:
+# without both, what was returned once would be returned more and more.
+#
+# What keeps a popular wrong value down. A fact named by an unresolved conflict pair gets no
+# boost at all: its popularity is exactly what is in doubt. That, and not the bound, is what
+# puts a newer fact ahead of the much recalled one it corrects. Where the two were never
+# paired (no shared entity, or `check_conflicts=False`), the older one can still lead a
+# fact that is only a few days younger: freshness separates two volatile facts by less than
+# 1% until they are about twelve days apart, and stable facts not at all.
+#
+# Measured with `python -m evals` without an embedding model (48 scenarios, 2026-11-23):
+# `usage-02-pemakaian-memecah-seri` passes (xfail before), `usage-01-fakta-populer-yang-salah`
+# still passes (through the conflict rule), no other scenario changes, recall@5 100.0% over
+# 55 checks. Not run with a model.
+USAGE_BOOST = 0.01
+USAGE_HALF_LIFE_DAYS = 30.0
+USAGE_COUNT_SATURATION = 5
 # A lexical hit this far below the best hit of its own index and file is a weak tail hit.
 LEXICAL_TAIL_RATIO = 0.25
 NOTE_TAIL_RATIO = 0.35
@@ -69,6 +96,9 @@ ROLE_BOOST = 0.25 / (RRF_K + 1)
 # Default maximum number of document excerpts and 1-hop related facts returned alongside hits.
 DEFAULT_NOTES_LIMIT = 2
 MAX_RELATED = 3
+# How many links away a related fact may be. Two reaches the fact behind a neighbour (an
+# order, its vendor, the vendor's closing day); more would return what nobody asked about.
+MAX_HOPS = 2
 
 # Conflict detection tuning (prevents false positives on generic entities and noisy overlaps).
 GENERIC_ENTITY_MIN_FACTS = 10
@@ -361,6 +391,52 @@ def _freshness_factor(row: sqlite3.Row, reference: datetime) -> float:
     return 1.0 + RECENCY_BOOST * (freshness - 0.5)
 
 
+def _usage_factor(row: sqlite3.Row, reference: datetime) -> float:
+    """Score multiplier between 1 and 1 + USAGE_BOOST (see the constants). Never used: 1."""
+    count = int(row["use_count"] or 0)
+    last_used = row["last_used"]
+    if count <= 0 or not last_used:
+        return 1.0
+    try:
+        used = timeutil.parse(str(last_used))
+    except ValidationError:
+        return 1.0
+    idle_days = max(0.0, (reference - used).total_seconds() / 86400.0)
+    often = 1.0 - 0.5 ** (count / USAGE_COUNT_SATURATION)
+    recent = 0.5 ** (idle_days / USAGE_HALF_LIFE_DAYS)
+    return 1.0 + USAGE_BOOST * often * recent
+
+
+def _open_conflict_ids(ctx: Context) -> set[str]:
+    """Every fact whose status would say `possible conflict`, found in one pass.
+
+    The rule of `_in_open_conflict`: an unresolved pair counts for a fact only while the
+    other fact of the pair is still valid and visible to the caller. Pairs live in the
+    business file; the facts they name may be in either file.
+    """
+    pairs = [
+        (str(row["fact_a"]), str(row["fact_b"]))
+        for row in ctx.business.execute(
+            "SELECT fact_a, fact_b FROM conflicts WHERE resolved_at IS NULL"
+        )
+    ]
+    if not pairs:
+        return set()
+    named = json.dumps(sorted({fact_id for pair in pairs for fact_id in pair}))
+    live: set[str] = set()
+    for conn in ctx.connections():
+        live.update(
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM facts WHERE id IN (SELECT value FROM json_each(:ids)) "
+                f"AND {is_valid_sql()} AND {ctx.visible_sql(conn)}",
+                {"ids": named, "now": _now(), **ctx.params},
+            )
+        )
+    # Both must be live: a fact the caller cannot see is never named, not even here.
+    return {fact_id for pair in pairs if live.issuperset(pair) for fact_id in pair}
+
+
 def _row_blob(row: sqlite3.Row) -> str:
     ents = " ".join(_json_list(row["entities"]))
     kws = " ".join(_json_list(row["keywords"]))
@@ -388,6 +464,16 @@ def _matched_term_count(blob: str, terms: Sequence[str], extra: Sequence[str]) -
     return hits
 
 
+def _neighbor_ids(ctx: Context, fact_id: str) -> list[str]:
+    """The facts linked to `fact_id` in either direction, in the order they were linked."""
+    rows = ctx.business.execute(
+        "SELECT CASE WHEN src_id = :id THEN dst_id ELSE src_id END AS other "
+        "FROM edges WHERE src_id = :id OR dst_id = :id ORDER BY id ASC",
+        {"id": fact_id},
+    ).fetchall()
+    return [str(row["other"]) for row in rows]
+
+
 def _related_hits(
     ctx: Context,
     hits: Sequence[FactHit],
@@ -397,40 +483,39 @@ def _related_hits(
     as_of: str | None = None,
     limit: int = MAX_RELATED,
 ) -> list[FactHit]:
-    """1-hop traversal over `edges` for valid visible facts linked to the top `hits`."""
+    """Valid visible facts linked to the top `hits`, up to `MAX_HOPS` links away.
+
+    Breadth first: every direct neighbour comes before anything behind it, so a second hop
+    is shown only in the room the first hop leaves under `limit`. A fact that is closed, or
+    that the caller cannot see, is not shown and is not walked through either: nothing is
+    reached by way of a fact one may not read.
+    """
     if not hits or limit <= 0:
         return []
     seen = {h.id for h in hits}
-    neighbor_ids: list[str] = []
-    for hit in hits:
-        rows = ctx.business.execute(
-            "SELECT CASE WHEN src_id = :id THEN dst_id ELSE src_id END AS other "
-            "FROM edges WHERE src_id = :id OR dst_id = :id ORDER BY id ASC",
-            {"id": hit.id},
-        ).fetchall()
-        for r in rows:
-            other = str(r["other"])
-            if other not in seen:
-                seen.add(other)
-                neighbor_ids.append(other)
-                if len(neighbor_ids) >= limit * 2:
-                    break
-        if len(neighbor_ids) >= limit * 2:
-            break
-    if not neighbor_ids:
-        return []
     related: list[FactHit] = []
-    for fid in neighbor_ids:
-        for conn in ctx.connections():
-            row = conn.execute(
-                f"SELECT f.* FROM facts f WHERE f.id = :id AND {validity_sql} "
-                f"AND {ctx.visible_sql(conn, alias='f')}",
-                {"id": fid, "now": time_param, **ctx.params},
-            ).fetchone()
-            if row is not None:
-                related.append(_hit(ctx, _Candidate(row, conn), as_of=as_of))
-                break
-        if len(related) >= limit:
+    frontier = [h.id for h in hits]
+    for _hop in range(MAX_HOPS):
+        reached: list[str] = []
+        for fact_id in frontier:
+            for other in _neighbor_ids(ctx, fact_id):
+                if other in seen:
+                    continue
+                seen.add(other)
+                for conn in ctx.connections():
+                    row = conn.execute(
+                        f"SELECT f.* FROM facts f WHERE f.id = :id AND {validity_sql} "
+                        f"AND {ctx.visible_sql(conn, alias='f')}",
+                        {"id": other, "now": time_param, **ctx.params},
+                    ).fetchone()
+                    if row is not None:
+                        related.append(_hit(ctx, _Candidate(row, conn), as_of=as_of))
+                        reached.append(other)
+                        break
+                if len(related) >= limit:
+                    return related
+        frontier = reached
+        if not frontier:
             break
     return related
 
@@ -447,7 +532,7 @@ def recall(
     category: str | None = None,
     include_related: bool = True,
 ) -> RecallResult:
-    """Facts (both files, visibility applied), document notes, and 1-hop related facts."""
+    """Facts (both files, visibility applied), document notes, and related facts."""
     if category is not None and category not in CATEGORIES:
         raise ValidationError(
             f"Unknown category '{category}'. Use one of: {', '.join(CATEGORIES)}."
@@ -619,6 +704,15 @@ def recall(
     reference = timeutil.parse(time_param)
     for fact_id, cand in pool.items():
         scores[fact_id] *= _freshness_factor(cand.row, reference)
+
+    # Usage: a bounded boost for what was recalled often and recently (see USAGE_BOOST). Not
+    # for a look into the past, where today's usage says nothing, and not for a fact whose
+    # truth is in doubt.
+    if resolved_as_of is None and any(int(c.row["use_count"] or 0) > 0 for c in pool.values()):
+        doubted = _open_conflict_ids(ctx)
+        for fact_id, cand in pool.items():
+            if fact_id not in doubted:
+                scores[fact_id] *= _usage_factor(cand.row, reference)
 
     # ISO strings sort as text, so map them to ordinals for the tie-break below.
     stamps = sorted({c.row["valid_from"] for c in pool.values()})

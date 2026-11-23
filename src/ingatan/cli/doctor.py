@@ -135,9 +135,29 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]
             notes.append(f"embeddings: local ({model_name}; threads={emb.threads}, {idle_label})")
         else:
             notes.append(f"embeddings: {emb.provider} ({model_name})")
+        if emb.defer:
+            notes.append("defer: on (remember saves first, the server embeds afterwards)")
+        if emb.shared and emb.provider == "local":
+            notes.append(f"shared model process: {_shared_process_note()}")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business, scope
+
+
+def _shared_process_note() -> str:
+    """Whether the one process that holds the model for this data folder answers."""
+    from ingatan.search import shared
+
+    running = shared.status()
+    if running is not None:
+        return f"running (pid {running.pid}, port {running.port} on 127.0.0.1)"
+    leftover = shared.state_file()
+    if leftover.is_file():
+        return (
+            f"does not answer ({leftover} is left over from an earlier one; "
+            "a server starts a new one on first use)"
+        )
+    return "not running (a server starts it on first use)"
 
 
 _FALLBACK_NOTE = (
@@ -220,9 +240,27 @@ def _vector_notes(scope: Scope, model_name: str) -> list[str]:
         note = f"{missing} of {total} valid fact(s) have no vector for this model"
         if replaced:
             note += f" ({replaced} of them have one from another model)"
-        notes.append(
-            note + ". Run `ingatan reindex`; until then those facts are found by words only."
-        )
+        bare = missing - replaced
+        until = " Until then those facts are found by words only."
+        if not scope.embeddings.defer:
+            note += ". Run `ingatan reindex`; until then those facts are found by words only."
+        elif not replaced:
+            note += (
+                ". With `defer` on, the server embeds them in the background; "
+                "`ingatan reindex` does it now." + until
+            )
+        elif bare:
+            note += (
+                f". With `defer` on, the server embeds the facts without any vector ({bare}) "
+                f"in the background. A vector of another model ({replaced}) is never replaced "
+                "that way: run `ingatan reindex`." + until
+            )
+        else:
+            note += (
+                ". A vector of another model is never replaced in the background, also with "
+                "`defer` on: run `ingatan reindex`." + until
+            )
+        notes.append(note)
     if others:
         notes.append(
             f"{others} private fact(s) of other agents have no vector either. "

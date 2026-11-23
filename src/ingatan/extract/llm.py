@@ -1,0 +1,147 @@
+"""One chat call to the configured model, over the standard library alone.
+
+Two providers, the same choice the embedding providers offer for a model of your own:
+`ollama` (a model on this machine, `/api/chat`) and `openai` (any OpenAI-compatible
+endpoint, `/chat/completions`). Nothing is sent unless a provider and a model are set, the
+key travels in a header and never in a URL, and every failure is one `IngatanError`.
+
+A failure is `Unreachable` when it says nothing about the text that was sent: the endpoint
+cannot be connected to, is busy or refuses the key. A request the endpoint refuses as such
+(HTTP 400, 413, 422: too long, malformed for this model) and an empty answer are about the
+text, and are a plain `IngatanError`. `TimedOut` is in between: the request went out and the
+model did not finish in time, which a long text on a slow model does and a hung endpoint
+does too. The caller counts the second and the third kind against the text.
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Any
+
+from ingatan.errors import IngatanError
+from ingatan.scope import LlmConfig
+
+__all__ = [
+    "DEFAULT_BASES",
+    "DEFAULT_KEY_ENV",
+    "TimedOut",
+    "Unreachable",
+    "chat",
+    "ensure_configured",
+    "model_label",
+]
+
+DEFAULT_BASES = {
+    "ollama": "http://localhost:11434",
+    "openai": "https://api.openai.com/v1",
+}
+DEFAULT_KEY_ENV = "OPENAI_API_KEY"
+# Bad request, payload too large, unprocessable: the endpoint read the request and said no.
+_REFUSED_REQUEST = (400, 413, 422)
+
+
+class Unreachable(IngatanError):
+    """The endpoint gave no answer, for a reason that has nothing to do with the text."""
+
+
+class TimedOut(IngatanError):
+    """The request was sent and no answer came within `[llm] timeout`."""
+
+
+def model_label(cfg: LlmConfig) -> str:
+    """`provider/model`, the name an extracted fact carries as its origin."""
+    return f"{cfg.provider}/{cfg.model.strip()}"
+
+
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: float) -> Any:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _content(provider: str, data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    message: Any = None
+    if provider == "ollama":
+        message = data.get("message")  # pyright: ignore[reportUnknownMemberType]
+    else:
+        choices = data.get("choices")  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")  # pyright: ignore[reportUnknownMemberType]
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")  # pyright: ignore[reportUnknownMemberType]
+    return content.strip() if isinstance(content, str) else ""
+
+
+def ensure_configured(cfg: LlmConfig) -> None:
+    """Raise `IngatanError` unless a provider and a model are set. Sends nothing."""
+    if cfg.provider == "none":
+        raise IngatanError(
+            'Fact extraction is off: [llm] provider is "none". To use it, set [llm] provider '
+            "(ollama or openai) and model in .ingatan.toml or in config.toml of the data folder."
+        )
+    if not cfg.model.strip():
+        raise IngatanError(
+            f"[llm] model is not set. Name the {cfg.provider} model that should read the "
+            "conversations: Ingatan picks none for you."
+        )
+
+
+def chat(cfg: LlmConfig, system: str, user: str) -> str:
+    """The model's answer to one system and one user message. Raises `IngatanError`."""
+    ensure_configured(cfg)
+    model = cfg.model.strip()
+    base = (cfg.api_base or DEFAULT_BASES[cfg.provider]).rstrip("/")
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+    }
+    headers: dict[str, str] = {}
+    if cfg.provider == "ollama":
+        url = f"{base}/api/chat"
+    else:
+        url = f"{base}/chat/completions"
+        key = (os.environ.get(cfg.api_key_env or DEFAULT_KEY_ENV) or "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+    try:
+        data = _post_json(url, payload, headers, cfg.timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code in _REFUSED_REQUEST:
+            raise IngatanError(
+                f"The {cfg.provider} model {model} at {base} refused the request "
+                f"(HTTP {exc.code}). The text may be too long for it."
+            ) from exc
+        raise Unreachable(
+            f"The {cfg.provider} model {model} at {base} did not answer: HTTP {exc.code}"
+        ) from exc
+    except TimeoutError as exc:
+        # Not wrapped in URLError: urllib wraps what fails while connecting and sending, so
+        # a bare timeout is one that ran out while waiting for the answer.
+        raise TimedOut(
+            f"The {cfg.provider} model {model} at {base} did not finish within {cfg.timeout:g} s."
+        ) from exc
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+        raise Unreachable(
+            f"The {cfg.provider} model {model} at {base} did not answer: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    answer = _content(cfg.provider, data)
+    if not answer:
+        raise IngatanError(f"The {cfg.provider} model {model} returned an empty answer.")
+    return answer

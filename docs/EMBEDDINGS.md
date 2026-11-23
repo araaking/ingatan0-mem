@@ -13,14 +13,24 @@ uv tool install --editable /path/to/ingatan \
   --with numpy --with onnxruntime --with sentencepiece
 # (in a plain virtual environment: pip install numpy onnxruntime sentencepiece)
 
-ingatan embeddings pull   # downloads the model once (123 MB) and verifies it
+ingatan embeddings enable   # model (123 MB, once), provider = "local", vectors, a check
 ```
 
 The three packages are the `vector` extra of the package (`pip install -e '.[vector]'` in a
-checkout does the same). Ingatan is not on PyPI yet, so `pip install 'ingatan[vector]'` does
-not work today.
+checkout does the same). Ingatan is not on PyPI yet, so `uv tool install "ingatan[vector]"`
+does not work today.
 
-Then, in `.ingatan.toml` or in `config.toml` of the data folder:
+`ingatan embeddings enable` does the rest in one step and stops at the first thing it cannot
+do: it refuses to start when a package is missing (nothing is downloaded or changed), downloads
+the model if it is not on disk, writes `provider = "local"` under `[embeddings]` in
+`.ingatan.toml` (in `config.toml` of the data folder with `--global`, or when the folder has
+no project file) without touching anything else in that file, embeds the facts that already
+exist (`--no-reindex` skips that), and embeds one sentence as a proof. It exits non-zero when
+an environment variable or another config file overrides what it wrote. `ingatan setup` runs
+the same steps when you answer yes to semantic search.
+
+By hand it is still three steps: `ingatan embeddings pull`, then in `.ingatan.toml` or in
+`config.toml` of the data folder
 
 ```toml
 [embeddings]
@@ -30,9 +40,9 @@ provider = "local"
 and `ingatan reindex` to embed the facts that already exist. `ingatan doctor` reports
 anything that is still missing, with the command that fixes it.
 
-`ingatan embeddings pull` is the only Ingatan command that downloads anything (a remote
-provider, if you configure one, sends text to the endpoint you name). The server
-never downloads anything: with the provider set to `local` and no model on disk it answers
+Only `ingatan embeddings pull` downloads anything, and the two commands that run it for you,
+`embeddings enable` and `setup` (a remote provider, if you configure one, sends text to the
+endpoint you name). The server never downloads anything: with the provider set to `local` and no model on disk it answers
 from the word index and `doctor` says why. Each file is pinned to a repository revision and
 a SHA-256 sum; a download that does not match is discarded. `HF_ENDPOINT` points the
 command at a mirror.
@@ -166,6 +176,135 @@ python scripts/calibrate_embeddings.py --provider ollama --model embeddinggemma
 ```
 
 Whether a larger model does better on Indonesian paraphrases has not been measured here.
+
+## Saving first, embedding afterwards (`defer`)
+
+By default `remember` waits for the model: it embeds the new fact before it saves it, uses
+the vector for the meaning-based conflict check, and stores it with the fact. In HTTP mode
+that call also holds up every other request for as long as the model runs.
+
+```toml
+[embeddings]
+provider = "local"
+defer = true        # or INGATAN_EMBED_DEFER=1
+```
+
+With `defer` on, `remember` does not call the model at all. The fact is saved at once, with
+one row in `embed_queue` (migration 0004) that says a vector is owed, and a background
+thread of the server (stdio and HTTP alike) does the rest a moment later: it embeds the fact
+outside any transaction, stores the vector, and runs the conflict check that needed it.
+
+What changes for the agent, in the words of the roadmap this came from: with `defer` on,
+`remember` no longer reports a meaning-only conflict in its own result. The word-based check
+still runs at write time and is reported as before. A pair that only the model can see is
+recorded when the vector arrives: it then shows as `possible conflict` in `recall`, in
+`ingatan conflicts list` and in the conflict report, and it has a log entry of its own (op
+`conflict`), which `ingatan undo` reverses. `remember` says so in its message.
+
+The rest of what is worth knowing:
+
+- `remember(check_conflicts=false)` is remembered too: such a fact gets its vector and no
+  check.
+- A fact the server finds with no vector at all for any other reason (saved while the
+  provider was `none`, imported) is embedded as well, so `ingatan reindex` is no longer
+  needed after switching `defer` on. Those facts get no conflict scan; that is still
+  `ingatan conflicts scan`.
+- A fact that holds a vector of another model is left as it is. After a change of model
+  nothing is embedded again unasked (with a paid provider that would be a bill): `ingatan
+  reindex` replaces those vectors when you decide to, and `ingatan doctor` counts them.
+  Two servers of one data folder that are configured for different models each give the
+  facts they fill their own model's vector, and a search reads only vectors of its own
+  model: give them the same model.
+- The late conflict check looks with the eyes of the agent that wrote the fact, whichever
+  agent's server does the fill: it sees the writer's private facts and nobody else's, as the
+  check inside `remember` does.
+- A pass that fails as a whole (the database is locked, the provider gives no answer) is run
+  again 5 seconds later, at most three times. After that the rows wait for the next
+  `remember` or the next server start. A server that is shutting down ends its pass after
+  the batch it is in.
+- A queued `global` fact is filled by whichever server of the data folder gets to it first,
+  and its late check then compares it with that server's business and the global facts. A
+  contradicting fact in another business is found by `ingatan conflicts scan` there.
+- A process that runs no server (a CLI command) leaves the row queued. Nothing is lost: the
+  fact is found by words in the meantime, and the next server start picks the row up.
+- A vector is stored only while its fact still exists. A `forget` that lands between the
+  model call and the write leaves no vector and no queue row.
+- In approval mode (`require_approval = true`) a proposal is not deferred: nothing is saved
+  yet, and the similar facts shown to the approver are worked out when it is proposed.
+- `ingatan doctor` shows `defer: on` and counts the facts that still wait.
+
+What it buys has to be measured on a machine that has the model. Run these three and compare
+the `remember` column; the last one also prints what the fill cost per fact:
+
+```bash
+python scripts/bench_scale.py 1000
+python scripts/bench_scale.py --embeddings local 1000
+python scripts/bench_scale.py --embeddings local --defer 1000
+python -m evals --embeddings local --defer     # writes evals/reports/latest-semantic-defer.md
+```
+
+No figure is given here yet: the code and its tests were written on a machine without the
+model, and numbers in this document come from runs, not from estimates.
+
+## One model for several sessions (`shared`)
+
+Each stdio server loads its own copy of the local model, so three agent sessions hold three
+copies ([RAM.md](RAM.md)). With
+
+```toml
+[embeddings]
+provider = "local"
+shared = true        # or INGATAN_EMBED_SHARED=1
+```
+
+the servers of one data folder ask a single process for vectors instead, and none of them
+loads the model itself.
+
+- **Who starts it.** The first server that needs a vector starts it (`ingatan embeddings
+  serve`, detached, nothing attached to its output). `ingatan embeddings serve` also runs it
+  by hand in the foreground, and `ingatan embeddings stop` asks it to leave. It leaves on
+  its own after `idle_unload_seconds` without a request (0 keeps it), and a server starts a
+  new one at once when it next needs a vector. Only a process that fails to start is tried
+  again no sooner than 30 seconds later. It also leaves when its state file is deleted or
+  names another process; a file that cannot be read for a moment does not count.
+- **Where it listens.** On 127.0.0.1 only, on a port the operating system picks. The port, the
+  process id and a random token are written to `<data folder>/run/embed.json`, readable by
+  the user alone. That file never holds fact text, and the process writes nothing else.
+- **Who may talk to it.** A caller always connects to 127.0.0.1, whatever the file says, and
+  before it sends any text the listener has to prove that it holds the token (an HMAC over
+  random bytes from both sides; the token itself is never sent). A port that some other
+  program took over after a crash gets a few random bytes and nothing more.
+- **When it cannot be reached.** The tool call does not fail and does not wait forever: the
+  handshake and the request each have one time limit for the whole of it, not for each read,
+  and the server answers from the word index, exactly as it does when the model is missing.
+  It does not load the model itself as a fallback, because that would quietly bring back
+  the memory this setting saves. `ingatan doctor` shows whether the process runs, and the
+  reason for the last failure.
+- **What a health check does.** `ingatan doctor`, `setup` and `embeddings enable` embed one
+  sentence to see that the model works. For that sentence they load the model in their own
+  process, also with `shared` on: a check that started the shared process would leave it
+  holding the model long after the command is gone. Embedding the facts that already exist
+  (`ingatan reindex`, and the same step inside `embeddings enable`) is ordinary work and
+  does go through the shared process.
+- **What it never does.** It downloads nothing: `ingatan embeddings pull` (or `embeddings
+  enable`, or `setup`) stays the only download, and a process without the model files says
+  so in its answer.
+- **Together with `defer`.** The first request after the process starts waits for the model
+  to load. With `defer = true` that wait happens in the background worker instead of inside
+  `remember`.
+
+One limit to know: one process holds one model. Servers of the same data folder that are
+configured for different local models make it load them in turn.
+
+What it saves has to be measured on a machine that has the model:
+
+```bash
+python scripts/measure_embed_ram.py --sessions 3            # three copies
+python scripts/measure_embed_ram.py --sessions 3 --shared   # one shared process
+```
+
+No figure is given here yet, for the same reason as above. HTTP mode (one process for every
+token) and the `ollama` provider already share one copy without this setting.
 
 ## How vectors are made and kept
 

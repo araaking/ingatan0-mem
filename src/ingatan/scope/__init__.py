@@ -27,11 +27,13 @@ __all__ = [
     "EMBED_PROVIDERS",
     "GLOBAL_NAME",
     "HOME_CONFIG_NAME",
+    "LLM_PROVIDERS",
     "NAME_PATTERN",
     "VISIBLE_SQL",
     "VISIBLE_SQL_GLOBAL",
     "Context",
     "EmbeddingConfig",
+    "LlmConfig",
     "Scope",
     "data_home",
     "db_path",
@@ -42,6 +44,7 @@ __all__ = [
     "open_context",
     "parse_bool",
     "parse_embeddings",
+    "parse_llm",
     "resolve_allowed_businesses",
     "resolve_scope",
     "validate_agent",
@@ -55,6 +58,7 @@ GLOBAL_NAME = "global"
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_TOKEN_BUDGET = 1000
 EMBED_PROVIDERS = ("none", "local", "ollama", "openai", "gemini")
+LLM_PROVIDERS = ("none", "ollama", "openai")
 
 # WHERE clause for facts in the business file. Bind `:agent` to the caller's agent name.
 VISIBLE_SQL = "(tier = 'business' OR (tier = 'agent' AND agent = :agent))"
@@ -67,8 +71,12 @@ class EmbeddingConfig:
     """Semantic search settings. The default is no embeddings at all: pure FTS5.
 
     `model_dir` is where the local provider keeps its model files (empty means
-    `<INGATAN_HOME>/models`). The three similarity fields override the cut-offs calibrated
-    for the model family; None keeps the calibrated value.
+    `<INGATAN_HOME>/models`). With `defer`, `remember` saves a fact without waiting for the
+    model and a background step of the server fills the vector in afterwards. With
+    `shared`, the local model is held by one separate process that every server of the data
+    folder asks for vectors, instead of one copy per server. The three
+    similarity fields override the cut-offs calibrated for the model family; None keeps the
+    calibrated value.
     """
 
     provider: str = "none"
@@ -79,9 +87,27 @@ class EmbeddingConfig:
     threads: int = 2
     idle_unload_seconds: int = 300
     model_dir: str = ""
+    defer: bool = False
+    shared: bool = False
     recall_floor: float | None = None
     conflict_similarity: float | None = None
     conflict_strict_similarity: float | None = None
+
+
+@dataclass(frozen=True)
+class LlmConfig:
+    """The model behind the optional fact extraction (`ingatan extract`). Off by default.
+
+    With `provider = "none"` no text is ever sent to a model. `ollama` is a model on this
+    machine; `openai` is any OpenAI-compatible endpoint, named by `api_base`. There is no
+    default model: the user chooses what reads their conversations.
+    """
+
+    provider: str = "none"
+    model: str = ""
+    api_base: str = ""
+    api_key_env: str = ""
+    timeout: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +118,7 @@ class Scope:
     token_budget: int = DEFAULT_TOKEN_BUDGET
     require_approval: bool = False
     embeddings: EmbeddingConfig = EmbeddingConfig()
+    llm: LlmConfig = LlmConfig()
 
 
 def _check_name(kind: str, value: object) -> str:
@@ -257,6 +284,14 @@ def parse_embeddings(
             raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
         return parsed
 
+    def pick_bool(key: str, env_name: str) -> bool:
+        from_env = (source.get(env_name) or "").strip()
+        if from_env:
+            return parse_bool(from_env, label=env_name)
+        if key in merged:
+            return parse_bool(merged[key], label=f"[embeddings] {key}")
+        return False
+
     def pick_similarity(key: str) -> float | None:
         if key not in merged:
             return None
@@ -291,9 +326,46 @@ def parse_embeddings(
         threads=threads,
         idle_unload_seconds=idle_unload,
         model_dir=model_dir,
+        defer=pick_bool("defer", "INGATAN_EMBED_DEFER"),
+        shared=pick_bool("shared", "INGATAN_EMBED_SHARED"),
         recall_floor=pick_similarity("recall_floor"),
         conflict_similarity=pick_similarity("conflict_similarity"),
         conflict_strict_similarity=pick_similarity("conflict_strict_similarity"),
+    )
+
+
+def parse_llm(
+    source: Mapping[str, str],
+    project_cfg: Mapping[str, Any],
+    home_cfg: Mapping[str, Any],
+) -> LlmConfig:
+    """Resolve `[llm]`: environment > `.ingatan.toml` > `<home>/config.toml` > off."""
+    merged: dict[str, Any] = {}
+    for section in (home_cfg.get("llm"), project_cfg.get("llm")):
+        if isinstance(section, dict):
+            merged.update(section)  # pyright: ignore[reportUnknownArgumentType]
+
+    def pick(key: str, env_name: str) -> str:
+        from_env = (source.get(env_name) or "").strip()
+        if from_env:
+            return from_env
+        value = merged.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    provider = (pick("provider", "INGATAN_LLM_PROVIDER") or "none").casefold()
+    if provider not in LLM_PROVIDERS:
+        raise ConfigError(
+            f"Unknown llm provider {provider!r}. Use one of: {', '.join(LLM_PROVIDERS)}."
+        )
+    timeout = merged.get("timeout", 60.0)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ConfigError("[llm] timeout must be a positive number of seconds.")
+    return LlmConfig(
+        provider=provider,
+        model=pick("model", "INGATAN_LLM_MODEL"),
+        api_base=pick("api_base", "INGATAN_LLM_API_BASE"),
+        api_key_env=pick("api_key_env", "INGATAN_LLM_API_KEY_ENV"),
+        timeout=float(timeout),
     )
 
 
@@ -310,7 +382,7 @@ def load_embeddings(
 def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = None) -> Scope:
     """Business and agent from `INGATAN_BUSINESS` / `INGATAN_AGENT`, else `.ingatan.toml`,
     falling back to `<INGATAN_HOME>/config.toml` for defaults (`default_agent`, `token_budget`,
-    `require_approval`, `[embeddings]`).
+    `require_approval`, `[embeddings]`, `[llm]`).
 
     Each setting is resolved on its own: environment wins over `.ingatan.toml`, which wins over
     `<INGATAN_HOME>/config.toml`.
@@ -365,6 +437,7 @@ def resolve_scope(start: Path | None = None, env: Mapping[str, str] | None = Non
         token_budget=budget,
         require_approval=require_approval,
         embeddings=embeddings,
+        llm=parse_llm(source, config, home_cfg),
     )
 
 
