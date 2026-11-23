@@ -21,11 +21,12 @@ What keeps this safe to switch on:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from ingatan import episodes, facts, timeutil
-from ingatan.db import fact_text_key
+from ingatan.db import fact_text_key, transaction
 from ingatan.errors import IngatanError
 from ingatan.extract import llm, prompt
 from ingatan.redact import redact
@@ -47,9 +48,10 @@ _KINDS = ("stable", "volatile")
 @dataclass(frozen=True)
 class ExtractReport:
     """What one pass did. `rejected` are items of the model that were dropped, `known` are
-    items that repeat a fact or a pending proposal word for word, `errors` are episodes the
-    model could not be read for (they stay pending). `texts` are the facts proposed, or,
-    in a dry run, the ones that would be."""
+    items that repeat a fact or a pending proposal word for word, `errors` are episodes or
+    notes the model could not be read for (they are read again next time). `texts` are the
+    facts proposed, or, in a dry run, the ones that would be. A pass reads episodes or, with
+    `documents`, ingested notes: one of the two counts is always 0."""
 
     episodes_read: int
     proposed: int
@@ -59,6 +61,7 @@ class ExtractReport:
     last_error: str = ""
     texts: tuple[str, ...] = ()
     model: str = ""
+    notes_read: int = 0
 
 
 def _numbers(text: str) -> set[str]:
@@ -98,42 +101,107 @@ def _is_stored(ctx: Context, key: str) -> bool:
     return False
 
 
-def extract_pending(ctx: Context, *, limit: int = 10, dry_run: bool = False) -> ExtractReport:
-    """Let the configured model read the caller's pending episodes, oldest first.
+@dataclass(frozen=True)
+class _Reading:
+    """One text for the model: what to send, what it states, and how to record the result."""
 
-    Each fact the model states becomes a `business` proposal that carries
-    `source.extracted_by`; the episode is then marked processed. An episode the model found
-    nothing in is marked processed too. An episode the model could not be read for stays
-    pending. With `dry_run` nothing is written: the report says what would be proposed.
+    message: str
+    stated_text: str
+    source: dict[str, Any]
+    episode: int | None
+    mark_read: Callable[[], None]
+
+
+def _episode_readings(ctx: Context, limit: int) -> list[_Reading]:
+    readings: list[_Reading] = []
+    for episode in episodes.pending(ctx, limit):
+
+        def mark(episode_id: int = episode.id) -> None:
+            episodes.mark_processed(ctx, episode_id)
+
+        readings.append(
+            _Reading(
+                # Redacted once more: an episode written by an older version or another
+                # tool may hold what today's patterns would catch.
+                message=prompt.user_message(
+                    redact(episode.user_text), redact(episode.assistant_text)
+                ),
+                stated_text=f"{episode.user_text}\n{episode.assistant_text}",
+                source={"session": episode.session},
+                episode=episode.id,
+                mark_read=mark,
+            )
+        )
+    return readings
+
+
+def _note_readings(ctx: Context, limit: int) -> list[_Reading]:
+    """Ingested notes the model has not read. `extract` sits above `ingest`, whose rows
+    these are; there is no function for this there, so it is plain SQL."""
+    rows = ctx.business.execute(
+        "SELECT id, path, heading, text FROM notes WHERE extracted_at IS NULL "
+        "ORDER BY id ASC LIMIT ?",
+        (max(limit, 0),),
+    ).fetchall()
+    readings: list[_Reading] = []
+    for row in rows:
+
+        def mark(note_id: int = int(row["id"])) -> None:
+            with transaction(ctx.business):
+                ctx.business.execute(
+                    "UPDATE notes SET extracted_at = ? WHERE id = ?",
+                    (timeutil.iso(timeutil.now()), note_id),
+                )
+
+        heading, text = str(row["heading"]), str(row["text"])
+        readings.append(
+            _Reading(
+                message=prompt.document_message(str(row["path"]), redact(heading), redact(text)),
+                stated_text=f"{heading}\n{text}",
+                source={"document": str(row["path"])},
+                episode=None,
+                mark_read=mark,
+            )
+        )
+    return readings
+
+
+def extract_pending(
+    ctx: Context, *, limit: int = 10, dry_run: bool = False, documents: bool = False
+) -> ExtractReport:
+    """Let the configured model read pending texts, oldest first, and propose facts.
+
+    By default the texts are the caller's pending episodes; with `documents` they are the
+    ingested notes of the business that were not read yet. Each fact the model states
+    becomes a `business` proposal that carries `source.extracted_by`. A text that was read
+    is not sent again: the episode is marked processed, the note gets `extracted_at`. A
+    text the model could not be read for is left as it is. With `dry_run` nothing is
+    written: the report says what would be proposed.
 
     Raises `IngatanError` when no model is configured.
     """
     cfg = ctx.scope.llm
     llm.ensure_configured(cfg)
     label = llm.model_label(cfg)
-    read = proposed = rejected = errors = known = 0
+    proposed = rejected = errors = known = 0
     last_error = ""
     texts: list[str] = []
     seen = _known_keys(ctx)
+    readings = _note_readings(ctx, limit) if documents else _episode_readings(ctx, limit)
 
-    for episode in episodes.pending(ctx, limit):
-        read += 1
+    for reading in readings:
         try:
-            # Outside any transaction, and redacted once more: an episode written by an
-            # older version or another tool may hold what today's patterns would catch.
-            answer = llm.chat(
-                cfg,
-                prompt.SYSTEM,
-                prompt.user_message(redact(episode.user_text), redact(episode.assistant_text)),
-            )
+            # Outside any transaction: nothing is locked while the model thinks.
+            answer = llm.chat(cfg, prompt.SYSTEM, reading.message)
             items = prompt.parse_answer(answer)
         except (IngatanError, ValueError) as exc:
             errors += 1
             last_error = exc.message if isinstance(exc, IngatanError) else f"JSON: {exc}"
             continue
 
-        stated = _numbers(f"{episode.user_text}\n{episode.assistant_text}")
+        stated = _numbers(reading.stated_text)
         kept = 0
+        marked = False
         for item in items:
             text = item.get("text") if isinstance(item, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             if not isinstance(text, str) or not text.strip() or len(text) > MAX_FACT_CHARS:
@@ -141,7 +209,7 @@ def extract_pending(ctx: Context, *, limit: int = 10, dry_run: bool = False) -> 
                 continue
             clean = redact(text).strip()
             if not _numbers(clean) <= stated:
-                rejected += 1  # a value the episode does not contain was made up
+                rejected += 1  # a value the text does not contain was made up
                 continue
             key = fact_text_key(clean)
             if key in seen or _is_stored(ctx, key):
@@ -162,21 +230,23 @@ def extract_pending(ctx: Context, *, limit: int = 10, dry_run: bool = False) -> 
                         kind=kind if kind in _KINDS else None,  # pyright: ignore[reportUnknownArgumentType]
                         tier="business",
                         as_proposal=True,
-                        episode=episode.id,
-                        source={"session": episode.session, "extracted_by": label},
+                        episode=reading.episode,
+                        source={**reading.source, "extracted_by": label},
                     )
                 except IngatanError:
                     rejected += 1
                     continue
+                # `remember` marks the episode itself when it is given one.
+                marked = marked or reading.episode is not None
             kept += 1
             proposed += 1
             texts.append(clean)
-        if not dry_run and kept == 0:
-            # Read, and nothing in it to propose: do not send it to the model again.
-            episodes.mark_processed(ctx, episode.id)
+        if not dry_run and not marked:
+            # Read: do not send it to the model again, whether or not it held a fact.
+            reading.mark_read()
 
     return ExtractReport(
-        episodes_read=read,
+        episodes_read=0 if documents else len(readings),
         proposed=proposed,
         rejected=rejected,
         errors=errors,
@@ -184,4 +254,5 @@ def extract_pending(ctx: Context, *, limit: int = 10, dry_run: bool = False) -> 
         last_error=last_error,
         texts=tuple(texts),
         model=label,
+        notes_read=len(readings) if documents else 0,
     )

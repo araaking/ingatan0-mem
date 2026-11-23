@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +17,7 @@ from typer.testing import Result
 from ingatan import episodes, extract, facts, proposals
 from ingatan.errors import IngatanError
 from ingatan.extract import llm, prompt
+from ingatan.ingest import ingest_path
 from ingatan.scope import Context, LlmConfig
 
 Invoke = Callable[..., Result]
@@ -387,3 +389,119 @@ def test_extract_command_fails_when_the_model_never_answers(
     result = invoke("extract")
     assert result.exit_code == 1, result.output
     assert "did not answer" in result.output
+
+
+# ---- ingested documents ------------------------------------------------------------------
+
+NOTE_FACT = {"text": "Harga kaos polos Rp 65.000.", "entities": ["kaos polos"]}
+
+
+def write_note(folder: Path, body: str = "Harga kaos polos Rp 65.000 per potong.") -> Path:
+    path = folder / "harga.md"
+    path.write_text(f"# Daftar harga\n\n{body}\n", encoding="utf-8")
+    return path
+
+
+def extracted_marks(ctx: Context) -> list[Any]:
+    return [r["extracted_at"] for r in ctx.business.execute("SELECT extracted_at FROM notes")]
+
+
+def test_a_note_becomes_a_proposal_that_names_its_document(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_note(tmp_path)
+    ingest_path(ctx, path)
+    model = Model(monkeypatch, answer(NOTE_FACT))
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.notes_read, report.episodes_read, report.proposed) == (1, 0, 1)
+    assert "Daftar harga" in model.asked[0][1] and "Rp 65.000" in model.asked[0][1]
+    (pending,) = proposals.pending(ctx)
+    source = pending.payload["source"]
+    assert source["document"] == path.resolve().as_posix()
+    assert source["extracted_by"] == "ollama/local-model"
+    assert "episode" not in source
+    assert count(ctx.business, "facts") == 0
+
+
+def test_note_is_extracted_once(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    model = Model(monkeypatch, answer(NOTE_FACT))
+    extract.extract_pending(ctx, documents=True)
+    assert all(extracted_marks(ctx))
+    again = extract.extract_pending(ctx, documents=True)
+    assert again.notes_read == 0
+    assert len(model.asked) == 1
+    # Ingesting the unchanged file again changes nothing either.
+    ingest_path(ctx, tmp_path / "harga.md")
+    assert extract.extract_pending(ctx, documents=True).notes_read == 0
+
+
+def test_reingested_changed_note_is_extracted_again(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_note(tmp_path)
+    ingest_path(ctx, path)
+    model = Model(monkeypatch, answer())
+    extract.extract_pending(ctx, documents=True)
+    write_note(tmp_path, "Harga kaos polos naik jadi Rp 70.000 per potong.")
+    ingest_path(ctx, path)
+    assert extracted_marks(ctx) == [None]
+    assert extract.extract_pending(ctx, documents=True).notes_read == 1
+    assert "Rp 70.000" in model.asked[-1][1]
+
+
+def test_documents_and_episodes_are_separate_passes(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    episode = episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, answer())
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.notes_read, report.episodes_read) == (1, 0)
+    assert status(ctx, episode) == "pending"
+    report = extract.extract_pending(ctx)
+    assert (report.notes_read, report.episodes_read) == (0, 1)
+
+
+def test_a_note_the_model_failed_on_is_read_again_later(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    Model(monkeypatch, "bukan JSON")
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.notes_read, report.errors) == (1, 1)
+    assert extracted_marks(ctx) == [None]
+
+
+def test_a_number_that_is_not_in_the_note_is_rejected(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    Model(monkeypatch, answer({"text": "Harga kaos polos Rp 80.000."}))
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.proposed, report.rejected) == (0, 1)
+
+
+def test_dry_run_leaves_notes_unmarked(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    Model(monkeypatch, answer(NOTE_FACT))
+    report = extract.extract_pending(ctx, documents=True, dry_run=True)
+    assert report.proposed == 1
+    assert extracted_marks(ctx) == [None]
+    assert count(ctx.business, "proposals") == 0
+
+
+def test_extract_command_reads_documents_when_asked(
+    invoke: Invoke, cli_ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("INGATAN_LLM_MODEL", "local-model")
+    ingest_path(cli_ctx, write_note(tmp_path))
+    Model(monkeypatch, answer(NOTE_FACT))
+    result = invoke("extract", "--documents")
+    assert result.exit_code == 0, result.output
+    assert "1 note(s)" in result.output and "1 fact(s) proposed" in result.output

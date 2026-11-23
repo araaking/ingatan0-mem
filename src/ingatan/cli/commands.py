@@ -626,34 +626,43 @@ def extract(
         bool,
         typer.Option("--dry-run", help="Show what would be proposed and write nothing."),
     ] = False,
+    documents: Annotated[
+        bool,
+        typer.Option(
+            "--documents", help="Read ingested notes that were not read yet, not episodes."
+        ),
+    ] = False,
     agent: AgentOption = None,
     business: BusinessOption = None,
 ) -> None:
     """Let the configured model read captured conversations and propose facts (optional).
 
     Off by default: it needs `[llm] provider` and `model` (an Ollama model, or any
-    OpenAI-compatible endpoint). The model reads this agent's pending episodes, and what it
-    finds goes to the proposal queue, marked with the model's name. Nothing becomes a fact
-    until you approve it with `ingatan proposals approve`.
+    OpenAI-compatible endpoint). The model reads this agent's pending episodes (or, with
+    --documents, the ingested notes it has not read), and what it finds goes to the proposal
+    queue, marked with the model's name. Nothing becomes a fact until you approve it with
+    `ingatan proposals approve`.
     """
     with _open(agent, business) as ctx:
-        report = extraction.extract_pending(ctx, limit=limit, dry_run=dry_run)
+        report = extraction.extract_pending(ctx, limit=limit, dry_run=dry_run, documents=documents)
     verb = "would be proposed" if dry_run else "proposed"
+    read = report.notes_read if documents else report.episodes_read
+    what = "note(s)" if documents else "episode(s)"
     typer.echo(
-        f"Read {report.episodes_read} episode(s) with {report.model}: "
+        f"Read {read} {what} with {report.model}: "
         f"{report.proposed} fact(s) {verb}, {report.rejected} dropped, "
-        f"{report.known} already known, {report.errors} episode(s) failed."
+        f"{report.known} already known, {report.errors} failed."
     )
     for text in report.texts:
         typer.echo(f"  {'would propose' if dry_run else 'proposed'}: {shorten(text, 100)}")
     if report.errors:
-        typer.echo(f"ingatan: the model failed on an episode: {report.last_error}", err=True)
+        typer.echo(f"ingatan: the model failed on a text: {report.last_error}", err=True)
     if report.proposed and not dry_run:
         typer.echo(
             "Nothing is a fact yet. Review with `ingatan proposals list`, then "
             "`ingatan proposals approve <id>` or `reject <id>`."
         )
-    if report.errors and report.errors == report.episodes_read:
+    if report.errors and report.errors == read:
         raise typer.Exit(1)
 
 

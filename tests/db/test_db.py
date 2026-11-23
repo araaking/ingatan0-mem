@@ -464,3 +464,27 @@ def test_enable_wal_gives_up_on_other_errors_and_after_the_patience_runs_out() -
 
     with pytest.raises(sqlite3.OperationalError, match="locked"):
         db._enable_wal(AlwaysLocked(), patience=0.05)  # pyright: ignore[reportArgumentType]
+
+
+def test_a_database_with_notes_gains_extracted_at_without_losing_them(tmp_path: Path) -> None:
+    # A database from before the note-extraction migration, holding one ingested note.
+    path = tmp_path / "a.db"
+    raw = sqlite3.connect(path, isolation_level=None)
+    raw.row_factory = sqlite3.Row
+    older = [m for m in db.load_migrations() if not m.name.endswith("_note_extraction.sql")]
+    assert len(older) == db.LATEST_VERSION - 1
+    db.migrate(raw, older)
+    raw.execute(
+        "INSERT INTO notes (path, heading, text, file_hash, created_at) "
+        "VALUES ('/notes/a.md', 'Harga', 'Kaos Rp 65.000.', 'abc', '2026-11-11T09:00:00Z')"
+    )
+    assert "extracted_at" not in {r["name"] for r in raw.execute("PRAGMA table_info(notes)")}
+    raw.close()
+
+    conn = db.connect(path)
+    try:
+        assert user_version(conn) == db.LATEST_VERSION
+        row = conn.execute("SELECT text, extracted_at FROM notes").fetchone()
+        assert (row["text"], row["extracted_at"]) == ("Kaos Rp 65.000.", None)
+    finally:
+        conn.close()
