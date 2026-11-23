@@ -471,8 +471,9 @@ def test_a_database_with_notes_gains_extracted_at_without_losing_them(tmp_path: 
     path = tmp_path / "a.db"
     raw = sqlite3.connect(path, isolation_level=None)
     raw.row_factory = sqlite3.Row
-    older = [m for m in db.load_migrations() if not m.name.endswith("_note_extraction.sql")]
-    assert len(older) == db.LATEST_VERSION - 1
+    migrations = db.load_migrations()
+    older = migrations[: [m.name for m in migrations].index("0005_note_extraction.sql")]
+    assert len(older) == 4
     db.migrate(raw, older)
     raw.execute(
         "INSERT INTO notes (path, heading, text, file_hash, created_at) "
@@ -486,5 +487,35 @@ def test_a_database_with_notes_gains_extracted_at_without_losing_them(tmp_path: 
         assert user_version(conn) == db.LATEST_VERSION
         row = conn.execute("SELECT text, extracted_at FROM notes").fetchone()
         assert (row["text"], row["extracted_at"]) == ("Kaos Rp 65.000.", None)
+    finally:
+        conn.close()
+
+
+def test_a_database_with_texts_gains_the_failure_count_without_losing_them(tmp_path: Path) -> None:
+    # A database from before migration 0006, holding one captured episode and one note.
+    path = tmp_path / "a.db"
+    raw = sqlite3.connect(path, isolation_level=None)
+    raw.row_factory = sqlite3.Row
+    migrations = db.load_migrations()
+    older = migrations[: [m.name for m in migrations].index("0006_extract_failures.sql")]
+    assert len(older) == 5
+    db.migrate(raw, older)
+    raw.execute(
+        "INSERT INTO episodes (agent, user_text, assistant_text, created_at, status) "
+        "VALUES ('claude-code', 'Halo.', 'Hai.', '2026-11-11T09:00:00Z', 'pending')"
+    )
+    raw.execute(
+        "INSERT INTO notes (path, heading, text, file_hash, created_at) "
+        "VALUES ('/notes/a.md', 'Harga', 'Kaos Rp 65.000.', 'abc', '2026-11-11T09:00:00Z')"
+    )
+    raw.close()
+
+    conn = db.connect(path)
+    try:
+        assert user_version(conn) == db.LATEST_VERSION
+        episode = conn.execute("SELECT user_text, extract_failures FROM episodes").fetchone()
+        assert (episode["user_text"], episode["extract_failures"]) == ("Halo.", 0)
+        note = conn.execute("SELECT text, extract_failures FROM notes").fetchone()
+        assert (note["text"], note["extract_failures"]) == ("Kaos Rp 65.000.", 0)
     finally:
         conn.close()

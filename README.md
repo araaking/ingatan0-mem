@@ -305,7 +305,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Meninjau dan menyetujui proposal (satuan atau massal) |
 | `ingatan forget <fact_id> [--yes] [--business NAMA]` | Melupakan fakta dari tier mana pun |
 | `ingatan ingest <path> [--business NAMA]` | Membaca berkas Markdown menjadi catatan yang bisa dicari (melewati `.git`/`.venv`/`node_modules`) |
-| `ingatan extract [--limit N] [--dry-run] [--documents] [--business NAMA] [--agent NAMA]` | Opsional: model yang kamu atur di `[llm]` membaca episode yang tertunda (atau, dengan `--documents`, catatan hasil ingest yang belum dibaca) dan mengusulkan fakta. Semuanya masuk antrean proposal dengan tanda `extracted by`; tidak ada yang menjadi fakta sebelum kamu setujui |
+| `ingatan extract [--limit N] [--dry-run] [--documents] [--retry-failed] [--business NAMA] [--agent NAMA]` | Opsional: model yang kamu atur di `[llm]` membaca episode yang tertunda (atau, dengan `--documents`, catatan hasil ingest yang belum dibaca) dan mengusulkan fakta. Semuanya masuk antrean proposal dengan tanda `extracted by`; tidak ada yang menjadi fakta sebelum kamu setujui. Teks yang tiga kali gagal dibaca model dilewati sampai kamu memakai `--retry-failed`, dan usulan yang sudah kamu tolak tidak diusulkan lagi |
 | `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
 | `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
@@ -684,7 +684,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Review and approve proposals (single or bulk) |
 | `ingatan forget <fact_id> [--yes] [--business NAME]` | Forget a fact of any tier |
 | `ingatan ingest <path> [--business NAME]` | Read Markdown files into searchable notes (skips `.git`/`.venv`/`node_modules`) |
-| `ingatan extract [--limit N] [--dry-run] [--documents] [--business NAME] [--agent NAME]` | Optional: the model you set under `[llm]` reads pending episodes (or, with `--documents`, ingested notes it has not read yet) and proposes facts. Everything goes to the proposal queue marked `extracted by`; nothing is a fact until you approve it |
+| `ingatan extract [--limit N] [--dry-run] [--documents] [--retry-failed] [--business NAME] [--agent NAME]` | Optional: the model you set under `[llm]` reads pending episodes (or, with `--documents`, ingested notes it has not read yet) and proposes facts. Everything goes to the proposal queue marked `extracted by`; nothing is a fact until you approve it. A text the model failed on three times is left out until you pass `--retry-failed`, and what you rejected is not proposed again |
 | `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
 | `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |

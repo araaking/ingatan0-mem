@@ -730,3 +730,198 @@ def test_a_note_is_sent_with_its_file_name_not_its_full_path(
     # needs neither; the proposal keeps the full path, on this machine.
     assert str(tmp_path.resolve()) not in sent and tmp_path.name not in sent
     assert proposals.pending(ctx)[0].payload["source"]["document"] == path.resolve().as_posix()
+
+
+# ---- minor findings of the final review ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stated", "written", "kept"),
+    [
+        ("Diskon 1.5 persen untuk member.", "Diskon member 15 persen.", 0),
+        ("Stok kain tinggal 15 lembar.", "Stok kain tinggal 1.5 lembar.", 0),
+        ("Diskon 1,5 persen untuk member.", "Diskon member 1.5 persen.", 1),
+        ("Harga kaos Rp15,000.", "Harga kaos Rp 15.000.", 1),
+        ("Harga kaos Rp 15.000,00.", "Harga kaos Rp 15000.", 1),
+        ("Berat paket 2.50 kg.", "Berat paket 2,5 kg.", 1),
+        ("Stok kain 1.500 lembar.", "Stok kain 1500 lembar.", 1),
+    ],
+)
+def test_a_number_is_compared_by_its_value_not_by_its_digits(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch, stated: str, written: str, kept: int
+) -> None:
+    episodes.record(ctx, stated, "Dicatat.")
+    Model(monkeypatch, answer({"text": written}))
+    assert extract.extract_pending(ctx).proposed == kept
+
+
+def test_numbers_reads_separators_the_way_they_are_written() -> None:
+    assert extract.numbers("Rp 15.000, Rp15,000 dan 15000.") == {"15000"}
+    assert extract.numbers("1.5 atau 1,5") == {"1.5"}
+    assert extract.numbers("1.234,56 atau 1,234.56") == {"1234.56"}
+    assert extract.numbers("Rp 15.000,00") == {"15000"}
+    assert extract.numbers("pada 2026-11-24, 3 kali.") == {"2026", "11", "24", "3"}
+    assert extract.numbers("tanpa angka") == set()
+
+
+def failures(ctx: Context, table: str = "episodes") -> list[int]:
+    rows = ctx.business.execute(f"SELECT extract_failures FROM {table} ORDER BY id")
+    return [int(row[0]) for row in rows]
+
+
+def test_a_text_the_model_keeps_failing_on_stops_blocking_the_ones_behind_it(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = episodes.record(ctx, "Stok gula tinggal 20 karung.", "Dicatat.")
+    good = episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, "bukan JSON")
+    for _ in range(extract.MAX_READ_FAILURES):
+        assert extract.extract_pending(ctx, limit=1).errors == 1  # always the oldest one
+    assert failures(ctx) == [extract.MAX_READ_FAILURES, 0]
+    model = Model(monkeypatch, answer(GOOD))
+    report = extract.extract_pending(ctx, limit=1)
+    assert (report.episodes_read, report.proposed, report.left_out) == (1, 1, 1)
+    assert "Ongkir ke Bandung" in model.asked[0][1]
+    assert (status(ctx, bad), status(ctx, good)) == ("pending", "processed")
+
+
+def test_retry_failed_reads_a_text_that_was_left_out(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, "bukan JSON")
+    for _ in range(extract.MAX_READ_FAILURES):
+        extract.extract_pending(ctx)
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.left_out) == (0, 1)
+    Model(monkeypatch, answer(GOOD))
+    report = extract.extract_pending(ctx, retry_failed=True)
+    assert (report.episodes_read, report.proposed, report.left_out) == (1, 1, 0)
+    assert status(ctx, bad) == "processed"
+
+
+def test_an_endpoint_that_does_not_answer_is_not_held_against_the_texts(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for n in range(5):
+        episodes.record(ctx, f"Catatan {_letters(n)}.", "Dicatat.")
+    model = Model(monkeypatch, llm.Unreachable("The ollama model did not answer: timed out"))
+    for _ in range(4):
+        report = extract.extract_pending(ctx)
+        # Three in a row and the pass ends: the other two are not even sent.
+        assert (report.episodes_read, report.errors, report.unreachable) == (3, 3, True)
+    assert len(model.asked) == 12
+    assert failures(ctx) == [0, 0, 0, 0, 0]
+    Model(monkeypatch, answer())
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.left_out, report.unreachable) == (5, 0, False)
+
+
+def test_one_unanswered_call_between_answers_does_not_end_the_pass(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for n in range(4):
+        episodes.record(ctx, f"Catatan {_letters(n)}.", "Dicatat.")
+    down = llm.Unreachable("timed out")
+    Model(monkeypatch, down, down, answer(), down, answer())
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.errors, report.unreachable) == (4, 3, False)
+
+
+def test_a_dry_run_holds_nothing_against_a_text(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, "bukan JSON")
+    for _ in range(extract.MAX_READ_FAILURES + 1):
+        assert extract.extract_pending(ctx, dry_run=True).episodes_read == 1
+    assert failures(ctx) == [0]
+
+
+def test_a_note_the_model_keeps_failing_on_is_left_out_too(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_path(ctx, write_note(tmp_path))
+    Model(monkeypatch, "bukan JSON")
+    for _ in range(extract.MAX_READ_FAILURES):
+        assert extract.extract_pending(ctx, documents=True).notes_read == 1
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.notes_read, report.left_out) == (0, 1)
+    assert extract.extract_pending(ctx, documents=True, retry_failed=True).notes_read == 1
+    # A file that changed is ingested as new rows, and those start from nothing.
+    write_note(tmp_path, "Harga kaos polos naik jadi Rp 70.000 per potong.")
+    ingest_path(ctx, tmp_path / "harga.md")
+    assert failures(ctx, "notes") == [0]
+
+
+def test_extract_command_says_what_it_left_out_and_how_to_read_it_again(
+    invoke: Invoke, cli_ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("INGATAN_LLM_MODEL", "local-model")
+    episodes.record(cli_ctx, USER, ASSISTANT)
+    Model(monkeypatch, "bukan JSON")
+    for _ in range(extract.MAX_READ_FAILURES):
+        assert invoke("extract").exit_code == 1
+    result = invoke("extract")
+    assert result.exit_code == 0, result.output
+    assert "1 episode(s) left out after 3 failed readings" in result.output
+    assert "--retry-failed" in result.output
+    Model(monkeypatch, answer(GOOD))
+    result = invoke("extract", "--retry-failed")
+    assert result.exit_code == 0, result.output
+    assert "1 fact(s) proposed" in result.output
+
+
+def test_extract_command_says_when_the_model_could_not_be_reached(
+    invoke: Invoke, cli_ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("INGATAN_LLM_MODEL", "local-model")
+    for n in range(4):
+        episodes.record(cli_ctx, f"Catatan {_letters(n)}.", "Dicatat.")
+    Model(monkeypatch, llm.Unreachable("The ollama model local-model did not answer: timed out"))
+    result = invoke("extract")
+    assert result.exit_code == 1, result.output
+    assert "Read 3 episode(s)" in result.output
+    assert "stopped after 3 calls in a row without an answer" in result.output
+    assert "Nothing is held against those texts" in result.output
+
+
+def test_what_the_user_rejected_is_not_proposed_again(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, answer(GOOD))
+    extract.extract_pending(ctx)
+    proposals.reject(ctx, proposals.pending(ctx)[0].id)
+    episodes.record(ctx, USER, ASSISTANT)  # the same thing is said in a later conversation
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.proposed, report.known) == (1, 0, 1)
+    assert proposals.pending(ctx) == []
+
+
+def test_a_changed_file_does_not_bring_back_what_was_rejected(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_note(tmp_path)
+    ingest_path(ctx, path)
+    Model(monkeypatch, answer(NOTE_FACT))
+    extract.extract_pending(ctx, documents=True)
+    proposals.reject(ctx, proposals.pending(ctx)[0].id)
+    write_note(tmp_path, "Harga kaos polos Rp 65.000 per potong. Ukuran S sampai XL.")
+    ingest_path(ctx, path)
+    report = extract.extract_pending(ctx, documents=True)
+    assert (report.notes_read, report.proposed, report.known) == (1, 0, 1)
+
+
+def test_a_rejected_proposal_of_an_agent_does_not_silence_the_model(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only what a model proposed and the user declined is remembered as declined."""
+    written = facts.remember(ctx, GOOD["text"], tier="business", as_proposal=True)
+    assert written.proposal_id is not None
+    proposals.reject(ctx, written.proposal_id)
+    episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, answer(GOOD))
+    assert extract.extract_pending(ctx).proposed == 1

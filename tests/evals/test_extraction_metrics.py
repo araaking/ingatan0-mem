@@ -201,3 +201,11 @@ def test_only_the_configured_endpoint_may_be_reached() -> None:
         listener.close()
     # Outside the block the standard function is back.
     assert socket.create_connection.__module__ == "socket"
+
+
+def test_the_eval_compares_numbers_the_way_the_extraction_does() -> None:
+    from ingatan import extract
+
+    assert metrics.numbers("1.5") != metrics.numbers("15")
+    for text in ("Rp 15.000,00", "1,5 persen", "2026-11-24", "1.234,56"):
+        assert metrics.numbers(text) == extract.numbers(text)

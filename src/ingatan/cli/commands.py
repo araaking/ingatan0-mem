@@ -647,6 +647,13 @@ def extract(
             "--documents", help="Read ingested notes that were not read yet, not episodes."
         ),
     ] = False,
+    retry_failed: Annotated[
+        bool,
+        typer.Option(
+            "--retry-failed",
+            help="Also read the texts that were left out after repeated failed readings.",
+        ),
+    ] = False,
     agent: AgentOption = None,
     business: BusinessOption = None,
 ) -> None:
@@ -659,7 +666,9 @@ def extract(
     `ingatan proposals approve`.
     """
     with _open(agent, business) as ctx:
-        report = extraction.extract_pending(ctx, limit=limit, dry_run=dry_run, documents=documents)
+        report = extraction.extract_pending(
+            ctx, limit=limit, dry_run=dry_run, documents=documents, retry_failed=retry_failed
+        )
     verb = "would be proposed" if dry_run else "proposed"
     read = report.notes_read if documents else report.episodes_read
     what = "note(s)" if documents else "episode(s)"
@@ -677,7 +686,19 @@ def extract(
             "Nothing is a fact yet. Review with `ingatan proposals list`, then "
             "`ingatan proposals approve <id>` or `reject <id>`."
         )
-    if report.errors and report.errors == read:
+    if report.left_out:
+        again = "ingatan extract --documents" if documents else "ingatan extract"
+        typer.echo(
+            f"{report.left_out} {what} left out after {extraction.MAX_READ_FAILURES} failed "
+            f"readings. `{again} --retry-failed` reads them again."
+        )
+    if report.unreachable:
+        typer.echo(
+            f"ingatan: stopped after {extraction.MAX_UNREACHABLE} calls in a row without an "
+            "answer. Nothing is held against those texts: run it again when the model answers.",
+            err=True,
+        )
+    if report.unreachable or (report.errors and report.errors == read):
         raise typer.Exit(1)
 
 

@@ -115,3 +115,53 @@ def test_an_empty_answer_is_an_error(monkeypatch: pytest.MonkeyPatch, answer: An
     monkeypatch.setattr(llm, "_post_json", lambda *args, **kwargs: answer)
     with pytest.raises(IngatanError, match="empty"):
         llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")
+
+
+# ---- which failures say something about the text ----------------------------------------------
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("http://localhost:11434/api/chat", code, "x", None, None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.URLError("connection refused"),
+        TimeoutError("timed out"),
+        http.client.RemoteDisconnected("closed"),
+        _http_error(401),
+        _http_error(429),
+        _http_error(503),
+        ValueError("the endpoint answered with a page, not JSON"),
+    ],
+)
+def test_an_endpoint_that_gives_no_answer_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr(llm, "_post_json", broken)
+    with pytest.raises(llm.Unreachable):
+        llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")
+
+
+@pytest.mark.parametrize("code", [400, 413, 422])
+def test_a_request_the_endpoint_refuses_is_about_the_text(
+    monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    def refused(*_args: Any, **_kwargs: Any) -> Any:
+        raise _http_error(code)
+
+    monkeypatch.setattr(llm, "_post_json", refused)
+    with pytest.raises(IngatanError, match=str(code)) as caught:
+        llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")
+    assert not isinstance(caught.value, llm.Unreachable)
+
+
+def test_an_empty_answer_is_about_the_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm, "_post_json", lambda *args, **kwargs: {"message": {"content": ""}})
+    with pytest.raises(IngatanError) as caught:
+        llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")
+    assert not isinstance(caught.value, llm.Unreachable)

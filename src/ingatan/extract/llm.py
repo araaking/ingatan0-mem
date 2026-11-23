@@ -4,6 +4,11 @@ Two providers, the same choice the embedding providers offer for a model of your
 `ollama` (a model on this machine, `/api/chat`) and `openai` (any OpenAI-compatible
 endpoint, `/chat/completions`). Nothing is sent unless a provider and a model are set, the
 key travels in a header and never in a URL, and every failure is one `IngatanError`.
+
+A failure is `Unreachable` when it says nothing about the text that was sent: the endpoint
+is down, slow, busy or refuses the key. A request the endpoint refuses as such (HTTP 400,
+413, 422: too long, malformed for this model) and an empty answer are about the text, and
+are a plain `IngatanError`. The caller counts the second kind against the text.
 """
 
 from __future__ import annotations
@@ -18,13 +23,26 @@ from typing import Any
 from ingatan.errors import IngatanError
 from ingatan.scope import LlmConfig
 
-__all__ = ["DEFAULT_BASES", "DEFAULT_KEY_ENV", "chat", "ensure_configured", "model_label"]
+__all__ = [
+    "DEFAULT_BASES",
+    "DEFAULT_KEY_ENV",
+    "Unreachable",
+    "chat",
+    "ensure_configured",
+    "model_label",
+]
 
 DEFAULT_BASES = {
     "ollama": "http://localhost:11434",
     "openai": "https://api.openai.com/v1",
 }
 DEFAULT_KEY_ENV = "OPENAI_API_KEY"
+# Bad request, payload too large, unprocessable: the endpoint read the request and said no.
+_REFUSED_REQUEST = (400, 413, 422)
+
+
+class Unreachable(IngatanError):
+    """The endpoint gave no answer, for a reason that has nothing to do with the text."""
 
 
 def model_label(cfg: LlmConfig) -> str:
@@ -96,8 +114,17 @@ def chat(cfg: LlmConfig, system: str, user: str) -> str:
             headers["Authorization"] = f"Bearer {key}"
     try:
         data = _post_json(url, payload, headers, cfg.timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code in _REFUSED_REQUEST:
+            raise IngatanError(
+                f"The {cfg.provider} model {model} at {base} refused the request "
+                f"(HTTP {exc.code}). The text may be too long for it."
+            ) from exc
+        raise Unreachable(
+            f"The {cfg.provider} model {model} at {base} did not answer: HTTP {exc.code}"
+        ) from exc
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
-        raise IngatanError(
+        raise Unreachable(
             f"The {cfg.provider} model {model} at {base} did not answer: "
             f"{type(exc).__name__}: {exc}"
         ) from exc

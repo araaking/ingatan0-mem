@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ingatan.extract import numbers as extract_numbers
+
 __all__ = [
     "Case",
     "CaseResult",
@@ -33,13 +35,12 @@ __all__ = [
 ]
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_NUMBER = re.compile(r"\d[\d.,]*")
 _FIELDS = {"id", "title", "episodes", "expected", "forbidden"}
 
 
 def numbers(text: str) -> set[str]:
-    """Every number in `text` without separators, as `ingatan.extract` compares them."""
-    return {m.group(0).replace(".", "").replace(",", "") for m in _NUMBER.finditer(text)}
+    """Every number in `text`, read the way `ingatan.extract` reads them (the same function)."""
+    return extract_numbers(text)
 
 
 @dataclass(frozen=True)
