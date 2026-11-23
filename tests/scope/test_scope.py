@@ -14,6 +14,7 @@ from ingatan.scope import (
     db_path,
     find_fact,
     open_context,
+    parse_embeddings,
     resolve_scope,
     validate_agent,
     validate_business,
@@ -266,3 +267,33 @@ def test_find_fact_returns_the_connection_the_row_lives_in(
     found_shared = find_fact(ctx, shared)
     assert found_local is not None and found_local[0] is ctx.business
     assert found_shared is not None and found_shared[0] is ctx.glob
+
+
+# ---- [embeddings] defer ------------------------------------------------------------
+
+
+def test_defer_defaults_to_false() -> None:
+    assert parse_embeddings({}, {}, {}).defer is False
+
+
+def test_defer_from_toml() -> None:
+    assert parse_embeddings({}, {"embeddings": {"defer": True}}, {}).defer is True
+    assert parse_embeddings({}, {}, {"embeddings": {"defer": True}}).defer is True
+
+
+def test_defer_env_wins_over_toml() -> None:
+    off = parse_embeddings({"INGATAN_EMBED_DEFER": "0"}, {"embeddings": {"defer": True}}, {})
+    assert off.defer is False
+    on = parse_embeddings({"INGATAN_EMBED_DEFER": "yes"}, {"embeddings": {"defer": False}}, {})
+    assert on.defer is True
+
+
+@pytest.mark.parametrize("value", ["sometimes", 1, 0.5])
+def test_defer_rejects_non_boolean(value: object) -> None:
+    with pytest.raises(ConfigError, match=r"\[embeddings\] defer"):
+        parse_embeddings({}, {"embeddings": {"defer": value}}, {})
+
+
+def test_defer_env_rejects_non_boolean() -> None:
+    with pytest.raises(ConfigError, match="INGATAN_EMBED_DEFER"):
+        parse_embeddings({"INGATAN_EMBED_DEFER": "maybe"}, {}, {})

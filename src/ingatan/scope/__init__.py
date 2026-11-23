@@ -67,8 +67,10 @@ class EmbeddingConfig:
     """Semantic search settings. The default is no embeddings at all: pure FTS5.
 
     `model_dir` is where the local provider keeps its model files (empty means
-    `<INGATAN_HOME>/models`). The three similarity fields override the cut-offs calibrated
-    for the model family; None keeps the calibrated value.
+    `<INGATAN_HOME>/models`). With `defer`, `remember` saves a fact without waiting for the
+    model and a background step of the server fills the vector in afterwards. The three
+    similarity fields override the cut-offs calibrated for the model family; None keeps the
+    calibrated value.
     """
 
     provider: str = "none"
@@ -79,6 +81,7 @@ class EmbeddingConfig:
     threads: int = 2
     idle_unload_seconds: int = 300
     model_dir: str = ""
+    defer: bool = False
     recall_floor: float | None = None
     conflict_similarity: float | None = None
     conflict_strict_similarity: float | None = None
@@ -257,6 +260,14 @@ def parse_embeddings(
             raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
         return parsed
 
+    def pick_bool(key: str, env_name: str) -> bool:
+        from_env = (source.get(env_name) or "").strip()
+        if from_env:
+            return parse_bool(from_env, label=env_name)
+        if key in merged:
+            return parse_bool(merged[key], label=f"[embeddings] {key}")
+        return False
+
     def pick_similarity(key: str) -> float | None:
         if key not in merged:
             return None
@@ -291,6 +302,7 @@ def parse_embeddings(
         threads=threads,
         idle_unload_seconds=idle_unload,
         model_dir=model_dir,
+        defer=pick_bool("defer", "INGATAN_EMBED_DEFER"),
         recall_floor=pick_similarity("recall_floor"),
         conflict_similarity=pick_similarity("conflict_similarity"),
         conflict_strict_similarity=pick_similarity("conflict_strict_similarity"),
