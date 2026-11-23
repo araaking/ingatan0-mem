@@ -489,13 +489,13 @@ def test_background_fill_runs_the_worker_and_catches_up(
         with background_fill([scope]):
             assert alive() == ["ingatan-backfill"]
             deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
+            row = None
+            while row is None and time.monotonic() < deadline:
                 row = ctx.business.execute(
                     "SELECT fact_id FROM fact_embeddings WHERE fact_id = ?", (saved.fact_id,)
                 ).fetchone()
-                if row is not None:
-                    break
-                time.sleep(0.02)
+                if row is None:
+                    time.sleep(0.02)
             assert row is not None
         assert alive() == []
         assert backfill.last_worker_error() == ""
