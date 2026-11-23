@@ -116,9 +116,22 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None]:
     if emb.provider == "none":
         notes.append("embeddings: none (FTS5 only)")
     else:
-        from ingatan.search.embed import effective_model
+        from ingatan.search.embed import effective_model, local_runtime_available
 
-        notes.append(f"embeddings: {emb.provider} ({effective_model(emb)})")
+        model_name = effective_model(emb)
+        if emb.provider == "local" and not local_runtime_available():
+            notes.append(
+                f"embeddings: local ({model_name}; fastembed not installed, using FTS5 fallback)"
+            )
+        elif emb.provider == "local":
+            idle_label = (
+                f"idle unload {emb.idle_unload_seconds}s"
+                if emb.idle_unload_seconds > 0
+                else "no idle unload"
+            )
+            notes.append(f"embeddings: local ({model_name}; threads={emb.threads}, {idle_label})")
+        else:
+            notes.append(f"embeddings: {emb.provider} ({model_name})")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business

@@ -7,8 +7,8 @@
 **Memory for AI agents that knows when to doubt itself.**<br>
 **Memori untuk agen AI yang tahu kapan harus meragukan dirinya sendiri.**
 
-A local MCP server backed by plain SQLite files. Zero-dependency FTS5 by default, with optional offline semantic vector search.<br>
-Server MCP lokal di atas berkas SQLite biasa. FTS5 tanpa dependensi secara bawaan, dengan pencarian semantik vektor offline opsional.
+A local MCP server backed by plain SQLite files. Hybrid FTS5 + offline local semantic search (`intfloat/multilingual-e5-small`) out of the box, with zero API keys.<br>
+Server MCP lokal di atas berkas SQLite biasa. Pencarian hybrid FTS5 + semantik lokal offline (`intfloat/multilingual-e5-small`) aktif secara bawaan, tanpa API key.
 
 <p>
 <img src="https://img.shields.io/badge/status-pre--release-b45309" alt="Status: pre-release">
@@ -85,7 +85,7 @@ Ingatan dibuat untuk orang yang memakai beberapa agen (asisten umum, agen SEO, a
 | | Yang dilakukan Ingatan |
 |---|---|
 | **Fakta punya tanggal tinjau** | Fakta `volatile` punya tanggal tinjau (bawaan 30 hari, bisa diatur per fakta). Setelah lewat, fakta itu tampil di bagian "check first", bukan sebagai kebenaran. |
-| **Tanpa LLM di server (hybrid opsional)** | Pencarian bawaan memakai SQLite FTS5 (BM25 + trigram), kecocokan entitas, kamus alias proyek, dan kebaruan, digabung lewat RRF. Bila butuh pencarian berbasis makna lintas istilah, aktifkan `[embeddings]` (ONNX lokal offline lewat `ingatan[vector]`, Ollama, OpenAI, atau Gemini) — vektor disimpan langsung di berkas SQLite yang sama. |
+| **Hybrid FTS5 + semantik lokal (tanpa API key)** | Pencarian memadukan SQLite FTS5 (BM25 + trigram + imbuhan Indonesia + kamus alias) dan vektor semantik lokal offline (`intfloat/multilingual-e5-small` via ONNX `fastembed`) lewat RRF — langsung aktif tanpa API key. Vektor disimpan di berkas SQLite yang sama, bisa diganti ke Ollama (mis. `embeddinggemma`), OpenAI, Gemini, atau dimatikan (`provider = "none"`) untuk mode FTS5 hemat RAM. |
 | **Paham imbuhan Indonesia & alias** | Pelepas imbuhan ringan memperluas query ("dikirim" -> "pengiriman"), ditambah kamus alias per proyek (`ingatan alias add LP "landing page"`) untuk ekspansi dua arah. |
 | **Kategori memori, pin, relasi, & time-travel** | Fakta mendukung kategori (`fact`, `rule`, `procedure`, `preference`), `pinned`, deduplikasi otomatis, relasi antar-fakta (`related_to`, `part_of`), serta pencarian historis `recall(..., as_of="YYYY-MM-DD")`. |
 | **Scope dikunci server** | Bisnis dan agen ditentukan dari berkas konfigurasi atau variabel lingkungan saat server menyala. Tidak ada tool yang menerima nama bisnis, dan tidak ada pencarian lintas bisnis. |
@@ -113,9 +113,8 @@ Ingatan belum dirilis ke PyPI, jadi pasang secara editable dari hasil clone (aga
 
 ```bash
 uv tool install --editable /path/to/ingatan
-# Atau dengan pencarian semantik lokal offline (ONNX / fastembed):
-uv tool install --editable "/path/to/ingatan[vector]"
 ```
+> Pencarian semantik lokal offline (`fastembed` + `intfloat/multilingual-e5-small`) sudah terpasang otomatis secara bawaan (jika ingin memaksa FTS5 saja, set `INGATAN_EMBED_PROVIDER=none`).
 
 Setelah rilis PyPI nanti, cukup satu perintah (saat ini **belum berfungsi**):
 
@@ -185,10 +184,13 @@ agent = "claude-code"
 [brief]
 token_budget = 1000
 
-# Opsional: aktifkan pencarian semantik hybrid (bawaan: provider = "none")
+# Bawaan: pencarian semantik lokal offline (`intfloat/multilingual-e5-small`)
+# Ubah ke "none" untuk FTS5 hemat RAM, atau pilih "ollama" / "openai" / "gemini"
 # [embeddings]
-# provider = "local"   # none | local | ollama | openai | gemini
+# provider = "local"   # local (default) | none | ollama | openai | gemini
 # model = "intfloat/multilingual-e5-small"
+# threads = 2                # batas thread ONNX agar arena RAM tetap rendah
+# idle_unload_seconds = 300  # lepas model dari RAM otomatis setelah diam 5 menit (0 = tetap muat)
 ```
 
 | Variabel lingkungan | Fungsi |
@@ -196,8 +198,10 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Menimpa `business` dari berkas konfigurasi |
 | `INGATAN_AGENT` | Menimpa `agent` dari berkas konfigurasi |
 | `INGATAN_HOME` | Folder data. Bawaan: `~/.ingatan/` |
-| `INGATAN_EMBED_PROVIDER` | Menimpa `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_PROVIDER` | Menimpa `[embeddings].provider` (`local`, `none`, `ollama`, `openai`, `gemini`) |
 | `INGATAN_EMBED_MODEL` | Menimpa `[embeddings].model` |
+| `INGATAN_EMBED_THREADS` | Menimpa batas thread ONNX `[embeddings].threads` (bawaan: `2`) |
+| `INGATAN_EMBED_IDLE_UNLOAD` | Menimpa detik *idle auto-unload* model lokal (bawaan: `300`, `0` = nonaktif) |
 
 <a id="id-tool"></a>
 
@@ -310,7 +314,7 @@ Eval berisi 43 skenario berbahasa Indonesia (40 berbasis pola + 3 skenario insid
 | recall@5 | 100,0% dari 48 pemeriksaan | di atas 80% |
 | Stale rate | 0,0% dari 66 pemeriksaan recall | di bawah 5% |
 | Leak rate | 0,0% (0 dari 91 hasil) | 0 |
-| Token per brief | rata-rata 65, maksimum 259 dari 20 brief | sekitar 1.000 |
+| Token per brief | rata-rata 64, maksimum 258 dari 20 brief | sekitar 1.000 |
 
 Pemakaian memori satu proses server stdio: 70,2 MB saat diam dan 73,6 MB setelah 500 fakta disimpan. Diukur sekali, di satu laptop Windows 11, Python 3.11.16, mcp 2.3.0.
 
@@ -420,7 +424,7 @@ It is built for people who use several agents (a general assistant, an SEO agent
 | | What Ingatan does |
 |---|---|
 | **Facts carry a review date** | A `volatile` fact has a review date (30 days by default, settable per fact). Once it passes, the fact is shown under "check first" instead of as truth. |
-| **No LLM on the server (optional hybrid)** | Default search uses SQLite FTS5 (BM25 + trigram), entity match, project aliases, and recency fused via RRF. For cross-vocabulary semantic search, enable `[embeddings]` (offline local ONNX via `ingatan[vector]`, Ollama, OpenAI, or Gemini) — vectors live inside the same SQLite file. |
+| **Hybrid FTS5 + local semantic search (no API key)** | Search fuses SQLite FTS5 (BM25 + trigram + Indonesian affixes + project aliases) with offline local semantic vectors (`intfloat/multilingual-e5-small` via ONNX `fastembed`) through RRF — enabled by default with no API key. Vectors live in the same SQLite file; switch to Ollama (e.g. `embeddinggemma`), OpenAI, Gemini, or set `provider = "none"` for pure FTS5 minimal-RAM mode. |
 | **Understands Indonesian affixes & aliases** | A lightweight affix stripper widens queries ("dikirim" -> "pengiriman"), paired with a project-scoped alias glossary (`ingatan alias add LP "landing page"`) for bidirectional expansion. |
 | **Memory categories, pinning, links & time-travel** | Facts support categories (`fact`, `rule`, `procedure`, `preference`), `pinned`, automatic deduplication, relation edges (`related_to`, `part_of`), and historical queries via `recall(..., as_of="YYYY-MM-DD")`. |
 | **Scope fixed by the server** | The business and the agent come from a config file or environment variables at start-up (or an explicit `allowed_businesses` allowlist in multi-business mode). No cross-business search. |
@@ -448,9 +452,8 @@ Ingatan is not on PyPI yet, so install in editable mode from a checkout (so `git
 
 ```bash
 uv tool install --editable /path/to/ingatan
-# Or with offline local semantic search (ONNX / fastembed):
-uv tool install --editable "/path/to/ingatan[vector]"
 ```
+> Offline local semantic search (`fastembed` + `intfloat/multilingual-e5-small`) is included by default (set `INGATAN_EMBED_PROVIDER=none` for pure FTS5 minimal-RAM mode).
 
 After the PyPI release it will be one command (this **does not work yet**):
 
@@ -520,10 +523,13 @@ agent = "claude-code"
 [brief]
 token_budget = 1000
 
-# Optional: enable hybrid semantic search (default: provider = "none")
+# Default: offline local semantic search (`intfloat/multilingual-e5-small`)
+# Set provider = "none" for pure FTS5 minimal-RAM mode, or use "ollama" / "openai" / "gemini"
 # [embeddings]
-# provider = "local"   # none | local | ollama | openai | gemini
+# provider = "local"   # local (default) | none | ollama | openai | gemini
 # model = "intfloat/multilingual-e5-small"
+# threads = 2                # caps ONNX thread arenas to keep RAM low
+# idle_unload_seconds = 300  # auto-unload local model after 5 min idle (0 = keep loaded)
 ```
 
 | Environment variable | Purpose |
@@ -531,8 +537,10 @@ token_budget = 1000
 | `INGATAN_BUSINESS` | Overrides `business` from the config file |
 | `INGATAN_AGENT` | Overrides `agent` from the config file |
 | `INGATAN_HOME` | Data folder. Default: `~/.ingatan/` |
-| `INGATAN_EMBED_PROVIDER` | Overrides `[embeddings].provider` (`none`, `local`, `ollama`, `openai`, `gemini`) |
+| `INGATAN_EMBED_PROVIDER` | Overrides `[embeddings].provider` (`local`, `none`, `ollama`, `openai`, `gemini`) |
 | `INGATAN_EMBED_MODEL` | Overrides `[embeddings].model` |
+| `INGATAN_EMBED_THREADS` | Overrides ONNX thread cap `[embeddings].threads` (default: `2`) |
+| `INGATAN_EMBED_IDLE_UNLOAD` | Overrides local model idle auto-unload in seconds (default: `300`, `0` = keep) |
 
 <a id="en-tools"></a>
 
@@ -645,7 +653,7 @@ The eval contains 43 scenarios in Indonesian (40 pattern-based + 3 anonymized in
 | recall@5 | 100.0% over 48 checks | over 80% |
 | Stale rate | 0.0% over 66 recall checks | under 5% |
 | Leak rate | 0.0% (0 of 91 results) | 0 |
-| Tokens per brief | mean 65, max 259 over 20 briefs | about 1,000 |
+| Tokens per brief | mean 64, max 258 over 20 briefs | about 1,000 |
 
 Memory use of one stdio server process: 70.2 MB idle and 73.6 MB after 500 facts were saved. Measured once, on one Windows 11 laptop, Python 3.11.16, mcp 2.3.0.
 

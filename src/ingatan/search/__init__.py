@@ -18,7 +18,7 @@ from ingatan.search.core import (
     similar_facts,
     status_of,
 )
-from ingatan.search.embed import ReindexReport, reindex
+from ingatan.search.embed import ReindexReport, reindex, unload_local_models
 
 __all__ = [
     "CATEGORIES",
@@ -35,4 +35,5 @@ __all__ = [
     "remove_alias",
     "similar_facts",
     "status_of",
+    "unload_local_models",
 ]

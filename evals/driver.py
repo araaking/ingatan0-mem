@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ingatan import facts, proposals, search, timeutil
-from ingatan.scope import Context, Scope, open_context
+from ingatan.scope import Context, EmbeddingConfig, Scope, open_context
 
 from .scenarios import Actor
 
@@ -126,6 +126,7 @@ class InProcessDriver:
                 home=self.home,
                 token_budget=self.token_budget,
                 require_approval=self.require_approval,
+                embeddings=EmbeddingConfig(provider="none"),
             )
             found = self._contexts[actor] = open_context(scope)
         return found

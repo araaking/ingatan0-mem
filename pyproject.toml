@@ -23,9 +23,12 @@ dependencies = [
   "typer",
   "uvicorn",
   "tomli>=2; python_version < '3.11'",
+  "fastembed>=0.4",
+  "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
+# Kept for compatibility; local vector dependencies are now included by default.
 vector = [
   "fastembed>=0.4",
   "numpy>=1.24",

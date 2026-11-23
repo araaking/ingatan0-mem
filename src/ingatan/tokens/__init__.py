@@ -173,6 +173,28 @@ class TokenStore:
         self._signature: tuple[int, int, int] | None = None
         self._loaded = False
         self._records: list[Token] = []
+        self._cfg_signature: tuple[int, int, int] | None = None
+        self._cfg_loaded = False
+        self._home_cfg: dict[str, Any] = {}
+
+    def _refresh_home_config(self) -> dict[str, Any]:
+        cfg_path = self.home / "config.toml"
+        try:
+            stat = cfg_path.stat()
+            sig: tuple[int, int, int] | None = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            sig = None
+        if self._cfg_loaded and sig == self._cfg_signature:
+            return self._home_cfg
+        self._home_cfg = load_home_config(self.home) if sig is not None else {}
+        self._cfg_signature = sig
+        self._cfg_loaded = True
+        return self._home_cfg
+
+    def active_scopes(self) -> set[tuple[str, str]]:
+        """Currently authorized `(business, agent)` pairs from `tokens.json`."""
+        self._refresh()
+        return {(r.business, r.agent) for r in self._records}
 
     def _refresh(self) -> None:
         path = tokens_path(self.home)
@@ -206,7 +228,7 @@ class TokenStore:
         if match is None:
             return None
         try:
-            home_cfg = load_home_config(self.home)
+            home_cfg = self._refresh_home_config()
             budget = DEFAULT_TOKEN_BUDGET
             brief_section = home_cfg.get("brief")
             if isinstance(brief_section, dict) and "token_budget" in brief_section:

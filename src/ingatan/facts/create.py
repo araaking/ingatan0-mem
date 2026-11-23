@@ -215,21 +215,20 @@ def _find_duplicate(
     if vector and len(clean_text.split()) >= 4 and embed_store.is_enabled(ctx.scope.embeddings):
         model = embed_store.effective_model(ctx.scope.embeddings)
         dims = len(vector)
-        best_row: sqlite3.Row | None = None
-        best_sim = SEMANTIC_DEDUP_THRESHOLD
         emb_rows = conn.execute(
-            "SELECT f.*, e.dims AS _dims, e.vec AS _vec FROM fact_embeddings e "
+            "SELECT e.fact_id, e.vec FROM fact_embeddings e "
             "JOIN facts f ON f.id = e.fact_id "
             f"WHERE e.model = :model AND e.dims = :dims AND f.tier = :tier "
             f"AND f.category = :cat AND {is_valid_sql('f')} AND {ctx.visible_sql(conn, alias='f')}",
             {"model": model, "dims": dims, **params},
         ).fetchall()
-        for row in emb_rows:
-            sim = embed_store.cosine_similarity(vector, row["_vec"], int(row["_dims"]))
-            if sim >= best_sim:
-                best_sim = sim
-                best_row = row
-        return best_row
+        raw_items = [(str(r["fact_id"]), bytes(r["vec"])) for r in emb_rows]
+        best = embed_store.score_blobs(
+            vector, raw_items, dims, min_similarity=SEMANTIC_DEDUP_THRESHOLD, top_k=1
+        )
+        if best:
+            best_id = best[0][0]
+            return conn.execute("SELECT * FROM facts WHERE id = ?", (best_id,)).fetchone()
     return None
 
 

@@ -698,6 +698,7 @@ def run() -> None:
         finally:
             for ctx in opened.values():
                 ctx.close()
+            search.unload_local_models()
         return
 
     try:
@@ -711,6 +712,7 @@ def run() -> None:
         pass
     finally:
         ctx.close()
+        search.unload_local_models()
 
 
 if __name__ == "__main__":

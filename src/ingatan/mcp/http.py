@@ -26,6 +26,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from ingatan.errors import ConfigError
 from ingatan.mcp.server import build_server
 from ingatan.scope import Context, Scope, data_home, open_context
+from ingatan.search import unload_local_models
 from ingatan.tokens import TokenStore
 
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "HTTPApp", "build_app", "is_loopback", "run_http"]
@@ -142,6 +143,7 @@ class HTTPApp:
             await asyncio.gather(*(s.task for s in servers), return_exceptions=True)
             for server in servers:
                 server.context.close()
+            unload_local_models()
 
     async def _lifespan_protocol(self, receive: Receive, send: Send) -> None:
         await receive()  # lifespan.startup
@@ -156,20 +158,31 @@ class HTTPApp:
         await stack.aclose()
         await send({"type": "lifespan.shutdown.complete"})
 
+    async def _close_server(self, server: _ScopeServer) -> None:
+        server.stop.set()
+        await asyncio.gather(server.task, return_exceptions=True)
+        server.context.close()
+
     async def _server_for(self, scope: Scope) -> _ScopeServer:
         key = (scope.business, scope.agent)
         found = self._servers.get(key)
-        if found is not None:
+        if found is not None and found.context.scope == scope:
             return found
         lock = self._lock
         if lock is None:
             raise RuntimeError("The HTTP app is not running. Enter `lifespan()` first.")
+        stale: _ScopeServer | None = None
         async with lock:
             found = self._servers.get(key)
-            if found is None:
-                found = await self._start(scope)
-                self._servers[key] = found
-            return found
+            if found is not None and found.context.scope == scope:
+                return found
+            if found is not None:
+                stale = found
+            found = await self._start(scope)
+            self._servers[key] = found
+        if stale is not None:
+            await self._close_server(stale)
+        return found
 
     async def _start(self, scope: Scope) -> _ScopeServer:
         # On the event-loop thread, like every tool call: the SQLite connections belong here.
@@ -234,11 +247,24 @@ class HTTPApp:
         raw = _bearer_token(scope)
         who = self.tokens.lookup(raw) if raw is not None else None
         if who is None:
+            await self._evict_revoked_scopes()
             await _unauthorized(send)
             return
         server = await self._server_for(who)
         # The SDK refuses bodies above MAX_BODY_BYTES with 413 before parsing them.
         await server.manager.handle_request(scope, receive, send)
+
+    async def _evict_revoked_scopes(self) -> None:
+        """Close cached scope servers whose `(business, agent)` no longer has any valid token."""
+        if not self._servers or self._lock is None:
+            return
+        active = self.tokens.active_scopes()
+        evicted: list[_ScopeServer] = []
+        async with self._lock:
+            for key in [k for k in self._servers if k not in active]:
+                evicted.append(self._servers.pop(key))
+        for server in evicted:
+            await self._close_server(server)
 
 
 def build_app(home: Path) -> HTTPApp:

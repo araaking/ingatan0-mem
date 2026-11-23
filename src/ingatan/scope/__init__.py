@@ -63,11 +63,13 @@ VISIBLE_SQL_GLOBAL = "tier = 'global'"
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    provider: str = "none"
+    provider: str = "local"
     model: str = ""
     api_base: str = ""
     api_key_env: str = ""
     timeout: float = 15.0
+    threads: int = 2
+    idle_unload_seconds: int = 300
 
 
 @dataclass(frozen=True)
@@ -209,7 +211,7 @@ def parse_embeddings(
         val = merged.get(key)
         return val.strip() if isinstance(val, str) else ""
 
-    provider = (pick_str("provider", "INGATAN_EMBED_PROVIDER") or "none").casefold()
+    provider = (pick_str("provider", "INGATAN_EMBED_PROVIDER") or "local").casefold()
     if provider not in EMBED_PROVIDERS:
         raise ConfigError(
             f"Unknown embeddings provider {provider!r}. Use one of: {', '.join(EMBED_PROVIDERS)}."
@@ -224,12 +226,35 @@ def parse_embeddings(
         or raw_timeout <= 0
     ):
         raise ConfigError("[embeddings] timeout must be a positive number.")
+
+    def pick_int(key: str, env_name: str, default: int, *, minimum: int) -> int:
+        from_env = (source.get(env_name) or "").strip()
+        raw_val: object = from_env if from_env else merged.get(key, default)
+        if isinstance(raw_val, bool):
+            raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
+        if isinstance(raw_val, str):
+            try:
+                parsed = int(raw_val)
+            except ValueError as exc:
+                raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.") from exc
+        elif isinstance(raw_val, int):
+            parsed = raw_val
+        else:
+            raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
+        if parsed < minimum:
+            raise ConfigError(f"[embeddings] {key} must be an integer >= {minimum}.")
+        return parsed
+
+    threads = pick_int("threads", "INGATAN_EMBED_THREADS", 2, minimum=1)
+    idle_unload = pick_int("idle_unload_seconds", "INGATAN_EMBED_IDLE_UNLOAD", 300, minimum=0)
     return EmbeddingConfig(
         provider=provider,
         model=model,
         api_base=api_base,
         api_key_env=api_key_env,
         timeout=float(raw_timeout),
+        threads=threads,
+        idle_unload_seconds=idle_unload,
     )
 
 

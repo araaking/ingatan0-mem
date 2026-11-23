@@ -51,7 +51,12 @@ ingatan serve --http --host 0.0.0.0 --port 9000   # all interfaces
 - A bind host other than a loopback address prints one warning line to stderr: the traffic is
   not encrypted unless a reverse proxy or a private network is in front.
 - HTTP mode does not read `.ingatan.toml`, `INGATAN_BUSINESS` or `INGATAN_AGENT`. The scope of
-  each request comes from its token. `INGATAN_HOME` still selects the data folder.
+  each request comes from its token, while shared defaults (`[brief].token_budget`,
+  `require_approval`, `[embeddings]`) are inherited from `<INGATAN_HOME>/config.toml` and
+  reloaded automatically when that file changes. `INGATAN_HOME` still selects the data folder.
+- **Shared embedding model (low RAM):** all businesses and agents served by one HTTP process
+  share a single loaded ONNX embedding model instance (automatically unloaded after
+  `idle_unload_seconds`, default 300s), instead of loading one copy per stdio agent process.
 - Requests above 1 MiB are refused with `413`. A missing, malformed or unknown token gets
   `401` with `WWW-Authenticate: Bearer`; the body does not say which of the three it was.
 - The server makes no outbound network call.

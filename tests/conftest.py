@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ingatan import timeutil
-from ingatan.scope import Context, Scope, open_context
+from ingatan.scope import Context, EmbeddingConfig, Scope, open_context
 
 DEFAULT_BUSINESS = "tokoku"
 DEFAULT_AGENT = "claude-code"
@@ -26,6 +26,8 @@ def ingatan_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("INGATAN_HOME", str(home))
     monkeypatch.delenv("INGATAN_BUSINESS", raising=False)
     monkeypatch.delenv("INGATAN_AGENT", raising=False)
+    # Keep tests fast, offline, and deterministic unless a test explicitly enables embeddings.
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "none")
     # Belt and braces: even a bug that falls back to `~` stays inside tmp_path.
     fake_user = tmp_path / "user-home"
     fake_user.mkdir()
@@ -52,6 +54,7 @@ def make_ctx(ingatan_home: Path) -> Iterator[MakeContext]:
         business: str = DEFAULT_BUSINESS,
         token_budget: int = 1000,
         require_approval: bool = False,
+        embeddings: EmbeddingConfig | None = None,
     ) -> Context:
         ctx = open_context(
             Scope(
@@ -60,6 +63,9 @@ def make_ctx(ingatan_home: Path) -> Iterator[MakeContext]:
                 home=ingatan_home,
                 token_budget=token_budget,
                 require_approval=require_approval,
+                embeddings=embeddings
+                if embeddings is not None
+                else EmbeddingConfig(provider="none"),
             )
         )
         opened.append(ctx)

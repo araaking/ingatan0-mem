@@ -84,6 +84,37 @@ def test_migration_v1_to_v2_preserves_existing_rows_and_adds_tables(tmp_path: Pa
         conn.close()
 
 
+def test_default_embeddings_is_local_multilingual_e5_and_prefixes(
+    ingatan_home: Path, tmp_path: Path
+) -> None:
+    proj = tmp_path / "default-proj"
+    proj.mkdir()
+    (proj / ".ingatan.toml").write_text('business = "tokoku"\nagent = "hermes"\n', encoding="utf-8")
+
+    # With no [embeddings] section or env override, defaults to local multilingual-e5-small.
+    scope = resolve_scope(start=proj, env={"INGATAN_HOME": str(ingatan_home)})
+    assert scope.embeddings.provider == "local"
+    assert embed_store.effective_model(scope.embeddings) == "intfloat/multilingual-e5-small"
+
+    # Model-family prefix formatting for both E5 and EmbeddingGemma
+    assert (
+        embed_store._apply_model_prefix("intfloat/multilingual-e5-small", "biaya", is_query=True)
+        == "query: biaya"
+    )
+    assert (
+        embed_store._apply_model_prefix("intfloat/multilingual-e5-small", "tarif", is_query=False)
+        == "passage: tarif"
+    )
+    assert (
+        embed_store._apply_model_prefix("embeddinggemma", "biaya", is_query=True)
+        == "task: search result | query: biaya"
+    )
+    assert (
+        embed_store._apply_model_prefix("embeddinggemma", "tarif", is_query=False)
+        == "title: none | text: tarif"
+    )
+
+
 def test_embedding_config_from_toml_env_and_tokens(
     ingatan_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -125,6 +156,7 @@ def test_embedding_config_from_toml_env_and_tokens(
         )
 
     # TokenStore.lookup inherits [embeddings] from ~/.ingatan/config.toml
+    monkeypatch.delenv("INGATAN_EMBED_PROVIDER", raising=False)
     raw, _ = tokens.add(ingatan_home, "tokoku", "hermes")
     looked = tokens.TokenStore(ingatan_home).lookup(raw)
     assert looked is not None
@@ -220,7 +252,14 @@ def test_reindex_and_forget_scrubs_embedding_bytes(
     ingatan_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Start with embeddings disabled, insert a fact and a note
-    plain_ctx = open_context(Scope(business="tokoku", agent="claude-code", home=ingatan_home))
+    plain_ctx = open_context(
+        Scope(
+            business="tokoku",
+            agent="claude-code",
+            home=ingatan_home,
+            embeddings=EmbeddingConfig(provider="none"),
+        )
+    )
     secret_marker = "RahasiaStrategiUnik998877"
     try:
         saved = facts.remember(
@@ -750,3 +789,146 @@ def test_mcp_server_still_exactly_seven_tools_with_phase2_params(ctx: Context) -
     assert {"as_of", "category", "include_related"} <= set(recall_props)
     remember_props = tools["remember"].parameters["properties"]
     assert {"category", "pinned", "related_to", "dedup"} <= set(remember_props)
+
+
+# ---- 9. Memory optimizations & HTTP lifecycle ----------------------------------------
+
+
+def test_embed_threads_idle_unload_and_query_cache(
+    ingatan_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "opt-proj"
+    proj.mkdir()
+    (proj / ".ingatan.toml").write_text(
+        'business = "tokoku"\nagent = "hermes"\n\n'
+        "[embeddings]\n"
+        'provider = "local"\n'
+        "threads = 1\n"
+        "idle_unload_seconds = 60\n",
+        encoding="utf-8",
+    )
+    scope = resolve_scope(start=proj, env={"INGATAN_HOME": str(ingatan_home)})
+    assert scope.embeddings.threads == 1
+    assert scope.embeddings.idle_unload_seconds == 60
+
+    env_scope = resolve_scope(
+        start=proj,
+        env={
+            "INGATAN_HOME": str(ingatan_home),
+            "INGATAN_EMBED_THREADS": "4",
+            "INGATAN_EMBED_IDLE_UNLOAD": "0",
+        },
+    )
+    assert env_scope.embeddings.threads == 4
+    assert env_scope.embeddings.idle_unload_seconds == 0
+
+    with pytest.raises(ConfigError):
+        resolve_scope(
+            start=proj,
+            env={"INGATAN_HOME": str(ingatan_home), "INGATAN_EMBED_THREADS": "0"},
+        )
+
+    # Verify idle auto-unload and manual unload_local_models()
+    embed_store.unload_local_models()
+    key = ("fake-model", 2)
+    with embed_store._local_lock:
+        embed_store._local_models[key] = object()
+        embed_store._local_last_used[key] = 0.0
+    embed_store._unload_if_idle(key, 1.0)
+    assert key not in embed_store._local_models
+
+    with embed_store._local_lock:
+        embed_store._local_models[key] = object()
+        embed_store._local_last_used[key] = 999999999.0
+    assert embed_store.unload_local_models() == 1
+    assert embed_store._local_models == {}
+
+    # Verify bounded LRU query cache avoids redundant inference
+    calls = 0
+
+    def counting_embed(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        nonlocal calls
+        calls += 1
+        return _unit(1.0, 0.0, 0.0)
+
+    monkeypatch.setattr(embed_store, "_embed_raw", counting_embed)
+    cfg = EmbeddingConfig(provider="local", model="cache-test")
+    v1 = embed_store.embed_text(cfg, "ulang query", is_query=True)
+    v2 = embed_store.embed_text(cfg, "ulang query", is_query=True)
+    assert v1 == v2 and calls == 1
+
+
+def test_vectorized_score_blobs_and_reindex_prunes_orphans(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    q = _unit(1.0, 0.0, 0.0)
+    b_high = embed_store.pack_vector(_unit(0.95, 0.31, 0.0))
+    b_mid = embed_store.pack_vector(_unit(0.6, 0.8, 0.0))
+    b_low = embed_store.pack_vector(_unit(0.0, 1.0, 0.0))
+    ranked = embed_store.score_blobs(
+        q,
+        [("low", b_low), ("mid", b_mid), ("high", b_high)],
+        dims=3,
+        min_similarity=0.5,
+        top_k=2,
+    )
+    assert [k for k, _ in ranked] == ["high", "mid"]
+
+    # Insert an orphan row in fact_embeddings and confirm reindex prunes it
+    monkeypatch.setattr(
+        embed_store, "_embed_raw", lambda cfg, text, *, is_query: _unit(1.0, 0.0, 0.0)
+    )
+    ctx = _make_embed_ctx(ingatan_home)
+    try:
+        with db.transaction(ctx.business):
+            ctx.business.execute(
+                "INSERT INTO fact_embeddings (fact_id, model, dims, vec, updated_at) "
+                "VALUES ('f_orphan000001', 'test-model', 3, ?, '2026-11-11T00:00:00Z')",
+                (b_high,),
+            )
+        search.reindex(ctx)
+        assert (
+            ctx.business.execute(
+                "SELECT count(*) FROM fact_embeddings WHERE fact_id = 'f_orphan000001'"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        ctx.close()
+
+
+def test_http_app_reloads_scope_on_config_change_and_evicts_revoked(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from ingatan.mcp.http import build_app
+
+    monkeypatch.delenv("INGATAN_EMBED_PROVIDER", raising=False)
+    ingatan_home.mkdir(parents=True, exist_ok=True)
+    cfg_path = ingatan_home / "config.toml"
+    cfg_path.write_text("[brief]\ntoken_budget = 800\n", encoding="utf-8")
+    raw, rec = tokens.add(ingatan_home, "tokoku", "claude-code")
+
+    async def exercise() -> None:
+        http_app = build_app(ingatan_home)
+        async with http_app.lifespan():
+            s1 = http_app.tokens.lookup(raw)
+            assert s1 is not None and s1.token_budget == 800
+            srv1 = await http_app._server_for(s1)
+
+            # Update config.toml and bump mtime/size; next lookup reloads and swaps _ScopeServer.
+            cfg_path.write_text("[brief]\ntoken_budget = 1400\n", encoding="utf-8")
+            s2 = http_app.tokens.lookup(raw)
+            assert s2 is not None and s2.token_budget == 1400
+            srv2 = await http_app._server_for(s2)
+            assert srv2 is not srv1
+            assert srv2.context.scope.token_budget == 1400
+
+            # Revoking the token evicts the cached _ScopeServer cleanly.
+            tokens.revoke(ingatan_home, rec.id)
+            assert http_app.tokens.lookup(raw) is None
+            await http_app._evict_revoked_scopes()
+            assert http_app._servers == {}
+
+    asyncio.run(exercise())
