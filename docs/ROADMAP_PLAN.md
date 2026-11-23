@@ -410,8 +410,10 @@ Rule from the roadmap: scenarios first; the factor ships only if both new scenar
 - Produces: `_usage_factor(row: sqlite3.Row, reference: datetime) -> float`, applied next to `_freshness_factor`, skipped for `as_of` recalls. Named constants with the eval numbers in the comment beside them: `USAGE_BOOST` (start at `0.02`), `USAGE_HALF_LIFE_DAYS` (start at `30.0`), `USAGE_COUNT_SATURATION` (start at `5`).
 
 ```python
-hotness = (1 - 0.5 ** (use_count / USAGE_COUNT_SATURATION)) * 0.5 ** (days_since_last_used / USAGE_HALF_LIFE_DAYS)
-factor = 1.0 + USAGE_BOOST * hotness   # a fact never used: exactly 1.0
+hotness = (1 - 0.5 ** (use_count / USAGE_COUNT_SATURATION)) * 0.5 ** (
+    days_since_last_used / USAGE_HALF_LIFE_DAYS
+)
+factor = 1.0 + USAGE_BOOST * hotness  # a fact never used: exactly 1.0
 ```
 
 - [ ] **Step 1: failing unit tests:**
