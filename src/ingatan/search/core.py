@@ -408,14 +408,33 @@ def _usage_factor(row: sqlite3.Row, reference: datetime) -> float:
 
 
 def _open_conflict_ids(ctx: Context) -> set[str]:
-    """Every fact id named by an unresolved conflict pair (pairs live in the business file)."""
-    ids: set[str] = set()
-    for row in ctx.business.execute(
-        "SELECT fact_a, fact_b FROM conflicts WHERE resolved_at IS NULL"
-    ):
-        ids.add(str(row["fact_a"]))
-        ids.add(str(row["fact_b"]))
-    return ids
+    """Every fact whose status would say `possible conflict`, found in one pass.
+
+    The rule of `_in_open_conflict`: an unresolved pair counts for a fact only while the
+    other fact of the pair is still valid and visible to the caller. Pairs live in the
+    business file; the facts they name may be in either file.
+    """
+    pairs = [
+        (str(row["fact_a"]), str(row["fact_b"]))
+        for row in ctx.business.execute(
+            "SELECT fact_a, fact_b FROM conflicts WHERE resolved_at IS NULL"
+        )
+    ]
+    if not pairs:
+        return set()
+    named = json.dumps(sorted({fact_id for pair in pairs for fact_id in pair}))
+    live: set[str] = set()
+    for conn in ctx.connections():
+        live.update(
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM facts WHERE id IN (SELECT value FROM json_each(:ids)) "
+                f"AND {is_valid_sql()} AND {ctx.visible_sql(conn)}",
+                {"ids": named, "now": _now(), **ctx.params},
+            )
+        )
+    # Both must be live: a fact the caller cannot see is never named, not even here.
+    return {fact_id for pair in pairs if live.issuperset(pair) for fact_id in pair}
 
 
 def _row_blob(row: sqlite3.Row) -> str:

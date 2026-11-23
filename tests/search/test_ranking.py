@@ -201,6 +201,47 @@ def test_a_much_used_fact_does_not_pass_the_fact_that_corrects_it(
     assert {hit.status for hit in hits} == {"possible conflict"}
 
 
+def _pair(ctx: Context, fact_a: str, fact_b: str) -> None:
+    ctx.business.execute(
+        "INSERT INTO conflicts (fact_a, fact_b, created_at) VALUES (?, ?, ?)",
+        (fact_a, fact_b, "2026-11-11T09:00:00Z"),
+    )
+
+
+def test_usage_counts_again_once_the_other_fact_of_a_pair_is_closed(
+    ctx: Context, frozen_clock: Any
+) -> None:
+    """What takes the boost away is the status `possible conflict`, and nothing wider."""
+    first = _remember(ctx, "Jadwal antar barang dari toko-a tiap Senin pagi.", "toko-a")
+    gone = _remember(ctx, "Kurir toko-a libur pada hari raya.", "toko-a", check_conflicts=False)
+    _pair(ctx, first, gone)
+    frozen_clock.advance(days=1)
+    second = _remember(ctx, "Jadwal antar barang dari toko-b tiap Kamis pagi.", "toko-b")
+    ctx.business.execute(
+        "UPDATE facts SET valid_to = ? WHERE id = ?", ("2026-11-12T00:00:00Z", gone)
+    )
+    for _ in range(5):
+        hits = search.recall(ctx, "senin").facts
+        assert [(hit.id, hit.status) for hit in hits] == [(first, "valid")]
+    frozen_clock.advance(days=7)
+    assert _order(ctx, "jadwal antar barang") == [first, second]
+
+
+def test_a_pair_with_a_fact_the_caller_cannot_see_is_no_doubt_for_the_caller(
+    make_ctx: MakeContext,
+) -> None:
+    mine = make_ctx()
+    theirs = make_ctx(agent="hermes")
+    shared = facts.remember(theirs, "Ongkir ke Surabaya Rp 14.000 per kg.", tier="business")
+    private = facts.remember(theirs, "Catatan pribadi soal tarif kurir.", check_conflicts=False)
+    assert shared.fact_id is not None and private.fact_id is not None
+    _pair(theirs, shared.fact_id, private.fact_id)
+    assert core._open_conflict_ids(theirs) == {shared.fact_id, private.fact_id}
+    assert core._open_conflict_ids(mine) == set()
+    statuses = [hit.status for hit in search.recall(mine, "ongkir Surabaya", touch=False).facts]
+    assert statuses == ["valid"]
+
+
 def test_off_topic_fact_is_not_lifted(ctx: Context, frozen_clock: Any) -> None:
     popular = _remember(ctx, "Jadwal libur karyawan diumumkan tiap Jumat.", "karyawan")
     for _ in range(20):
