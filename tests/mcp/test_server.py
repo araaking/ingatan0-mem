@@ -542,3 +542,65 @@ def test_multi_server_catches_up_when_a_business_is_opened(
         for ctx in opened.values():
             ctx.close()
     assert notified == ["toko-a"]  # once, when its files were opened; toko-b never was
+
+
+# ----------------------------------------------------------- the shared model process
+
+
+@pytest.fixture
+def unreachable_process(ingatan_home: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A server told to use the shared model process, which cannot be reached."""
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import local, shared
+
+    def unreachable(texts: Any, **_kwargs: Any) -> list[list[float]]:
+        raise shared.Unavailable("the shared embedding process is not running")
+
+    def in_process(texts: Any, **_kwargs: Any) -> list[list[float]]:
+        raise AssertionError(
+            "falling back to a model inside the server brings back the memory `shared` saves"
+        )
+
+    monkeypatch.setattr(shared, "embed", unreachable)
+    monkeypatch.setattr(local, "embed", in_process)
+    scope = Scope(
+        business="tokoku",
+        agent="claude-code",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", shared=True),
+    )
+    with open_context(scope) as ctx:
+        yield ctx
+
+
+def test_remember_saves_when_the_process_is_unreachable(unreachable_process: Context) -> None:
+    from ingatan import search
+
+    result = call(
+        unreachable_process,
+        "remember",
+        {"text": "Ongkir ke Bandung Rp 15.000 per kg.", "entities": ["ongkir Bandung"]},
+    )
+    assert not result.is_error, text_of(result)
+    assert FACT_ID.search(text_of(result))
+    assert "not running" in search.last_embed_error()
+
+
+def test_recall_answers_from_words_when_the_process_is_unreachable(
+    unreachable_process: Context,
+) -> None:
+    from ingatan import search
+
+    saved = call(
+        unreachable_process,
+        "remember",
+        {"text": "Ongkir ke Bandung Rp 15.000 per kg.", "entities": ["ongkir Bandung"]},
+    )
+    fact_id = FACT_ID.search(text_of(saved))
+    assert fact_id is not None
+    result = call(unreachable_process, "recall", {"query": "ongkir Bandung"})
+    assert not result.is_error, text_of(result)
+    assert fact_id.group(0) in text_of(result)
+    assert "not running" in search.last_embed_error()
+    count = unreachable_process.business.execute("SELECT count(*) FROM fact_embeddings")
+    assert count.fetchone()[0] == 0

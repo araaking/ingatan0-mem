@@ -230,6 +230,57 @@ python -m evals --embeddings local --defer     # writes evals/reports/latest-sem
 No figure is given here yet: the code and its tests were written on a machine without the
 model, and numbers in this document come from runs, not from estimates.
 
+## One model for several sessions (`shared`)
+
+Each stdio server loads its own copy of the local model, so three agent sessions hold three
+copies ([RAM.md](RAM.md)). With
+
+```toml
+[embeddings]
+provider = "local"
+shared = true        # or INGATAN_EMBED_SHARED=1
+```
+
+the servers of one data folder ask a single process for vectors instead, and none of them
+loads the model itself.
+
+- **Who starts it.** The first server that needs a vector starts it (`ingatan embeddings
+  serve`, detached, nothing attached to its output). `ingatan embeddings serve` also runs it
+  by hand in the foreground, and `ingatan embeddings stop` asks it to leave. It leaves on
+  its own after `idle_unload_seconds` without a request (0 keeps it), and a server starts a
+  new one when it next needs a vector.
+- **Where it listens.** On 127.0.0.1 only, on a port the operating system picks. The port, the
+  process id and a random token are written to `<data folder>/run/embed.json`, readable by
+  the user alone. That file never holds fact text, and the process writes nothing else.
+- **Who may talk to it.** A caller always connects to 127.0.0.1, whatever the file says, and
+  before it sends any text the listener has to prove that it holds the token (an HMAC over
+  random bytes from both sides; the token itself is never sent). A port that some other
+  program took over after a crash gets a few random bytes and nothing more.
+- **When it cannot be reached.** The tool call does not fail and does not wait forever: every
+  step has a time limit, and the server answers from the word index, exactly as it does when
+  the model is missing. It does not load the model itself as a fallback, because that would
+  quietly bring back the memory this setting saves. `ingatan doctor` shows whether the
+  process runs, and the reason for the last failure.
+- **What it never does.** It downloads nothing: `ingatan embeddings pull` (or `embeddings
+  enable`, or `setup`) stays the only download, and a process without the model files says
+  so in its answer.
+- **Together with `defer`.** The first request after the process starts waits for the model
+  to load. With `defer = true` that wait happens in the background worker instead of inside
+  `remember`.
+
+One limit to know: one process holds one model. Servers of the same data folder that are
+configured for different local models make it load them in turn.
+
+What it saves has to be measured on a machine that has the model:
+
+```bash
+python scripts/measure_embed_ram.py --sessions 3            # three copies
+python scripts/measure_embed_ram.py --sessions 3 --shared   # one shared process
+```
+
+No figure is given here yet, for the same reason as above. HTTP mode (one process for every
+token) and the `ollama` provider already share one copy without this setting.
+
 ## How vectors are made and kept
 
 - One text per forward pass. The quantized model computes its activation ranges over its

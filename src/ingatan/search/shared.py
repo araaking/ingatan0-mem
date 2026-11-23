@@ -56,6 +56,7 @@ __all__ = [
     "embed",
     "request",
     "serve",
+    "state_file",
     "status",
     "stop",
 ]
@@ -106,8 +107,13 @@ class _State:
 # ---- the state file -------------------------------------------------------------------------
 
 
-def _state_path() -> Path:
+def state_file() -> Path:
+    """Where the process of this data folder records its pid, port and token."""
     return data_home() / STATE_DIR / STATE_NAME
+
+
+def _state_path() -> Path:
+    return state_file()
 
 
 def _read_state() -> _State | None:

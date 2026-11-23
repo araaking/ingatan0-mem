@@ -350,3 +350,43 @@ def test_doctor_says_the_server_fills_missing_vectors_when_defer_is_on(
     assert "1 of 1 valid fact(s) have no vector for this model" in result.stdout
     assert "the server embeds them in the background" in result.stdout
     assert "defer: on" in result.stdout
+
+
+def test_doctor_reports_the_shared_model_process(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch, ingatan_home: Path
+) -> None:
+    import json
+    import threading
+    import time
+
+    from ingatan.search import shared
+
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+    monkeypatch.setattr(doctor_module, "_local_setup_problem", lambda emb: None)
+
+    def line() -> str:
+        result = invoke("doctor", "--no-probe-embeddings")
+        assert result.exit_code == 0, result.output
+        return next((ln for ln in result.stdout.splitlines() if "shared model process" in ln), "")
+
+    assert line() == ""  # not asked for: nothing to report
+
+    monkeypatch.setenv("INGATAN_EMBED_SHARED", "1")
+    assert "not running" in line()
+
+    state = ingatan_home / "run" / "embed.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"v": 1, "pid": 1, "port": 9, "token": "00" * 32}))
+    assert "does not answer" in line()
+    state.unlink()
+
+    process = threading.Thread(target=shared.serve, kwargs={"idle_unload_seconds": 0}, daemon=True)
+    process.start()
+    try:
+        deadline = time.monotonic() + 5
+        while shared.status() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert f"running (pid {shared.status().pid}" in line()  # type: ignore[union-attr]
+    finally:
+        shared.stop()
+        process.join(5)

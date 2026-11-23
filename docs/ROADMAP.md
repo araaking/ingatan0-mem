@@ -22,7 +22,7 @@ this roadmap most:
 |---|---|---|
 | 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
-| 3 | [Shared model process](#1-shared-model-process) | The largest memory saving left |
+| 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
 | 4 | [Review queue for similar facts](#4-review-queue-for-similar-facts) | Mostly a CLI over data that already exists |
 | 5 | [Usage and decay in `recall`](#3-usage-and-time-decay-in-recall) | Needs eval scenarios before any code |
 | 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | The largest item; needs design decisions first |
@@ -35,25 +35,15 @@ table above is the order to build them in.
 
 ## 1. Shared model process
 
-**Problem.** Each stdio server loads its own copy of the embedding model. Three agent
-sessions with the local provider hold three copies, about 275 MB each
-([RAM.md](RAM.md)).
+**Status.** Built: `[embeddings] shared = true` (see the changelog and
+[EMBEDDINGS.md](EMBEDDINGS.md)). The two open decisions were settled as loopback TCP with a
+token that is proved, never sent, and a process that the first server starts by itself
+(`ingatan embeddings serve` runs it by hand). It is off by default.
 
-**Idea.** One local process holds the model and the stdio servers ask it for vectors. It
-starts on first use and exits after the idle time that `idle_unload_seconds` already
-defines. Seen in Uteke, which runs a shared daemon to avoid cold starts.
-
-**Constraints.**
-- Loopback or a local pipe only. Fact text never leaves the machine.
-- A server that cannot reach the process falls back to the word index, exactly as it does
-  today when the model is missing. It never fails a tool call.
-- The process downloads nothing; `ingatan embeddings pull` stays the only download.
-
-**Open decisions.** The transport (a named pipe or Unix socket, or loopback TCP with a
-token), and who starts the process (the first server, or an explicit `ingatan` command).
-
-**What exists already.** HTTP mode shares one loaded model across businesses and agents,
-and `provider = "ollama"` gives one copy today for anyone who runs Ollama.
+**What is left.** The done-when is a measurement that needs the model on disk:
+`python scripts/measure_embed_ram.py --sessions 3` and the same with `--shared`, with both
+totals recorded in [RAM.md](RAM.md). After that, decide whether `shared` becomes the default
+for the local provider. This section goes when the numbers are in.
 
 **Done when.** `scripts/measure_embed_ram.py` shows the total for three sessions close to
 the total for one, and `docs/RAM.md` records it.

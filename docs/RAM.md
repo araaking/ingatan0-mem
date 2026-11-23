@@ -73,7 +73,13 @@ python scripts/measure_ram.py                      # 500 facts, appends a row to
 python scripts/measure_ram.py --facts 2000 --no-write
 INGATAN_EMBED_PROVIDER=local python scripts/measure_ram.py
 python scripts/measure_embed_ram.py                # the step-by-step table
+python scripts/measure_embed_ram.py --sessions 3            # three sessions, a model copy each
+python scripts/measure_embed_ram.py --sessions 3 --shared   # three sessions, one shared process
 ```
+
+The last two add up the resident memory of processes that are alive at the same time
+(`[embeddings] shared`, see [EMBEDDINGS.md](EMBEDDINGS.md)). They have not been run on a
+machine with the model yet, so this page has no figure for them.
 
 Both scripts start subprocesses in a temporary data folder and read memory with the
 standard library: `K32GetProcessMemoryInfo` on Windows, `/proc/<pid>/status` on Linux,

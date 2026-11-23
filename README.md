@@ -203,6 +203,7 @@ token_budget = 1000
 # threads = 2                # thread ONNX (hanya memengaruhi kecepatan, bukan RAM)
 # idle_unload_seconds = 300  # lepas model lokal dari RAM setelah diam 5 menit (0 = tetap muat)
 # defer = true               # remember langsung menyimpan; server mengisi vektor & cek konflik makna belakangan
+# shared = true              # satu proses memegang model untuk semua sesi (hanya 127.0.0.1), bukan satu salinan per sesi
 # recall_floor = 0.83        # ambang kemiripan; bawaannya dikalibrasi per keluarga model
 ```
 
@@ -301,6 +302,7 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
 | `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
 | `ingatan embeddings enable [--model NAMA] [--global] [--no-reindex]` | Menyalakan pencarian semantik dalam satu langkah: unduh model bila belum ada, tulis `provider = "local"`, embed fakta yang sudah ada |
+| `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Menjalankan atau menghentikan proses model bersama (`[embeddings] shared`); server menyalakannya sendiri saat dibutuhkan |
 | `ingatan embeddings pull [--model NAMA]` | Hanya mengunduh dan memverifikasi model embedding lokal. Pengunduhan hanya terjadi lewat perintah ini, `embeddings enable`, dan `setup` |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Mengelola kamus alias per proyek untuk ekspansi query dua arah |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Menautkan fakta yang saling melengkapi (juga menyelesaikan konflik terbuka di antara keduanya) |
@@ -567,6 +569,7 @@ token_budget = 1000
 # threads = 2                # ONNX threads (affects speed only, not memory)
 # idle_unload_seconds = 300  # drop the local model from memory after 5 idle minutes (0 = keep)
 # defer = true               # remember saves at once; the server adds the vector and the meaning check afterwards
+# shared = true              # one process holds the model for every session (127.0.0.1 only), not one copy each
 # recall_floor = 0.83        # similarity cut-off; the defaults are calibrated per model family
 ```
 
@@ -665,6 +668,7 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
 | `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
 | `ingatan embeddings enable [--model NAME] [--global] [--no-reindex]` | Switch semantic search on in one step: download the model if it is missing, write `provider = "local"`, embed the facts that already exist |
+| `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Run or stop the shared model process (`[embeddings] shared`); a server starts it by itself when it needs it |
 | `ingatan embeddings pull [--model NAME]` | Only download and verify the local embedding model. Nothing is downloaded except by this command, `embeddings enable` and `setup` |
 | `ingatan alias add <term> <canonical>`, `list`, `remove <term>` | Manage project-scoped glossary aliases for bidirectional recall expansion |
 | `ingatan link <src> <dst> [--relation related_to\|part_of]`, `unlink` | Link complementary facts (also resolves open conflicts between them) |

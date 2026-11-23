@@ -137,9 +137,27 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]
             notes.append(f"embeddings: {emb.provider} ({model_name})")
         if emb.defer:
             notes.append("defer: on (remember saves first, the server embeds afterwards)")
+        if emb.shared and emb.provider == "local":
+            notes.append(f"shared model process: {_shared_process_note()}")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business, scope
+
+
+def _shared_process_note() -> str:
+    """Whether the one process that holds the model for this data folder answers."""
+    from ingatan.search import shared
+
+    running = shared.status()
+    if running is not None:
+        return f"running (pid {running.pid}, port {running.port} on 127.0.0.1)"
+    leftover = shared.state_file()
+    if leftover.is_file():
+        return (
+            f"does not answer ({leftover} is left over from an earlier one; "
+            "a server starts a new one on first use)"
+        )
+    return "not running (a server starts it on first use)"
 
 
 _FALLBACK_NOTE = (
