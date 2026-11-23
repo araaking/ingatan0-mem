@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -10,7 +12,7 @@ from ingatan import audit, facts, search
 from ingatan.cli.conflicts import open_conflicts
 from ingatan.db import transaction
 from ingatan.facts import backfill
-from ingatan.scope import Context, EmbeddingConfig
+from ingatan.scope import Context, EmbeddingConfig, Scope
 from ingatan.search import embed
 
 MakeContext = Callable[..., Context]
@@ -295,3 +297,94 @@ def test_undo_of_a_late_conflict_leaves_the_facts_other_pairs_open(
     assert (entry.fact_id, entry.change["after"]["conflicts_with"]) == (new, [old])
     audit.undo(embed_ctx, entry.id)
     assert [{p.fact_a, p.fact_b} for p in open_conflicts(embed_ctx)] == [{new, twin}]
+
+
+# ---- the worker a server runs ------------------------------------------------------------
+
+DEFER = EmbeddingConfig(provider="local", defer=True)
+
+
+@pytest.fixture
+def worker() -> Iterator[None]:
+    backfill.start_worker()
+    yield
+    backfill.stop_worker()
+
+
+def worker_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "ingatan-backfill" and t.is_alive()]
+
+
+def wait_for(condition: Callable[[], bool], seconds: float = 3.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return condition()
+
+
+def test_notify_without_a_worker_does_nothing(make_ctx: MakeContext, model: list[str]) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])
+    backfill.notify(ctx.scope)
+    time.sleep(0.1)
+    assert worker_threads() == []
+    assert vectors(ctx) == set()
+    assert queued(ctx) == {result.fact_id}
+
+
+def test_worker_fills_after_notify(make_ctx: MakeContext, model: list[str], worker: None) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])  # notifies by itself
+    assert result.fact_id is not None
+    assert wait_for(lambda: vectors(ctx) == {result.fact_id})
+    assert wait_for(lambda: queued(ctx) == set())
+
+
+def test_worker_finds_the_late_conflict(
+    make_ctx: MakeContext, model: list[str], worker: None
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    old = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])
+    new = facts.remember(ctx, NEW_RATE, entities=["ongkir Bandung"])
+    assert new.similar == []  # nothing to report at write time
+    assert wait_for(lambda: len(open_conflicts(ctx)) == 1)
+    assert {open_conflicts(ctx)[0].fact_a, open_conflicts(ctx)[0].fact_b} == {
+        old.fact_id,
+        new.fact_id,
+    }
+
+
+def test_worker_catches_up_on_start(make_ctx: MakeContext, model: list[str]) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])  # no worker yet
+    assert vectors(ctx) == set()
+    backfill.start_worker()
+    try:
+        backfill.notify(ctx.scope)
+        assert wait_for(lambda: vectors(ctx) == {result.fact_id})
+    finally:
+        backfill.stop_worker()
+
+
+def test_start_worker_twice_runs_one_thread_and_stop_ends_it() -> None:
+    backfill.start_worker()
+    backfill.start_worker()
+    try:
+        assert len(worker_threads()) == 1
+    finally:
+        backfill.stop_worker()
+    assert worker_threads() == []
+
+
+def test_worker_survives_a_scope_it_cannot_open(
+    make_ctx: MakeContext, model: list[str], worker: None, ingatan_home: object
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    broken = Scope(business="Not A Valid Name", agent="x", home=ctx.scope.home, embeddings=DEFER)
+    backfill.notify(broken)
+    assert wait_for(lambda: backfill.last_worker_error() != "")
+    result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])
+    assert wait_for(lambda: vectors(ctx) == {result.fact_id})
+    assert len(worker_threads()) == 1

@@ -19,17 +19,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ingatan import audit
 from ingatan.db import transaction
 from ingatan.facts._util import loads_list, now_iso, record_conflicts
-from ingatan.scope import Context
+from ingatan.scope import Context, Scope, open_context
 from ingatan.search import embed as embed_store
 from ingatan.search import is_valid_sql, similar_facts
 
-__all__ = ["FillReport", "enqueue", "fill_pending"]
+__all__ = [
+    "FillReport",
+    "enqueue",
+    "fill_pending",
+    "last_worker_error",
+    "notify",
+    "start_worker",
+    "stop_worker",
+]
+
+WORKER_NAME = "ingatan-backfill"
 
 
 @dataclass(frozen=True)
@@ -178,3 +189,86 @@ def fill_pending(ctx: Context, *, limit: int | None = None) -> FillReport:
             if budget is not None:
                 budget -= len(rows)
     return FillReport(embedded, opened, errors)
+
+
+# ---- the worker ---------------------------------------------------------------------------
+#
+# One daemon thread per server process. `remember` wakes it with the scope it wrote in; the
+# thread opens its own `Context` for that scope, because an SQLite connection stays on the
+# thread that opened it, and runs `fill_pending`. A process without a worker (a CLI command,
+# a test) loses nothing: `notify` does nothing there, the queue row stays in the file, and
+# the next server to start picks it up.
+
+_lock = threading.Lock()
+_wake = threading.Event()
+_stop = threading.Event()
+_pending: set[Scope] = set()
+_thread: threading.Thread | None = None
+_last_error = ""
+
+
+def last_worker_error() -> str:
+    """Why the worker's most recent pass failed as a whole ("" when it did not)."""
+    with _lock:
+        return _last_error
+
+
+def notify(scope: Scope) -> None:
+    """Ask the worker to fill what `scope` can see. Does nothing when no worker runs."""
+    with _lock:
+        if _thread is None or not _thread.is_alive():
+            return
+        _pending.add(scope)
+    _wake.set()
+
+
+def start_worker() -> None:
+    """Start the worker thread of this process. Safe to call when it already runs."""
+    global _thread
+    with _lock:
+        if _thread is not None and _thread.is_alive():
+            return
+        _stop.clear()
+        _wake.clear()
+        _pending.clear()
+        _thread = threading.Thread(target=_run, name=WORKER_NAME, daemon=True)
+        _thread.start()
+
+
+def stop_worker(timeout: float = 2.0) -> None:
+    """Ask the worker to end and wait up to `timeout` seconds for it.
+
+    A pass that is inside a model call finishes that call first. Whatever it did not reach
+    stays queued in the database.
+    """
+    global _thread
+    with _lock:
+        thread = _thread
+        _thread = None
+        _pending.clear()
+    if thread is None:
+        return
+    _stop.set()
+    _wake.set()
+    thread.join(timeout)
+
+
+def _run() -> None:
+    global _last_error
+    while not _stop.is_set():
+        _wake.wait()
+        _wake.clear()
+        while not _stop.is_set():
+            with _lock:
+                if not _pending:
+                    break
+                scope = _pending.pop()
+            try:
+                with open_context(scope) as ctx:
+                    fill_pending(ctx)
+            except Exception as exc:  # one bad scope must not end the worker
+                message = f"{type(exc).__name__}: {exc}"
+            else:
+                message = ""
+            with _lock:
+                _last_error = message

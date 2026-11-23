@@ -24,6 +24,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from ingatan.errors import ConfigError
+from ingatan.facts import backfill
 from ingatan.mcp.server import build_server
 from ingatan.scope import Context, Scope, data_home, open_context
 from ingatan.search import unload_local_models
@@ -133,9 +134,12 @@ class HTTPApp:
     async def lifespan(self) -> AsyncIterator[None]:
         """Allow scope servers to start; on exit stop them all and close their contexts."""
         self._lock = asyncio.Lock()
+        # Fills the vectors of facts saved with `[embeddings] defer`, off the event loop.
+        backfill.start_worker()
         try:
             yield
         finally:
+            backfill.stop_worker()
             self._lock = None
             servers = list(self._servers.values())
             self._servers.clear()
@@ -188,6 +192,8 @@ class HTTPApp:
     async def _start(self, scope: Scope) -> _ScopeServer:
         # On the event-loop thread, like every tool call: the SQLite connections belong here.
         context = open_context(scope)
+        if scope.embeddings.defer:
+            backfill.notify(scope)  # catch up on what an earlier run left queued
         stop = asyncio.Event()
         try:
             mcp_server = build_server(context)

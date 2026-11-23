@@ -9,7 +9,8 @@ import pytest
 from ingatan import audit, episodes, facts, proposals, search
 from ingatan.errors import NotFoundError, ValidationError
 from ingatan.redact import MARKER
-from ingatan.scope import Context
+from ingatan.scope import Context, EmbeddingConfig
+from ingatan.search import embed as embed_store
 
 MakeContext = Callable[..., Context]
 
@@ -402,3 +403,101 @@ def test_proposal_writes_a_propose_entry_in_the_tier_file(approval_ctx: Context)
     assert [(r["op"], r["fact_id"], r["tier"], r["owner"]) for r in glo_log] == [
         ("propose", glo.proposal_id, "global", "claude-code")
     ]
+
+
+# ---- deferred embedding ([embeddings] defer = true) -------------------------------------
+
+DEFER = EmbeddingConfig(provider="local", defer=True)
+
+
+@pytest.fixture
+def model_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """A stand-in model that records every text it is asked to embed."""
+    calls: list[str] = []
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    return calls
+
+
+def queue_rows(ctx: Context) -> list[tuple[str, int]]:
+    return [
+        (str(r["fact_id"]), int(r["check_conflicts"]))
+        for conn in ctx.connections()
+        for r in conn.execute("SELECT fact_id, check_conflicts FROM embed_queue")
+    ]
+
+
+def test_remember_with_defer_makes_no_model_call(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert result.fact_id is not None
+    assert model_calls == []
+    assert count(ctx.business, "fact_embeddings") == 0
+    assert queue_rows(ctx) == [(result.fact_id, 1)]
+
+
+def test_remember_with_defer_still_reports_word_conflicts(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    first = facts.remember(ctx, "Harga kopi susu Rp 15.000.", entities=["kopi susu"])
+    second = facts.remember(ctx, "Harga kopi susu Rp 18.000.", entities=["kopi susu"])
+    assert [item["id"] for item in second.similar] == [first.fact_id]
+    assert model_calls == []
+
+
+def test_remember_with_defer_says_the_meaning_check_is_pending(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert "meaning-based check runs in the background" in result.message
+
+
+def test_remember_with_defer_and_no_conflict_check_queues_only_the_vector(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=DEFER)
+    result = facts.remember(
+        ctx, "Catatan harian: 12 pesanan masuk.", entities=["pesanan"], check_conflicts=False
+    )
+    assert result.fact_id is not None
+    assert queue_rows(ctx) == [(result.fact_id, 0)]
+    assert "meaning-based" not in result.message
+    assert model_calls == []
+
+
+def test_remember_without_defer_embeds_at_once_and_queues_nothing(
+    make_ctx: MakeContext, model_calls: list[str]
+) -> None:
+    ctx = make_ctx(embeddings=EmbeddingConfig(provider="local"))
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert model_calls == ["Ongkir ke Bandung Rp 15.000 per kg."]
+    assert count(ctx.business, "fact_embeddings") == 1
+    assert queue_rows(ctx) == []
+    assert "meaning-based" not in result.message
+
+
+def test_remember_with_defer_and_no_embeddings_queues_nothing(make_ctx: MakeContext) -> None:
+    ctx = make_ctx(embeddings=EmbeddingConfig(provider="none", defer=True))
+    result = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+    assert queue_rows(ctx) == []
+    assert "meaning-based" not in result.message
+
+
+def test_a_proposal_is_not_deferred(make_ctx: MakeContext, model_calls: list[str]) -> None:
+    # In approval mode nothing is saved yet: the similar facts shown to the approver are
+    # worked out now, with the model, and approval embeds the fact it creates.
+    ctx = make_ctx(embeddings=DEFER, require_approval=True)
+    result = facts.remember(
+        ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"], tier="business"
+    )
+    assert result.proposal_id is not None
+    assert model_calls == ["Ongkir ke Bandung Rp 15.000 per kg."]
+    assert queue_rows(ctx) == []

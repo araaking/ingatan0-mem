@@ -13,6 +13,7 @@ from typing import Any
 from ingatan import audit, timeutil
 from ingatan.db import fact_text_key, normalize_fact_text, transaction
 from ingatan.errors import NotFoundError, ValidationError
+from ingatan.facts import backfill
 from ingatan.facts._util import (
     DEFAULT_REVIEW_DAYS,
     clean_list,
@@ -360,11 +361,17 @@ def remember(
                     link_facts(ctx, res.fact_id, tid, relation="related_to")
             return res
 
-    # One model call, made before any write lock is taken and only for a fact that will be
-    # saved. The vector serves both the conflict check and storage.
+    # With `defer`, a fact that is saved directly is saved without a vector: the model is
+    # not called here at all, and `backfill` embeds the fact and runs the meaning-based
+    # conflict check afterwards. A proposal is not deferred: nothing is saved yet, and the
+    # similar facts shown to the approver are worked out now.
+    embeddings_on = embed_store.is_enabled(ctx.scope.embeddings)
+    deferred = embeddings_on and ctx.scope.embeddings.defer and not needs_approval
+    # Otherwise one model call, made before any write lock is taken and only for a fact
+    # that will be saved. The vector serves both the conflict check and storage.
     new_vec: list[float] | None = (
         embed_store.embed_text(ctx.scope.embeddings, clean_text, is_query=False)
-        if embed_store.is_enabled(ctx.scope.embeddings)
+        if embeddings_on and not deferred
         else None
     )
 
@@ -410,10 +417,19 @@ def remember(
                 embed_store.store_fact_embedding(
                     conn, fact_id, clean_text, ctx.scope.embeddings, vector=new_vec
                 )
+            elif deferred:
+                backfill.enqueue(conn, fact_id, check_conflicts=check_conflicts)
             for tid in link_targets:
                 if tid != fact_id:
                     link_facts(ctx, fact_id, tid, relation="related_to")
             _mark_episode(ctx, episode)
+        if deferred:
+            backfill.notify(ctx.scope)
+            if check_conflicts:
+                note += (
+                    " The meaning-based check runs in the background: a conflict it finds "
+                    "shows as 'possible conflict' in recall."
+                )
         return RememberResult(fact_id, None, _similar_view(similar), f"Saved as {fact_id}." + note)
 
     with transaction(conn):

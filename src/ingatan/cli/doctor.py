@@ -135,6 +135,8 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]
             notes.append(f"embeddings: local ({model_name}; threads={emb.threads}, {idle_label})")
         else:
             notes.append(f"embeddings: {emb.provider} ({model_name})")
+        if emb.defer:
+            notes.append("defer: on (remember saves first, the server embeds afterwards)")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business, scope
@@ -220,9 +222,15 @@ def _vector_notes(scope: Scope, model_name: str) -> list[str]:
         note = f"{missing} of {total} valid fact(s) have no vector for this model"
         if replaced:
             note += f" ({replaced} of them have one from another model)"
-        notes.append(
-            note + ". Run `ingatan reindex`; until then those facts are found by words only."
-        )
+        if scope.embeddings.defer:
+            notes.append(
+                note + ". With `defer` on, the server embeds them in the background; "
+                "`ingatan reindex` does it now. Until then those facts are found by words only."
+            )
+        else:
+            notes.append(
+                note + ". Run `ingatan reindex`; until then those facts are found by words only."
+            )
     if others:
         notes.append(
             f"{others} private fact(s) of other agents have no vector either. "

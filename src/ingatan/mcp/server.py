@@ -6,10 +6,12 @@ tool takes a business or an agent name, and nothing but protocol is written to s
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import sys
 import time
+from collections.abc import Iterable, Iterator
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -18,6 +20,7 @@ from pydantic import Field
 
 from ingatan import audit, brief, facts, search
 from ingatan.errors import ConfigError, IngatanError
+from ingatan.facts import backfill
 from ingatan.scope import (
     Context,
     EmbeddingConfig,
@@ -29,7 +32,7 @@ from ingatan.scope import (
 )
 from ingatan.search.local import limit_math_threads
 
-__all__ = ["build_multi_server", "build_server", "run"]
+__all__ = ["background_fill", "build_multi_server", "build_server", "run"]
 
 SERVER_NAME = "ingatan"
 NOTE_EXCERPT_CHARS = 400
@@ -446,6 +449,8 @@ def build_multi_server(
                 embeddings=resolved_embeddings,
             )
             ctx = opened[name] = _open_with_retry(scope)
+            if scope.embeddings.defer:
+                backfill.notify(scope)  # catch up on what an earlier session left queued
         return ctx
 
     server = MCPServer(
@@ -649,6 +654,24 @@ def build_multi_server(
     return server, opened
 
 
+@contextlib.contextmanager
+def background_fill(scopes: Iterable[Scope] = ()) -> Iterator[None]:
+    """Run the worker that fills deferred vectors for as long as a server serves.
+
+    Each of `scopes` that has `[embeddings] defer` on is looked at once at the start, so
+    what an earlier session left without a vector is caught up. After that `remember`
+    wakes the worker itself.
+    """
+    backfill.start_worker()
+    try:
+        for scope in scopes:
+            if scope.embeddings.defer:
+                backfill.notify(scope)
+        yield
+    finally:
+        backfill.stop_worker()
+
+
 def _open_with_retry(scope: Scope, attempts: int = 40, delay: float = 0.25) -> Context:
     """`open_context`, retried while another process is creating the same database files.
 
@@ -690,7 +713,8 @@ def run() -> None:
             embeddings=embeddings,
         )
         try:
-            server.run("stdio")
+            with background_fill():
+                server.run("stdio")
         except KeyboardInterrupt:
             pass
         finally:
@@ -705,7 +729,8 @@ def run() -> None:
         print(f"ingatan: {exc.message}", file=sys.stderr)
         raise SystemExit(1) from exc
     try:
-        build_server(ctx).run("stdio")
+        with background_fill([ctx.scope]):
+            build_server(ctx).run("stdio")
     except KeyboardInterrupt:
         pass
     finally:

@@ -336,3 +336,17 @@ def test_doctor_counts_only_the_vectors_a_reindex_would_write(
     out = notes()
     assert "3 of 5 valid fact(s) have no vector for this model" in out
     assert "1 private fact(s) of other agents have no vector either" in out  # f_mine
+
+
+def test_doctor_says_the_server_fills_missing_vectors_when_defer_is_on(
+    invoke: Invoke, healthy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INGATAN_EMBED_PROVIDER", "local")
+    monkeypatch.setenv("INGATAN_EMBED_DEFER", "1")
+    monkeypatch.setattr(doctor_module, "_local_setup_problem", lambda emb: None)
+    _add_fact(healthy, "f_new")
+    result = invoke("doctor", "--no-probe-embeddings")
+    assert result.exit_code == 0, result.output
+    assert "1 of 1 valid fact(s) have no vector for this model" in result.stdout
+    assert "the server embeds them in the background" in result.stdout
+    assert "defer: on" in result.stdout

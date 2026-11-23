@@ -24,7 +24,7 @@ except ImportError as exc:  # pragma: no cover - only on machines that block pyd
         pytest.skip(f"the mcp SDK cannot be imported here: {exc}", allow_module_level=True)
     raise
 
-from ingatan import episodes
+from ingatan import episodes, facts
 from ingatan.mcp.server import build_server
 from ingatan.scope import Context, Scope, open_context
 
@@ -452,3 +452,93 @@ def test_other_database_errors_are_not_retried(
     monkeypatch.setattr(server, "open_context", broken)
     with pytest.raises(sqlite3.OperationalError):
         server._open_with_retry(Scope(business="x", agent="y", home=ingatan_home))  # pyright: ignore[reportPrivateUsage]
+
+
+# ----------------------------------------------------------- deferred embedding
+
+
+def test_background_fill_runs_the_worker_and_catches_up(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import background_fill
+    from ingatan.scope import EmbeddingConfig
+    from ingatan.search import embed as embed_store
+
+    def fake(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake)
+    scope = Scope(
+        business="tokoku",
+        agent="claude-code",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", defer=True),
+    )
+
+    def alive() -> list[str]:
+        return [t.name for t in threading.enumerate() if t.name == "ingatan-backfill"]
+
+    with open_context(scope) as ctx:
+        # Saved before any server ran: only the queue row says a vector is owed.
+        saved = facts.remember(ctx, "Ongkir ke Bandung Rp 15.000 per kg.", entities=["ongkir"])
+        assert ctx.business.execute("SELECT count(*) FROM fact_embeddings").fetchone()[0] == 0
+        with background_fill([scope]):
+            assert alive() == ["ingatan-backfill"]
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                row = ctx.business.execute(
+                    "SELECT fact_id FROM fact_embeddings WHERE fact_id = ?", (saved.fact_id,)
+                ).fetchone()
+                if row is not None:
+                    break
+                time.sleep(0.02)
+            assert row is not None
+        assert alive() == []
+        assert backfill.last_worker_error() == ""
+
+
+def test_background_fill_leaves_a_scope_without_defer_alone(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import background_fill
+
+    notified: list[Scope] = []
+    monkeypatch.setattr(backfill, "notify", notified.append)
+    scope = Scope(business="tokoku", agent="claude-code", home=ingatan_home)
+    with background_fill([scope]):
+        pass
+    assert notified == []
+
+
+def test_multi_server_catches_up_when_a_business_is_opened(
+    ingatan_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ingatan.facts import backfill
+    from ingatan.mcp.server import build_multi_server
+    from ingatan.scope import EmbeddingConfig
+
+    notified: list[str] = []
+    monkeypatch.setattr(backfill, "notify", lambda scope: notified.append(scope.business))
+    server, opened = build_multi_server(
+        ["toko-a", "toko-b"],
+        agent="hermes",
+        home=ingatan_home,
+        embeddings=EmbeddingConfig(provider="local", defer=True),
+    )
+
+    async def go() -> None:
+        async with Client(server) as client:
+            await client.call_tool("brief", {"business": "toko-a"})
+            await client.call_tool("brief", {"business": "toko-a"})
+
+    try:
+        run_async(go())
+    finally:
+        for ctx in opened.values():
+            ctx.close()
+    assert notified == ["toko-a"]  # once, when its files were opened; toko-b never was
