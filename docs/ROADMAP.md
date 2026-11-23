@@ -123,8 +123,9 @@ invented, on scenarios with a known answer, and the README states that number.
 
 **Status.** Built, except the release itself. `ingatan setup`, `ingatan embeddings enable`,
 the three-command start in the README, a rehearsal path to TestPyPI and a tag guard in the
-release workflow are in (see the changelog). CI runs `setup` and a remember and recall round
-trip from the built wheel on Windows, macOS and Linux.
+release workflow are in (see the changelog). CI is set up to run `setup` and a remember and
+recall round trip from the built wheel on Windows, macOS and Linux; that job has not run
+yet, because the branch has not been pushed. The same steps pass by hand on macOS.
 
 **What is left, all of it the owner's.**
 1. Check that the package name is free on PyPI and on TestPyPI. If it is not, choose a

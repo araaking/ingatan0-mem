@@ -20,9 +20,11 @@ What keeps this safe to switch on:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 from ingatan import episodes, facts, search, timeutil
@@ -30,7 +32,7 @@ from ingatan.db import fact_text_key, transaction
 from ingatan.errors import IngatanError
 from ingatan.extract import llm, prompt
 from ingatan.redact import redact
-from ingatan.scope import Context
+from ingatan.scope import Context, EmbeddingConfig
 from ingatan.search import is_valid_sql
 
 __all__ = ["MAX_FACTS_PER_EPISODE", "MAX_FACT_CHARS", "ExtractReport", "extract_pending"]
@@ -107,9 +109,23 @@ def _is_stored(ctx: Context, key: str) -> bool:
 
 def _known_facts(ctx: Context, text: str) -> list[tuple[str, str]]:
     """Facts in memory about what `text` talks about, as `(id, text)`, for the model to
-    relate a new fact to. Not counted as use: nobody asked for them."""
+    relate a new fact to. Not counted as use: nobody asked for them.
+
+    Found by words alone, on purpose. `recall` embeds its query when an embedding provider
+    is configured, and the query here is a whole conversation turn: with a remote provider
+    it would be sent to an endpoint the user chose for facts, not for conversations. A text
+    is read by the model named under `[llm]` and by nothing else.
+    """
+    words_only = Context(
+        dataclasses.replace(ctx.scope, embeddings=EmbeddingConfig()), ctx.business, ctx.glob
+    )
     hits = search.recall(
-        ctx, text, limit=MAX_KNOWN_FACTS, notes_limit=0, touch=False, include_related=False
+        words_only,
+        redact(text),
+        limit=MAX_KNOWN_FACTS,
+        notes_limit=0,
+        touch=False,
+        include_related=False,
     ).facts
     return [(hit.id, redact(hit.text)) for hit in hits]
 
@@ -127,7 +143,7 @@ def _links(relations: list[Any], count: int, offered: set[str]) -> dict[int, lis
         index, target, relation = item.get("fact"), item.get("to"), item.get("relation")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < count:
             continue
-        if target not in offered or relation not in _RELATIONS:
+        if not isinstance(target, str) or target not in offered or relation not in _RELATIONS:
             continue
         chosen = links.setdefault(index, [])
         if all(target != linked for linked, _ in chosen):
@@ -190,7 +206,11 @@ def _note_readings(ctx: Context, limit: int) -> list[_Reading]:
         heading, text = str(row["heading"]), str(row["text"])
         readings.append(
             _Reading(
-                message=prompt.document_message(str(row["path"]), redact(heading), redact(text)),
+                # The file's name, not its path: the folders above it name the user's
+                # machine and often the user, and the model has no use for them.
+                message=prompt.document_message(
+                    PurePosixPath(str(row["path"])).name, redact(heading), redact(text)
+                ),
                 stated_text=f"{heading}\n{text}",
                 source={"document": str(row["path"])},
                 episode=None,
@@ -223,7 +243,8 @@ def extract_pending(
     seen = _known_keys(ctx)
     readings = _note_readings(ctx, limit) if documents else _episode_readings(ctx, limit)
 
-    for reading in readings:
+    def read_one(reading: _Reading) -> None:
+        nonlocal proposed, rejected, errors, known, linked, last_error
         offered = _known_facts(ctx, reading.stated_text)
         try:
             # Outside any transaction: nothing is locked while the model thinks.
@@ -232,7 +253,7 @@ def extract_pending(
         except (IngatanError, ValueError) as exc:
             errors += 1
             last_error = exc.message if isinstance(exc, IngatanError) else f"JSON: {exc}"
-            continue
+            return
 
         stated = _numbers(reading.stated_text)
         links = _links(prompt.parse_relations(answer), len(items), {fid for fid, _ in offered})
@@ -286,6 +307,13 @@ def extract_pending(
         if not dry_run and not marked:
             # Read: do not send it to the model again, whether or not it held a fact.
             reading.mark_read()
+
+    for reading in readings:
+        try:
+            read_one(reading)
+        except Exception as exc:  # whatever one text does, the next one is still read
+            errors += 1
+            last_error = f"{type(exc).__name__}: {exc}"
 
     return ExtractReport(
         episodes_read=0 if documents else len(readings),

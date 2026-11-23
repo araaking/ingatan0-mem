@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -388,3 +389,30 @@ def test_worker_survives_a_scope_it_cannot_open(
     result = facts.remember(ctx, OLD_RATE, entities=["ongkir Bandung"])
     assert wait_for(lambda: vectors(ctx) == {result.fact_id})
     assert len(worker_threads()) == 1
+
+
+# ---- found by the final review: forget during the late check --------------------------------
+
+
+def test_forget_during_the_late_check_leaves_no_pair_and_no_log_entry(
+    plain: Context, embed_ctx: Context, model: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = save(plain, OLD_RATE, queue=None)
+    embed.store_fact_embedding(plain.business, old, OLD_RATE, EMBED, vector=[1.0, 0.0, 0.0])
+    new = save(plain, NEW_RATE)
+    real = backfill.similar_facts
+
+    def forgotten_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        hits = real(*args, **kwargs)
+        # Another process forgets the fact after its vector was stored and its look-alikes
+        # were found, just before the pair would be written.
+        facts.forget(plain, new)
+        return hits
+
+    monkeypatch.setattr(backfill, "similar_facts", forgotten_meanwhile)
+    report = backfill.fill_pending(embed_ctx)
+    assert report.conflicts_opened == 0
+    assert plain.business.execute("SELECT count(*) FROM conflicts").fetchone()[0] == 0
+    assert [e for e in audit.entries(plain) if e.op == "conflict"] == []
+    assert vectors(plain) == {old}
+    assert queued(plain) == set()

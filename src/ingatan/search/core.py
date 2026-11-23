@@ -59,17 +59,26 @@ RECENCY_HALF_LIFE_DAYS = 30.0
 # is multiplied by 1 + USAGE_BOOST * often * recent, where `often` is
 # 1 - 0.5 ** (use_count / USAGE_COUNT_SATURATION) and `recent` is
 # 0.5 ** (days_since_last_used / USAGE_HALF_LIFE_DAYS). A fact never recalled keeps its score.
-# The bound is 1%: smaller than the gap between two neighbouring ranks among the first forty
-# under rank fusion (1/100 against 1/101), so usage decides between matches that are
-# otherwise level and cannot carry a fact past a better match; and half of what freshness
-# gives, so a new volatile fact keeps its lead over an old popular one. The count saturates
-# (five recalls give half the effect, twenty give 94%) and the effect halves every 30 days
-# without use, because `recall` itself raises the count: without both, what was returned
-# once would be returned more and more. A fact in an open conflict gets no boost at all: its
-# popularity is exactly what is in doubt, and the fact that corrects it is the newer one.
-# Measured with `python -m evals` (48 scenarios, 2026-11-23): with these values
+#
+# What the 1% bound gives. It is smaller than the gap between two neighbouring ranks of one
+# signal among the first forty (1/100 against 1/101), so within a single signal usage cannot
+# reorder two facts. Fused scores of facts that several signals rank differently can be
+# closer than 1%, and there usage decides: that is what it is for, and it is why the bound
+# is no larger. The count saturates (five recalls give half the effect, twenty give 94%) and
+# the effect halves every 30 days without use, because `recall` itself raises the count:
+# without both, what was returned once would be returned more and more.
+#
+# What keeps a popular wrong value down. A fact named by an unresolved conflict pair gets no
+# boost at all: its popularity is exactly what is in doubt. That, and not the bound, is what
+# puts a newer fact ahead of the much recalled one it corrects. Where the two were never
+# paired (no shared entity, or `check_conflicts=False`), the older one can still lead a
+# fact that is only a few days younger: freshness separates two volatile facts by less than
+# 1% until they are about twelve days apart, and stable facts not at all.
+#
+# Measured with `python -m evals` without an embedding model (48 scenarios, 2026-11-23):
 # `usage-02-pemakaian-memecah-seri` passes (xfail before), `usage-01-fakta-populer-yang-salah`
-# still passes, and no other scenario changes; recall@5 100.0% over 55 checks.
+# still passes (through the conflict rule), no other scenario changes, recall@5 100.0% over
+# 55 checks. Not run with a model.
 USAGE_BOOST = 0.01
 USAGE_HALF_LIFE_DAYS = 30.0
 USAGE_COUNT_SATURATION = 5

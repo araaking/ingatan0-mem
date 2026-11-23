@@ -20,7 +20,15 @@ from ingatan.scope import Context, find_fact
 from ingatan.search import embed as embed_store
 from ingatan.search import similar_facts
 
-__all__ = ["Proposal", "approve", "approve_all", "pending", "pending_count", "reject"]
+__all__ = [
+    "Proposal",
+    "approve",
+    "approve_all",
+    "pending",
+    "pending_count",
+    "reject",
+    "skipped_links",
+]
 
 
 @dataclass(frozen=True)
@@ -127,13 +135,16 @@ def approve(ctx: Context, proposal_id: str) -> str:
     ]
 
     # Links the proposal carries (`remember(related_to=..., part_of=...)`). A target that was
-    # closed or forgotten since then is skipped, and the log entry says which.
+    # closed or forgotten since then is skipped, and the log entry says which. So is a link
+    # that a model proposed to a fact the new one may contradict: linking two facts settles
+    # their conflict, and a model's "related" must not be what removes that flag.
+    extracted = bool(dict(proposal.payload.get("source") or {}).get("extracted_by"))
     wanted_links: list[tuple[str, str]] = []
     skipped_links: list[str] = []
     for item in proposal.payload.get("links") or []:
         target_id, relation = str(item.get("to") or ""), str(item.get("relation") or "")
         found = find_fact(ctx, target_id) if relation in RELATIONS else None
-        if found is None or is_closed(found[1]):
+        if found is None or is_closed(found[1]) or (extracted and target_id in merged_similar):
             skipped_links.append(target_id)
         else:
             wanted_links.append((target_id, relation))
@@ -203,6 +214,15 @@ def approve(ctx: Context, proposal_id: str) -> str:
             (now, new_fact_id, proposal_id),
         )
     return new_fact_id
+
+
+def skipped_links(ctx: Context, fact_id: str) -> list[str]:
+    """The link targets that approving `fact_id` did not link it to (see `approve`)."""
+    for entry in audit.entries(ctx, fact_id=fact_id):
+        if entry.op == "approve" and entry.change is not None:
+            links = (entry.change.get("after") or {}).get("links") or {}
+            return [str(target) for target in links.get("skipped") or []]
+    return []
 
 
 def _approve_retire(

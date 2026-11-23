@@ -208,7 +208,10 @@ The rest of what is worth knowing:
 - A fact the server finds without a vector for any other reason (saved while the provider
   was `none`, imported, the model changed) is embedded as well, so `ingatan reindex` is no
   longer needed after switching `defer` on. Those facts get no conflict scan; that is still
-  `ingatan conflicts scan`.
+  `ingatan conflicts scan`. Mind what that means after a change of model: the next server
+  start embeds every valid fact again, without being asked, and with a paid provider that
+  is a bill. Two servers of one data folder that are configured for different models would
+  each redo the other's vectors on every pass: give them the same model.
 - A process that runs no server (a CLI command) leaves the row queued. Nothing is lost: the
   fact is found by words in the meantime, and the next server start picks the row up.
 - A vector is stored only while its fact still exists. A `forget` that lands between the

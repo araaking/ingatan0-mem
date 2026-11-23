@@ -18,7 +18,8 @@ from ingatan import episodes, extract, facts, proposals
 from ingatan.errors import IngatanError
 from ingatan.extract import llm, prompt
 from ingatan.ingest import ingest_path
-from ingatan.scope import Context, LlmConfig
+from ingatan.scope import Context, EmbeddingConfig, LlmConfig
+from ingatan.search import embed as embed_store
 
 Invoke = Callable[..., Result]
 MakeContext = Callable[..., Context]
@@ -638,3 +639,94 @@ def test_proposals_list_shows_the_links_of_an_extracted_fact(
     assert listed.exit_code == 0, listed.output
     assert f"would link to {known.fact_id} (related_to)" in listed.output
     assert "Supplier gula pasir adalah toko-a." in listed.output
+
+
+# ---- found by the final review ---------------------------------------------------------------
+
+
+def test_episode_text_never_reaches_the_embedding_provider(
+    make_ctx: MakeContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conversations go to the model named under `[llm]` and to nothing else.
+
+    With a remote embedding provider configured for facts, looking up the facts already
+    known for an episode must not send the episode there as a search query.
+    """
+    embedded: list[str] = []
+
+    def fake_embed(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        embedded.append(text)
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(embed_store, "_embed_raw", fake_embed)
+    context = make_ctx(embeddings=EmbeddingConfig(provider="openai"))
+    object.__setattr__(context, "scope", _with_llm(context.scope))
+    facts.remember(
+        context, "Supplier gula pasir adalah toko-a.", entities=["toko-a"], tier="business"
+    )
+    episodes.record(
+        context, "Toko-a mengantar gula pasir tiap Senin. Kode brankas kita 4471.", "Baik."
+    )
+    embedded.clear()
+    model = Model(monkeypatch, answer())
+    extract.extract_pending(context, dry_run=True)
+    assert embedded == []
+    # The lookup still works, by words alone.
+    assert "Supplier gula pasir adalah toko-a." in model.asked[0][1]
+    extract.extract_pending(context)
+    assert not any("brankas" in text for text in embedded)
+
+
+@pytest.mark.parametrize("target", [["f_000000000000"], {"id": 1}, None, 3.5])
+def test_a_relation_with_a_target_that_is_not_a_string_is_dropped(
+    ctx: Context, supplier: str, monkeypatch: pytest.MonkeyPatch, target: Any
+) -> None:
+    relation = {"fact": 0, "to": target, "relation": "related_to"}
+    Model(monkeypatch, with_relations([relation], SCHEDULE))
+    report = extract.extract_pending(ctx)
+    assert (report.proposed, report.relations, report.errors) == (1, 0, 0)
+
+
+def test_an_unexpected_failure_on_one_text_does_not_stop_the_run(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed = episodes.record(ctx, "Stok gula tinggal 20 karung.", "Dicatat.")
+    worked = episodes.record(ctx, USER, ASSISTANT)
+    Model(monkeypatch, answer(GOOD))
+    real = prompt.parse_relations
+    calls = 0
+
+    def flaky(raw: str) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("something nobody planned for")
+        return real(raw)
+
+    monkeypatch.setattr(prompt, "parse_relations", flaky)
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.proposed, report.errors) == (2, 1, 1)
+    assert "RuntimeError" in report.last_error
+    assert (status(ctx, failed), status(ctx, worked)) == ("pending", "processed")
+
+
+def test_deeply_nested_json_is_an_unreadable_answer_not_a_crash() -> None:
+    nested = '{"facts": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    with pytest.raises(ValueError, match="JSON"):
+        prompt.parse_answer(nested)
+    assert prompt.parse_relations(nested) == []
+
+
+def test_a_note_is_sent_with_its_file_name_not_its_full_path(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_note(tmp_path)
+    ingest_path(ctx, path)
+    model = Model(monkeypatch, answer(NOTE_FACT))
+    extract.extract_pending(ctx, documents=True)
+    sent = model.asked[0][1]
+    assert "harga.md" in sent
+    # The folders above the file name the user's machine and often the user. The model
+    # needs neither; the proposal keeps the full path, on this machine.
+    assert str(tmp_path.resolve()) not in sent and tmp_path.name not in sent
+    assert proposals.pending(ctx)[0].payload["source"]["document"] == path.resolve().as_posix()

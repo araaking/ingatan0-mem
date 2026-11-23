@@ -123,6 +123,15 @@ def _late_conflicts(
         return 0
     # Conflict pairs live in the business file, even for a global fact.
     with transaction(ctx.business), transaction(conn):
+        # The model ran outside any lock, so the fact may have been forgotten or closed by
+        # now. Looked at again here, under the write lock, where nothing can change it: a
+        # pair or a log entry for a fact that is gone would be a trace of it.
+        still_open = conn.execute(
+            f"SELECT 1 FROM facts f WHERE f.id = :id AND {is_valid_sql('f')}",
+            {"id": fact_id, "now": now_iso()},
+        ).fetchone()
+        if still_open is None:
+            return 0
         # Pairs the word check opened at write time are skipped: only new ones come back.
         added = record_conflicts(ctx, fact_id, [hit.id for hit in hits])
         if added:

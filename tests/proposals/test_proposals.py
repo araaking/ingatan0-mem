@@ -380,3 +380,48 @@ def test_a_proposal_without_links_has_no_links_key(ctx: Context) -> None:
     entry = next(e for e in audit.entries(ctx) if e.op == "approve")
     assert entry.change is not None and "links" not in entry.change["after"]
     assert row(ctx, fact_id)["text"] == "Retur maksimal 7 hari."
+
+
+# ---- a model-proposed link must not silence a conflict (final review) -----------------------
+
+OLD_RATE = "Ongkir ke Bandung Rp 12.000 per kg."
+NEW_RATE = "Ongkir ke Bandung Rp 15.000 per kg."
+
+
+def test_a_model_proposed_link_does_not_silence_a_conflict(
+    ctx: Context, make_ctx: MakeContext
+) -> None:
+    old = existing(make_ctx, OLD_RATE, entities=["ongkir Bandung"])
+    result = facts.remember(
+        ctx,
+        NEW_RATE,
+        keywords=["x"],
+        entities=["ongkir Bandung"],
+        tier="business",
+        related_to=[old],
+        source={"extracted_by": "ollama/local-model"},
+    )
+    assert result.proposal_id is not None
+    # The approver is shown the fact it resembles, although the model called it "related".
+    assert [item["id"] for item in result.similar] == [old]
+    fact_id = proposals.approve(ctx, result.proposal_id)
+    assert edges(ctx) == []
+    statuses = {hit.id: hit.status for hit in search.recall(ctx, "ongkir Bandung").facts}
+    assert statuses == {old: "possible conflict", fact_id: "possible conflict"}
+    entry = next(e for e in audit.entries(ctx) if e.op == "approve")
+    assert entry.change is not None
+    assert entry.change["after"]["links"] == {"created": [], "skipped": [old]}
+    assert proposals.skipped_links(ctx, fact_id) == [old]
+
+
+def test_a_hand_made_link_still_declares_two_similar_facts_complementary(
+    ctx: Context, make_ctx: MakeContext
+) -> None:
+    # An agent that passes `related_to` itself says: I know both, they belong together.
+    old = existing(make_ctx, OLD_RATE, entities=["ongkir Bandung"])
+    proposal_id = propose(ctx, NEW_RATE, entities=["ongkir Bandung"], related_to=[old])
+    fact_id = proposals.approve(ctx, proposal_id)
+    assert edges(ctx) == [(fact_id, old, "related_to")]
+    statuses = {hit.id: hit.status for hit in search.recall(ctx, "ongkir Bandung").facts}
+    assert statuses == {old: "valid", fact_id: "valid"}
+    assert proposals.skipped_links(ctx, fact_id) == []

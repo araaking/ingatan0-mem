@@ -8,6 +8,7 @@ key travels in a header and never in a URL, and every failure is one `IngatanErr
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -95,7 +96,7 @@ def chat(cfg: LlmConfig, system: str, user: str) -> str:
             headers["Authorization"] = f"Bearer {key}"
     try:
         data = _post_json(url, payload, headers, cfg.timeout)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise IngatanError(
             f"The {cfg.provider} model {model} at {base} did not answer: "
             f"{type(exc).__name__}: {exc}"

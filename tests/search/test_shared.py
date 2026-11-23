@@ -446,3 +446,57 @@ def test_embed_stays_in_this_process_by_default(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(local, "embed", in_process)
     cfg = EmbeddingConfig(provider="local")
     assert embed.embed_text(cfg, "ongkir Bandung", is_query=False) == [0.0, 1.0]
+
+
+# ---- found by the final review: a long batch, and a slow answer ------------------------------
+
+
+def test_a_batch_that_takes_longer_than_the_timeout_still_gets_its_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`timeout` says how long to wait for the process, not how long the model may think."""
+
+    def slow(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        time.sleep(0.15 * len(texts))
+        return [[float(len(t)), 1.0] for t in texts]
+
+    def no_spawn(idle_unload_seconds: int) -> None:
+        raise AssertionError("the process is running: nothing may start another")
+
+    monkeypatch.setattr(local, "embed", slow)
+    monkeypatch.setattr(shared, "_spawn", no_spawn)
+    running = Process().start()
+    try:
+        cfg = EmbeddingConfig(provider="local", shared=True, timeout=0.5)
+        texts = [f"catatan nomor {n}" for n in range(12)]
+        vectors = embed.embed_batch(cfg, texts)
+    finally:
+        running.stop()
+    assert all(vector is not None for vector in vectors), embed.last_embed_error()
+    assert len(vectors) == 12
+
+
+def test_a_slow_answer_is_not_asked_for_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def very_slow(texts: Sequence[str], **_kwargs: Any) -> list[list[float]]:
+        calls.append(len(texts))
+        time.sleep(1.0)
+        return [[1.0, 0.0] for _ in texts]
+
+    spawned: list[int] = []
+    monkeypatch.setattr(local, "embed", very_slow)
+    monkeypatch.setattr(shared, "_spawn", spawned.append)
+    monkeypatch.setattr(shared, "_last_spawn", float("-inf"))
+    monkeypatch.setattr(shared, "ANSWER_SECONDS_PER_TEXT", 0.0)
+    running = Process().start()
+    try:
+        with pytest.raises(shared.Unavailable):
+            shared.embed(["a"], **{**EMBED_CALL, "timeout": 0.3})
+        time.sleep(1.2)  # let the abandoned call finish before the process is stopped
+    finally:
+        running.stop()
+    # The process was alive and working: starting another, or sending the same texts again
+    # behind the first, would only add to the queue.
+    assert calls == [1]
+    assert spawned == []

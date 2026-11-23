@@ -140,7 +140,10 @@ def test_factor_is_bounded() -> None:
 
 
 def test_usage_boost_stays_below_freshness() -> None:
-    # A new volatile fact must keep its lead over an older, much used one of equal relevance.
+    # Usage weighs at most half of what freshness can give or take. It does not follow that
+    # a newer fact always leads a much used one: freshness separates two volatile facts by
+    # less than this until they are about twelve days apart. What keeps a corrected value
+    # behind its correction is the rule for doubted facts, tested further down.
     assert core.USAGE_BOOST <= core.RECENCY_BOOST / 2
 
 

@@ -75,6 +75,10 @@ _REQUEST_SECONDS = 60.0
 _CONTROL_SECONDS = 2.0
 _TICK_SECONDS = 0.25
 _OWNERSHIP_CHECK_SECONDS = 1.0
+# `timeout` is how long a caller waits for the process to be there and to shake hands. How
+# long the model may take is a different question: it grows with the number of texts, and
+# the first request also loads the model. So the answer gets this much per text on top.
+ANSWER_SECONDS_PER_TEXT = 5.0
 # A caller that finds no process starts one, but not more often than this: when the process
 # cannot start at all, every tool call would otherwise launch another.
 SPAWN_INTERVAL_SECONDS = 30.0
@@ -202,12 +206,22 @@ def _connect(state: _State, timeout: float) -> socket.socket:
 
 
 def _call(
-    state: _State, payload: dict[str, Any], *, timeout: float, vectors: bool = False
+    state: _State,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    vectors: bool = False,
+    answer_timeout: float | None = None,
 ) -> tuple[dict[str, Any], bytes]:
-    """One request and its answer. Every failure becomes `Unavailable`."""
+    """One request and its answer. Every failure becomes `Unavailable`.
+
+    `timeout` bounds the connection and the handshake; `answer_timeout` (default: the same)
+    bounds each wait for the answer once the request has been sent.
+    """
     try:
         with _connect(state, timeout) as sock:
             _send(sock, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            sock.settimeout(timeout if answer_timeout is None else answer_timeout)
             header: Any = json.loads(_receive(sock, MAX_HEADER_BYTES))
             if not isinstance(header, dict):
                 raise ValueError("the answer is not a JSON object")
@@ -253,6 +267,7 @@ def request(
         },
         timeout=timeout,
         vectors=True,
+        answer_timeout=timeout + ANSWER_SECONDS_PER_TEXT * len(texts),
     )
     dims, count = header.get("dims"), header.get("count")
     if (
@@ -343,7 +358,10 @@ def embed(
     except Refused:
         raise
     except Unavailable:
-        if not _start_process(idle_unload_seconds):
+        # A process that is there and answers a ping did not fail for want of being started:
+        # it is slow, or busy with someone else's texts. Starting another, or sending the
+        # same texts again behind the first, would only add to its queue.
+        if status() is not None or not _start_process(idle_unload_seconds):
             raise
     deadline = time.monotonic() + timeout
     while status() is None:

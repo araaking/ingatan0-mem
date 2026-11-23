@@ -88,7 +88,7 @@ def _object(answer: str) -> dict[str, Any] | None:
     for candidate in candidates:
         try:
             data: Any = json.loads(candidate)
-        except ValueError:
+        except (ValueError, RecursionError):  # not JSON, or nested past what Python will parse
             continue
         if isinstance(data, dict) and isinstance(data.get("facts"), list):  # pyright: ignore[reportUnknownMemberType]
             return data  # pyright: ignore[reportUnknownVariableType]

@@ -401,7 +401,10 @@ def remember(
             clean_text,
             entity_list,
             keyword_list,
-            linked_ids=link_targets,
+            # A caller that links two facts itself says they belong together, so they are
+            # not reported as a conflict. A model that extracted the fact has no such
+            # standing: what it calls "related" is still checked, and shown to the approver.
+            linked_ids=[] if resolved_source.get("extracted_by") else link_targets,
             query_vec=new_vec or [],
         )
         if check_conflicts

@@ -327,8 +327,8 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 - `<business>.db` menyimpan fakta bisnis dan agen, episode, catatan, dan konflik. `global.db` menyimpan fakta global. Keduanya berkas SQLite biasa.
 - `capture-errors.log` di folder data mendapat satu baris saat hook atau plugin gagal. Hook tidak pernah menghentikan sesi agen.
 - Penyamaran rahasia memakai pencocokan pola dan bisa meleset.
-- Server tidak melakukan panggilan jaringan, kecuali kamu memilih penyedia embedding jarak jauh (`ollama`, `openai`, `gemini`): saat itu teks fakta dan query dikirim ke endpoint tersebut. Model lokal hanya diunduh ketika kamu menjalankan `ingatan embeddings pull`.
-- `ingatan extract` bersifat opsional dan mati secara bawaan. Kalau kamu mengisi `[llm]`, teks episode (percakapan yang ditangkap, setelah disamarkan) dan paling banyak lima fakta terkait yang sudah tersimpan dikirim ke model yang kamu tunjuk: Ollama di mesinmu, atau endpoint yang kamu tulis di `api_base`. Server dan `remember` tidak pernah memanggil model itu.
+- Server tidak melakukan panggilan jaringan, kecuali kamu memilih penyedia embedding jarak jauh (`ollama`, `openai`, `gemini`): saat itu teks fakta dan query dikirim ke endpoint tersebut. Model lokal hanya diunduh ketika kamu menjalankan `ingatan embeddings pull`, atau `ingatan embeddings enable` dan `ingatan setup` yang memanggilnya untukmu.
+- `ingatan extract` bersifat opsional dan mati secara bawaan. Kalau kamu mengisi `[llm]`, teks episode (percakapan yang ditangkap, setelah disamarkan) dan paling banyak lima fakta terkait yang sudah tersimpan dikirim ke model yang kamu tunjuk: Ollama di mesinmu, atau endpoint yang kamu tulis di `api_base`. Dengan `--documents` yang dikirim adalah teks tiap bagian catatan hasil ingest beserta nama berkasnya (bukan path lengkapnya). Teks itu tidak dikirim ke penyedia embedding: fakta terkait dicari dengan kata saja. Server dan `remember` tidak pernah memanggil model itu.
 
 <a id="id-angka"></a>
 
@@ -348,7 +348,7 @@ Eval berisi 49 skenario berbahasa Indonesia (46 berbasis pola + 3 skenario insid
 
 Ekstraksi fakta opsional (`ingatan extract`) **belum diukur**: `python -m evals.extraction` menghitung berapa bagian dari fakta hasil ekstraksi yang benar dan berapa yang dikarang, pada 7 kasus dengan jawaban yang sudah diketahui, tetapi butuh model yang kamu atur di `[llm]`. Sampai ada laporan di `evals/reports/latest-extraction.md`, README ini tidak menyebut angka apa pun untuknya.
 
-Semua skenario lulus di kedua mode, jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
+Semua skenario yang dijalankan lulus di kedua mode (kolom model lokal belum mencakup tiga skenario `usage` dan `graph` yang ditambahkan belakangan), jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
 
 Memori satu proses server stdio setelah 500 fakta, di satu laptop Windows 11 (Python 3.14.3, mcp 2.3.0): 79,5 MB tanpa model, 275,0 MB dengan model lokal bawaan termuat (puncak 324,1 MB). Model dilepas setelah lima menit diam.
 
@@ -706,8 +706,8 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 - `<business>.db` holds business and agent facts, episodes, notes and conflicts. `global.db` holds global facts. Both are plain SQLite files.
 - `capture-errors.log` in the data folder gets one line when a hook or plugin fails. Hooks never stop the agent session.
 - Redaction is pattern matching and can miss secrets.
-- The server makes no network call, unless you choose a remote embedding provider (`ollama`, `openai`, `gemini`): then the text of facts and queries is sent to that endpoint. The local model is downloaded only when you run `ingatan embeddings pull`.
-- `ingatan extract` is optional and off by default. If you fill in `[llm]`, the text of episodes (captured conversations, after redaction) and of at most five related facts already in memory is sent to the model you name: Ollama on your machine, or the endpoint you put in `api_base`. The server and `remember` never call that model.
+- The server makes no network call, unless you choose a remote embedding provider (`ollama`, `openai`, `gemini`): then the text of facts and queries is sent to that endpoint. The local model is downloaded only when you run `ingatan embeddings pull`, or `ingatan embeddings enable` and `ingatan setup`, which run it for you.
+- `ingatan extract` is optional and off by default. If you fill in `[llm]`, the text of episodes (captured conversations, after redaction) and of at most five related facts already in memory is sent to the model you name: Ollama on your machine, or the endpoint you put in `api_base`. With `--documents` it is the text of each section of an ingested note, with the file's name (not its full path). That text is not sent to the embedding provider: the related facts are looked up by words alone. The server and `remember` never call that model.
 
 <a id="en-numbers"></a>
 
@@ -727,7 +727,7 @@ The eval contains 49 scenarios in Indonesian (46 pattern-based + 3 anonymized in
 
 The optional fact extraction (`ingatan extract`) is **not measured yet**: `python -m evals.extraction` counts how much of what a model extracts is correct and how much is invented, on 7 cases with a known answer, but it needs the model you configure under `[llm]`. Until there is a report in `evals/reports/latest-extraction.md`, this README states no figure for it.
 
-Every scenario passes in both modes, so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
+Every scenario that was run passes in both modes (the local-model column does not yet include the three `usage` and `graph` scenarios added since), so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
 
 Memory of one stdio server process after 500 facts, on one Windows 11 laptop (Python 3.14.3, mcp 2.3.0): 79.5 MB without a model, 275.0 MB with the default local model loaded (peak 324.1 MB). The model is unloaded after five idle minutes.
 

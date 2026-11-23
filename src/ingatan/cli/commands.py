@@ -547,6 +547,14 @@ def proposals_list(business: BusinessOption = None, agent: AgentOption = None) -
                 typer.echo(f"    would supersede {p.supersedes}{shown}")
 
 
+def _echo_skipped_links(ctx: Context, fact_id: str) -> None:
+    for target in proposals.skipped_links(ctx, fact_id):
+        typer.echo(
+            f"  Not linked to {target}: that fact is closed or gone, or the new fact is a "
+            "possible conflict with it. A conflict is settled by you, not by a link."
+        )
+
+
 @proposals_app.command("approve")
 @cli_command
 def proposals_approve(
@@ -575,10 +583,12 @@ def proposals_approve(
             for idx, p in enumerate(pending_items, start=1):
                 fact_id = proposals.approve(ctx, p.id)
                 typer.echo(f"[{idx}/{total}] Approved {p.id}. The new fact is {fact_id}.")
+                _echo_skipped_links(ctx, fact_id)
             return
         for pid in ids:
             fact_id = proposals.approve(ctx, pid)
             typer.echo(f"Approved {pid}. The new fact is {fact_id}.")
+            _echo_skipped_links(ctx, fact_id)
 
 
 @proposals_app.command("reject")

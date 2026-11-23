@@ -89,6 +89,8 @@ DEFAULT_KEY_ENVS: dict[str, str] = {
 MAX_SEMANTIC_CANDIDATES = 50
 # Texts handed to the provider, and rows written, per `reindex` step.
 REINDEX_BATCH_SIZE = 32
+# Texts per request to the shared model process (`[embeddings] shared`).
+SHARED_BATCH_SIZE = 8
 # Bounded LRU cache of query vectors, kept packed (about 1.5 KiB per 384-dim entry).
 _QUERY_CACHE_MAX = 128
 
@@ -322,14 +324,20 @@ def _embed_local_batch(
         # One process holds the model for every server of this data folder. When it cannot
         # be reached this raises an `OSError`, which the callers turn into "no vector": the
         # model is never loaded into this process as a fallback.
-        vectors = shared.embed(
-            prepared,
-            model_name=model_name,
-            model_dir=cfg.model_dir,
-            threads=cfg.threads,
-            idle_unload_seconds=cfg.idle_unload_seconds,
-            timeout=cfg.timeout,
-        )
+        # In small batches: one request then never holds the shared model for long, and
+        # another session's query gets its turn between two of them.
+        vectors: list[list[float]] = []
+        for start in range(0, len(prepared), SHARED_BATCH_SIZE):
+            vectors.extend(
+                shared.embed(
+                    prepared[start : start + SHARED_BATCH_SIZE],
+                    model_name=model_name,
+                    model_dir=cfg.model_dir,
+                    threads=cfg.threads,
+                    idle_unload_seconds=cfg.idle_unload_seconds,
+                    timeout=cfg.timeout,
+                )
+            )
     else:
         vectors = local.embed(
             prepared,

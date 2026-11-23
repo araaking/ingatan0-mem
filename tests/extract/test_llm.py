@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -90,7 +91,13 @@ def test_openai_defaults_and_no_header_without_a_key(
 
 @pytest.mark.parametrize(
     "failure",
-    [urllib.error.URLError("connection refused"), TimeoutError("timed out"), ValueError("bad")],
+    [
+        urllib.error.URLError("connection refused"),
+        TimeoutError("timed out"),
+        ValueError("bad"),
+        http.client.IncompleteRead(b"half an answer"),
+        http.client.InvalidURL("nonnumeric port: 'abc'"),
+    ],
 )
 def test_a_failed_request_becomes_one_clear_error(
     monkeypatch: pytest.MonkeyPatch, failure: Exception
