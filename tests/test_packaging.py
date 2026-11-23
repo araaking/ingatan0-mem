@@ -112,3 +112,19 @@ def test_readme_opens_each_language_with_the_three_commands(
     opening = text.split(anchor, 1)[1].split(first_section, 1)[0]
     assert "uv tool install ingatan\n" in opening
     assert "ingatan setup\n" in opening
+
+
+def test_the_llm_extra_exists_and_brings_no_package() -> None:
+    # The extraction client uses the standard library. The extra is a name to install by
+    # (`ingatan[llm]`, PRD FR-57), not a set of packages.
+    extras = _project()["optional-dependencies"]
+    assert isinstance(extras, dict)
+    assert extras["llm"] == []
+    assert len(extras["vector"]) == 3
+
+
+def test_the_layering_rule_names_the_extract_module_in_both_guides() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert "ingest -> extract -> mcp" in agents
+    assert "`ingest`, `extract`, `mcp`" in contributing

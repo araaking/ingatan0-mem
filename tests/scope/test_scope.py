@@ -15,6 +15,7 @@ from ingatan.scope import (
     find_fact,
     open_context,
     parse_embeddings,
+    parse_llm,
     resolve_scope,
     validate_agent,
     validate_business,
@@ -312,3 +313,49 @@ def test_shared_setting_parses() -> None:
     assert from_env.shared is True
     with pytest.raises(ConfigError, match=r"\[embeddings\] shared"):
         parse_embeddings({}, {"embeddings": {"shared": "sometimes"}}, {})
+
+
+# ---- [llm] (the optional fact extraction) ------------------------------------------
+
+
+def test_llm_is_off_by_default() -> None:
+    cfg = parse_llm({}, {}, {})
+    assert (cfg.provider, cfg.model, cfg.api_base, cfg.api_key_env) == ("none", "", "", "")
+    assert cfg.timeout == 60.0
+
+
+def test_llm_from_toml_with_the_project_winning_over_home() -> None:
+    home = {"llm": {"provider": "openai", "model": "home-model", "timeout": 20}}
+    project = {"llm": {"provider": "ollama", "model": "project-model"}}
+    cfg = parse_llm({}, project, home)
+    assert (cfg.provider, cfg.model, cfg.timeout) == ("ollama", "project-model", 20.0)
+
+
+def test_llm_env_wins_over_toml() -> None:
+    env = {
+        "INGATAN_LLM_PROVIDER": "OpenAI",
+        "INGATAN_LLM_MODEL": "env-model",
+        "INGATAN_LLM_API_BASE": "http://localhost:8080/v1",
+        "INGATAN_LLM_API_KEY_ENV": "MY_KEY",
+    }
+    cfg = parse_llm(env, {"llm": {"provider": "ollama", "model": "toml-model"}}, {})
+    assert (cfg.provider, cfg.model) == ("openai", "env-model")
+    assert (cfg.api_base, cfg.api_key_env) == ("http://localhost:8080/v1", "MY_KEY")
+
+
+def test_llm_rejects_an_unknown_provider_and_a_bad_timeout() -> None:
+    with pytest.raises(ConfigError, match="none, ollama, openai"):
+        parse_llm({}, {"llm": {"provider": "gemini"}}, {})
+    for bad in (0, -1, "soon", True):
+        with pytest.raises(ConfigError, match=r"\[llm\] timeout"):
+            parse_llm({}, {"llm": {"provider": "ollama", "timeout": bad}}, {})
+
+
+def test_resolve_scope_carries_the_llm_settings(tmp_path: Path) -> None:
+    (tmp_path / ".ingatan.toml").write_text(
+        TOML + '\n[llm]\nprovider = "ollama"\nmodel = "local-model"\n', encoding="utf-8"
+    )
+    scope = resolve_scope(tmp_path, env={"INGATAN_HOME": str(tmp_path / "home")})
+    assert (scope.llm.provider, scope.llm.model) == ("ollama", "local-model")
+    plain = Scope(business="tokoku", agent="asisten", home=tmp_path)
+    assert plain.llm.provider == "none"

@@ -35,6 +35,10 @@ vector = [
   "onnxruntime>=1.17",
   "sentencepiece>=0.2",
 ]
+# Optional fact extraction (`ingatan extract`). It talks to an Ollama model or to any
+# OpenAI-compatible endpoint with the standard library, so the extra brings no package: it
+# is a name to install by. Nothing is sent anywhere until `[llm] provider` and `model` are set.
+llm = []
 
 [project.urls]
 Repository = "https://github.com/araaking/ingatan0-mem"

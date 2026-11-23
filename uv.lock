@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -447,7 +447,7 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-provides-extras = ["vector"]
+provides-extras = ["vector", "llm"]
 
 [package.metadata.requires-dev]
 dev = [

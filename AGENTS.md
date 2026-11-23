@@ -25,7 +25,7 @@ This is a **public open-source repository**. Never introduce personal or private
 Modules may import **only** from modules earlier in this list (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 
 ```
-timeutil -> errors -> db -> redact -> scope -> audit -> search -> facts -> proposals -> episodes -> brief -> ingest -> mcp -> cli -> integrations
+timeutil -> errors -> db -> redact -> scope -> audit -> search -> facts -> proposals -> episodes -> brief -> ingest -> extract -> mcp -> cli -> integrations
 ```
 
 - Keep `mcp/` and `cli/` thin — business logic belongs in `facts/`, `search/`, `brief/`, `proposals/`, and `scope/` so it is directly unit-testable.
