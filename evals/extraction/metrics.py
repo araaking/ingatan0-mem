@@ -209,7 +209,12 @@ def judge(
         if matched:
             correct += 1
             found.update(matched)
-        elif barred or not case.expected or any(e.values and e.names(text) for e in case.expected):
+        elif (
+            barred
+            or not case.expected
+            # Another value: it names a listed fact and states a number, not the listed one.
+            or (stated and any(e.values and e.names(text) for e in case.expected))
+        ):
             wrong += 1
         else:
             unlisted += 1

@@ -885,7 +885,7 @@ def test_extract_command_says_when_the_model_could_not_be_reached(
     assert result.exit_code == 1, result.output
     assert "Read 3 episode(s)" in result.output
     assert "stopped after 3 calls in a row without an answer" in result.output
-    assert "Nothing is held against those texts" in result.output
+    assert "could not be reached is held against no text" in result.output
 
 
 def test_what_the_user_rejected_is_not_proposed_again(
@@ -925,3 +925,25 @@ def test_a_rejected_proposal_of_an_agent_does_not_silence_the_model(
     episodes.record(ctx, USER, ASSISTANT)
     Model(monkeypatch, answer(GOOD))
     assert extract.extract_pending(ctx).proposed == 1
+
+
+def test_texts_the_model_never_finishes_in_time_stop_blocking_the_ones_behind_them(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for n in range(3):
+        episodes.record(ctx, f"Catatan panjang {_letters(n)}.", "Dicatat.")
+    good = episodes.record(ctx, USER, ASSISTANT)
+
+    def model(cfg: LlmConfig, system: str, user: str) -> str:
+        if "panjang" in user:
+            raise llm.TimedOut("The ollama model did not finish within 60 s")
+        return answer(GOOD)
+
+    monkeypatch.setattr(llm, "chat", model)
+    for _ in range(extract.MAX_READ_FAILURES):
+        report = extract.extract_pending(ctx)
+        assert (report.episodes_read, report.proposed, report.unreachable) == (3, 0, True)
+    assert failures(ctx) == [3, 3, 3, 0]
+    report = extract.extract_pending(ctx)
+    assert (report.episodes_read, report.proposed, report.left_out) == (1, 1, 3)
+    assert status(ctx, good) == "processed"

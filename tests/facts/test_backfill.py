@@ -445,8 +445,10 @@ def test_a_worker_told_to_stop_ends_and_does_not_run_beside_its_successor(
     ctx = make_ctx(embeddings=DEFER)
     monkeypatch.setattr(embed, "REINDEX_BATCH_SIZE", 1)
     entered, release = threading.Event(), threading.Event()
+    calls: list[str] = []
 
     def slow(cfg: EmbeddingConfig, text: str, *, is_query: bool) -> list[float]:
+        calls.append(text)
         entered.set()
         release.wait(5)
         return [0.0, 1.0, 0.0]
@@ -461,11 +463,15 @@ def test_a_worker_told_to_stop_ends_and_does_not_run_beside_its_successor(
         backfill.stop_worker(timeout=0.05)  # gives up waiting: the thread is inside the model
         assert old.is_alive()
         backfill.start_worker()
+        backfill.notify(ctx.scope)  # the successor has work at once
+        time.sleep(0.2)
         release.set()
         old.join(3)
         assert not old.is_alive(), "a stopped thread ends after the batch it was in"
+        assert wait_for(lambda: len(vectors(ctx)) == 3)
         assert len(worker_threads()) == 1
-        assert len(vectors(ctx)) + len(queued(ctx)) == 3
+        # The successor waited for the old thread's batch: no fact was sent to the model twice.
+        assert sorted(calls) == sorted(set(calls)) and len(calls) == 3
     finally:
         release.set()
         backfill.stop_worker()

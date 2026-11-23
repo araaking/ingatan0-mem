@@ -181,3 +181,14 @@ def test_setup_exits_non_zero_when_a_check_fails(
     result = invoke("setup", "--no-semantic", "--client", "none")
     assert result.exit_code == 1, result.output
     assert "check(s) failed." in result.output
+
+
+def test_setup_hermes_prints_a_relative_data_folder_as_a_full_path(
+    invoke: Invoke, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermes starts the server from a folder of its own: a relative path would point elsewhere."""
+    monkeypatch.setenv("INGATAN_HOME", "ingatan-data")
+    result = invoke(*BASE, "--no-semantic", "--client", "hermes")
+    assert result.exit_code == 0, result.output
+    full = (Path.cwd() / "ingatan-data").resolve()
+    assert f"INGATAN_HOME: '{full}'" in result.output

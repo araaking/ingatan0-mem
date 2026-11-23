@@ -601,3 +601,21 @@ def test_the_health_check_does_not_start_the_process(monkeypatch: pytest.MonkeyP
     assert embed.probe_embedding(cfg) == 2
     assert spawned == []
     assert shared.status() is None
+
+
+def test_a_state_file_that_is_not_text_counts_as_no_process(
+    ingatan_home: Path, model: list[list[str]]
+) -> None:
+    """A corrupt file is not an answer, and the next process to start writes a new one."""
+    path = state_file(ingatan_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert shared.status() is None
+    assert shared.stop() is False
+    with pytest.raises(shared.Unavailable):
+        shared.request(["a"], **CALL)
+    running = Process().start()
+    try:
+        assert shared.request(["a"], **CALL) == [[1.0, 1.0]]
+    finally:
+        running.stop()

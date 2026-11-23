@@ -228,8 +228,9 @@ def fill_pending(
 # the next server to start picks it up.
 #
 # Each worker has its own stop flag and its own list of scopes. A thread that was told to
-# stop while it was inside a model call ends after that batch, whatever was started since:
-# it never works beside its successor.
+# stop while it was inside a model call ends after that batch, whatever was started since,
+# and a pass holds `_pass_lock`: a successor started meanwhile waits for that batch instead
+# of sending the same queued facts to the model a second time.
 
 
 class _Worker:
@@ -256,8 +257,11 @@ class _Worker:
                     return
                 retry_at.pop(scope, None)
                 try:
-                    with open_context(scope) as ctx:
-                        report = fill_pending(ctx, should_stop=self.stop.is_set)
+                    with _pass_lock:
+                        if self.stop.is_set():
+                            return
+                        with open_context(scope) as ctx:
+                            report = fill_pending(ctx, should_stop=self.stop.is_set)
                 except Exception as exc:  # one bad scope must not end the worker
                     message = f"{type(exc).__name__}: {exc}"
                     failed = True
@@ -274,6 +278,8 @@ class _Worker:
 
 
 _lock = threading.Lock()
+# Held by a worker for the whole of one pass. One process fills with one thread at a time.
+_pass_lock = threading.Lock()
 _worker: _Worker | None = None
 _last_error = ""
 

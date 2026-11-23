@@ -128,7 +128,7 @@ def _http_error(code: int) -> urllib.error.HTTPError:
     "failure",
     [
         urllib.error.URLError("connection refused"),
-        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),  # could not connect in time
         http.client.RemoteDisconnected("closed"),
         _http_error(401),
         _http_error(429),
@@ -165,3 +165,16 @@ def test_an_empty_answer_is_about_the_text(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(IngatanError) as caught:
         llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")
     assert not isinstance(caught.value, llm.Unreachable)
+
+
+def test_an_answer_that_does_not_come_in_time_is_timed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request went out and the model did not finish: that may be the text's length."""
+
+    def slow(*_args: Any, **_kwargs: Any) -> Any:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(llm, "_post_json", slow)
+    with pytest.raises(llm.TimedOut, match="did not finish"):
+        llm.chat(LlmConfig(provider="ollama", model="m"), "s", "u")

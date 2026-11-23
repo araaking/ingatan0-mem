@@ -391,7 +391,8 @@ def setup(
         )
         # Only when the data folder was chosen: the default needs no line, and a block
         # without a path in it can be shared as it is.
-        home = str(scope.home) if os.environ.get("INGATAN_HOME", "").strip() else None
+        # As a full path: Hermes starts the server from a folder of its own.
+        home = str(scope.home.resolve()) if os.environ.get("INGATAN_HOME", "").strip() else None
         typer.echo(block(scope.business, scope.agent, home))
         typer.echo("The memory-provider plugin is described in docs/setup-hermes.md.")
 
@@ -705,7 +706,8 @@ def extract(
     if report.unreachable:
         typer.echo(
             f"ingatan: stopped after {extraction.MAX_UNREACHABLE} calls in a row without an "
-            "answer. Nothing is held against those texts: run it again when the model answers.",
+            "answer. A call that timed out counts as a failed reading of its text; a model "
+            "that could not be reached is held against no text. Run it again when it answers.",
             err=True,
         )
     if report.unreachable or (report.errors and report.errors == read):

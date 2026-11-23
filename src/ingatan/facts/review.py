@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from ingatan.errors import ValidationError
+from ingatan.errors import IngatanError, ValidationError
 from ingatan.facts._util import is_closed, now_iso
 from ingatan.facts.change import confirm, supersede
 from ingatan.facts.links import link_facts
@@ -136,7 +136,14 @@ def resolve_pair(ctx: Context, pair: OpenConflict, action: str) -> ReviewOutcome
             pair.newer_id,
             f"Reviewed with {pair.older_id}: both are true and stay valid.",
         )
-        link_facts(ctx, pair.newer_id, pair.older_id, relation="related_to")
+        try:
+            link_facts(ctx, pair.newer_id, pair.older_id, relation="related_to")
+        except IngatanError as exc:
+            # The confirm is in, and it settled the pair. Saying "not changed" would be false.
+            return ReviewOutcome(
+                f"Kept both: {pair.newer_id} is confirmed and the pair is settled, but not "
+                f"linked with {pair.older_id}: {exc.message}"
+            )
         return ReviewOutcome(f"Kept both and linked {pair.newer_id} with {pair.older_id}.")
     keep, drop = (
         (pair.newer_id, pair.older_id) if action == "keep_newer" else (pair.older_id, pair.newer_id)

@@ -6,9 +6,11 @@ endpoint, `/chat/completions`). Nothing is sent unless a provider and a model ar
 key travels in a header and never in a URL, and every failure is one `IngatanError`.
 
 A failure is `Unreachable` when it says nothing about the text that was sent: the endpoint
-is down, slow, busy or refuses the key. A request the endpoint refuses as such (HTTP 400,
-413, 422: too long, malformed for this model) and an empty answer are about the text, and
-are a plain `IngatanError`. The caller counts the second kind against the text.
+cannot be connected to, is busy or refuses the key. A request the endpoint refuses as such
+(HTTP 400, 413, 422: too long, malformed for this model) and an empty answer are about the
+text, and are a plain `IngatanError`. `TimedOut` is in between: the request went out and the
+model did not finish in time, which a long text on a slow model does and a hung endpoint
+does too. The caller counts the second and the third kind against the text.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from ingatan.scope import LlmConfig
 __all__ = [
     "DEFAULT_BASES",
     "DEFAULT_KEY_ENV",
+    "TimedOut",
     "Unreachable",
     "chat",
     "ensure_configured",
@@ -43,6 +46,10 @@ _REFUSED_REQUEST = (400, 413, 422)
 
 class Unreachable(IngatanError):
     """The endpoint gave no answer, for a reason that has nothing to do with the text."""
+
+
+class TimedOut(IngatanError):
+    """The request was sent and no answer came within `[llm] timeout`."""
 
 
 def model_label(cfg: LlmConfig) -> str:
@@ -122,6 +129,12 @@ def chat(cfg: LlmConfig, system: str, user: str) -> str:
             ) from exc
         raise Unreachable(
             f"The {cfg.provider} model {model} at {base} did not answer: HTTP {exc.code}"
+        ) from exc
+    except TimeoutError as exc:
+        # Not wrapped in URLError: urllib wraps what fails while connecting and sending, so
+        # a bare timeout is one that ran out while waiting for the answer.
+        raise TimedOut(
+            f"The {cfg.provider} model {model} at {base} did not finish within {cfg.timeout:g} s."
         ) from exc
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise Unreachable(

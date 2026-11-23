@@ -221,3 +221,8 @@ def test_the_eval_compares_numbers_the_way_the_extraction_does() -> None:
     assert metrics.numbers("1.5") != metrics.numbers("15")
     for text in ("Rp 15.000,00", "1,5 persen", "2026-11-24", "1.234,56"):
         assert metrics.numbers(text) == extract.numbers(text)
+
+
+def test_a_listed_fact_named_without_a_value_is_not_called_wrong() -> None:
+    result = metrics.judge(case(), ["Ongkir ke Bandung dikirim lewat kurir reguler."])
+    assert (result.correct, result.wrong, result.unlisted) == (0, 0, 1)

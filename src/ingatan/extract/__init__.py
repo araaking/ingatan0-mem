@@ -16,9 +16,10 @@ What keeps this safe to switch on:
   `MAX_FACTS_PER_EPISODE` items.
 - Text is redacted again before it is sent, and the model is called outside any transaction.
 - A text the model cannot be read for is tried `MAX_READ_FAILURES` times and then left out,
-  so it does not keep newer texts from being read. A model that cannot be reached is not
-  held against any text: after `MAX_UNREACHABLE` calls in a row without an answer the pass
-  ends.
+  so it does not keep newer texts from being read. A call that timed out counts as a failed
+  reading too (the text may be too long for the model), while a model that cannot be reached
+  is held against no text. After `MAX_UNREACHABLE` calls in a row without an answer, of
+  either kind, the pass ends.
 - What the user rejected is not proposed a second time.
 - It is its own command (`ingatan extract`). The server and `remember` never call a model.
 """
@@ -308,9 +309,10 @@ def extract_pending(
     A text the model could not be read for is left as it is and tried again on a later
     pass, `MAX_READ_FAILURES` times in all; after that it is left out (the report counts
     those as `left_out`) unless `retry_failed` is set. A call that got no answer at all
-    (`llm.Unreachable`) counts against no text, and `MAX_UNREACHABLE` of them in a row end
-    the pass. With `dry_run` nothing is written, a failure count included: the report says
-    what would be proposed.
+    (`llm.Unreachable`) counts against no text; one that timed out (`llm.TimedOut`) counts
+    against its text. `MAX_UNREACHABLE` calls in a row without an answer end the pass.
+    With `dry_run` nothing is written, a failure count included: the report says what
+    would be proposed.
 
     Raises `IngatanError` when no model is configured.
     """
@@ -404,10 +406,15 @@ def extract_pending(
             read_one(reading)
             unanswered = 0
             continue
-        except llm.Unreachable as exc:
-            # Nothing was learned about this text: it is not counted against it.
+        except (llm.Unreachable, llm.TimedOut) as exc:
             errors += 1
             last_error = exc.message
+            # A timeout may be the text's doing: counted, so that a text too long for the
+            # model is left out in the end. A model that could not be reached says nothing
+            # about this text.
+            if isinstance(exc, llm.TimedOut) and not dry_run:
+                with contextlib.suppress(sqlite3.Error, IngatanError):
+                    reading.mark_failed()
             unanswered += 1
             if unanswered >= MAX_UNREACHABLE:
                 unreachable = True

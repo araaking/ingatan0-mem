@@ -173,3 +173,24 @@ def test_the_old_import_path_still_works(ctx: Context, pair: review.OpenConflict
 
     assert OpenConflict is review.OpenConflict
     assert open_conflicts(ctx) == [pair]
+
+
+def test_keep_both_says_so_when_the_link_cannot_be_made_after_the_confirm(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The confirm is in by then and settled the pair: the outcome must not say otherwise."""
+    from ingatan.errors import NotFoundError
+
+    older = facts.remember(ctx, "Harga kopi susu Rp 15.000.", entities=["kopi susu"])
+    newer = facts.remember(ctx, "Harga kopi susu Rp 18.000.", entities=["kopi susu"])
+    assert older.fact_id is not None and newer.fact_id is not None
+    (pair,) = review.open_pairs(ctx)
+
+    def gone(*_args: object, **_kwargs: object) -> None:
+        raise NotFoundError(f"No fact {older.fact_id}.")
+
+    monkeypatch.setattr(review, "link_facts", gone)
+    outcome = review.resolve_pair(ctx, pair, "keep_both")
+    assert "not linked" in outcome.message and f"No fact {older.fact_id}." in outcome.message
+    assert outcome.message.startswith("Kept both")
+    assert review.open_pairs(ctx) == []

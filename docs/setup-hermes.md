@@ -87,7 +87,7 @@ mcp_servers:
 Each tool then accepts a `business` parameter strictly limited to that allowlist, with separate SQLite databases and no cross-business search. By default, writes to `business` and `global` tiers take effect immediately (write-then-undo, reversible via `ingatan undo`); set `INGATAN_REQUIRE_APPROVAL: "1"` (or `require_approval = true` in `~/.ingatan/config.toml`) if you prefer the manual CLI proposal queue.
 
 `ingatan setup --client hermes` prints the first block above with your business and agent
-filled in, and with an `INGATAN_HOME` line when that variable is set where you run it: Hermes
+filled in, and with an `INGATAN_HOME` line (as a full path) when that variable is set where you run it: Hermes
 hands the server only the variables of the block, so without the line the server would open
 the default data folder and not the one the command line uses. It does not edit `config.yaml`:
 the file is YAML, and Ingatan carries no YAML parser to merge into it safely.

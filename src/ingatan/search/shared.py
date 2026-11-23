@@ -143,7 +143,7 @@ def _parse_state(text: str) -> _State | None:
 def _read_state() -> _State | None:
     try:
         return _parse_state(_state_text())
-    except OSError:
+    except (OSError, ValueError):  # ValueError: bytes that are not UTF-8 (a corrupt file)
         return None
 
 
@@ -164,9 +164,10 @@ def _write_state(path: Path, state: _State) -> None:
 def _ownership(token: bytes) -> bool | None:
     """Whether the state file names the process that holds `token`.
 
-    True or False when the file could be read (a missing file is False: it was taken away).
-    None when it could not be read just now: on Windows a file that is being replaced or
-    scanned refuses a read for a moment, and that is no reason for the process to leave.
+    True or False when the file could be read (a missing file is False: it was taken away,
+    and so is one that is not text: it names no process). None when it could not be read
+    just now: on Windows a file that is being replaced or scanned refuses a read for a
+    moment, and that is no reason for the process to leave.
     """
     try:
         text = _state_text()
@@ -174,6 +175,8 @@ def _ownership(token: bytes) -> bool | None:
         return False
     except OSError:
         return None
+    except ValueError:
+        return False
     current = _parse_state(text)
     return current is not None and hmac.compare_digest(current.token, token)
 
