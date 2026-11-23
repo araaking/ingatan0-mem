@@ -385,7 +385,7 @@ Peta modul, aturan lapisan, cara menambah skenario eval, dan cara menambah migra
 
 ### Peta jalan
 
-Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`, versi pertama sudah ada, lihat [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin (versi pertama sudah ada, lihat [docs/setup-http.md](docs/setup-http.md)), integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key.
+Setelah MVP, menurut [docs/DESIGN.md](docs/DESIGN.md): pencarian vektor opsional (`ingatan[vector]`, versi pertama sudah ada, lihat [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), digest episode oleh LLM di sisi server (`ingatan[llm]`), mode HTTP untuk berbagi antar mesin (versi pertama sudah ada, lihat [docs/setup-http.md](docs/setup-http.md)), integrasi code graph, dan UI. Semuanya opsional; setiap fitur harus tetap berjalan tanpa API key. Rencana berikutnya, beserta alasan dan batasannya, ada di [docs/ROADMAP.md](docs/ROADMAP.md).
 
 <a id="id-masalah"></a>
 
@@ -734,7 +734,7 @@ The module map, the layering rule, how to add an eval scenario and how to add a 
 
 ### Roadmap
 
-After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`, a first version exists, see [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines (a first version exists, see [docs/setup-http.md](docs/setup-http.md)), code-graph integration, and a UI. All optional; every feature must keep working with no API key.
+After the MVP, per [docs/DESIGN.md](docs/DESIGN.md): optional vector search (`ingatan[vector]`, a first version exists, see [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)), server-side LLM digest of episodes (`ingatan[llm]`), an HTTP mode for sharing across machines (a first version exists, see [docs/setup-http.md](docs/setup-http.md)), code-graph integration, and a UI. All optional; every feature must keep working with no API key. What is planned next, with the reasons and constraints, is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 <a id="en-troubleshooting"></a>
 
