@@ -24,7 +24,7 @@ this roadmap most:
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
 | 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | Built; the share of correct and invented facts still has to be measured with a real model |
-| 8 | [Tombstones](#5-tombstones-for-wrong-values) | Needs a design that cannot collide with `forget` |
+| 8 | [Tombstones](#5-tombstones-for-wrong-values) | The design is written ([RETRACTION.md](RETRACTION.md)) and waits for the owner's answers to its six questions |
 | 9 | [Static embedding model](#6-static-embedding-model) | Only if 275 MB is still too much after items 2 and 3 |
 
 The numbers in the headings below are the ones the items were first discussed under; the
@@ -77,6 +77,11 @@ it.
 
 **Open decisions.** Whether the match is the exact normalized text (the `text_key` index)
 or something looser, and whether a retracted fact is still shown by `history`.
+
+**Status.** The design is written down in [RETRACTION.md](RETRACTION.md): retracting is a
+logged, undoable operation on a fact that stays in the file, the tombstone is the fact row
+itself (so `forget` removes it with the fact), and the match is the exact normalized text.
+It ends with six questions for the owner. No code exists.
 
 **Done when.** The design is written down and agreed before any code; the eval then needs
 a scenario where the wrong value comes back.
