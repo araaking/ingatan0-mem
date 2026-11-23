@@ -237,8 +237,9 @@ def cosine_similarity(query_vec: Sequence[float], blob: bytes, dims: int) -> flo
         return float(np.dot(q, v))
     arr = array.array("f")
     arr.frombytes(blob)
-    if hasattr(math, "sumprod"):
-        return float(math.sumprod(query_vec, arr))
+    sumprod = getattr(math, "sumprod", None)  # Python 3.12 and later
+    if sumprod is not None:
+        return float(sumprod(query_vec, arr))
     return float(sum(a * b for a, b in zip(query_vec, arr, strict=True)))
 
 
