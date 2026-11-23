@@ -362,11 +362,14 @@ def setup(
             model=None, use_home_config=False, reindex=True, echo=typer.echo
         )
 
-    if client is None:
-        client = typer.prompt(f"Client to configure ({', '.join(SETUP_CLIENTS)})", default="none")
-    chosen = client.strip().casefold()
+    answer = (
+        client
+        if client is not None
+        else str(typer.prompt(f"Client to configure ({', '.join(SETUP_CLIENTS)})", default="none"))
+    )
+    chosen = answer.strip().casefold()
     if chosen not in SETUP_CLIENTS:
-        raise ConfigError(f"Unknown client {client!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
+        raise ConfigError(f"Unknown client {answer!r}. Use one of: {', '.join(SETUP_CLIENTS)}.")
     if chosen == "claude-code":
         _setup_claude_code(assume_yes=assume_yes, interactive=interactive)
     elif chosen == "hermes":
