@@ -1,0 +1,31 @@
+{
+  "id": "ex-03-dua-fakta",
+  "title": "Dua fakta dalam satu giliran, masing-masing dengan angkanya sendiri",
+  "episodes": [
+    {
+      "user": "Catat ya: supplier gula pasir kita toko-a, antar tiap Senin. Stok gula sekarang tinggal 20 karung.",
+      "assistant": "Sudah. Supplier gula pasir toko-a antar tiap Senin, dan stok gula 20 karung."
+    }
+  ],
+  "expected": [
+    {
+      "name": "supplier",
+      "all_of": [
+        "gula",
+        "toko-a"
+      ],
+      "values": []
+    },
+    {
+      "name": "stok",
+      "all_of": [
+        "stok",
+        "gula"
+      ],
+      "values": [
+        "20"
+      ]
+    }
+  ],
+  "forbidden": []
+}

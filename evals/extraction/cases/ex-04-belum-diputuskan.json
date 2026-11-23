@@ -1,0 +1,14 @@
+{
+  "id": "ex-04-belum-diputuskan",
+  "title": "Angka yang hanya diandaikan, bukan keputusan, tidak boleh menjadi fakta",
+  "episodes": [
+    {
+      "user": "Kalau ongkir ke Surabaya kita naikkan jadi Rp 20.000 kira-kira pelanggan keberatan nggak ya? Belum saya putuskan.",
+      "assistant": "Bisa jadi keberatan. Karena belum diputuskan, saya tidak mencatat tarif baru."
+    }
+  ],
+  "expected": [],
+  "forbidden": [
+    "20.000"
+  ]
+}

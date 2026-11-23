@@ -1,0 +1,40 @@
+{
+  "id": "ex-06-angka-berdekatan",
+  "title": "Tiga harga yang mirip: tiap barang harus tetap berpasangan dengan harganya sendiri",
+  "episodes": [
+    {
+      "user": "Daftar harga baru: kaos polos Rp 65.000, kaos sablon Rp 85.000, topi Rp 45.000.",
+      "assistant": "Tercatat: kaos polos Rp 65.000, kaos sablon Rp 85.000, topi Rp 45.000."
+    }
+  ],
+  "expected": [
+    {
+      "name": "kaos polos",
+      "all_of": [
+        "kaos polos"
+      ],
+      "values": [
+        "65.000"
+      ]
+    },
+    {
+      "name": "kaos sablon",
+      "all_of": [
+        "kaos sablon"
+      ],
+      "values": [
+        "85.000"
+      ]
+    },
+    {
+      "name": "topi",
+      "all_of": [
+        "topi"
+      ],
+      "values": [
+        "45.000"
+      ]
+    }
+  ],
+  "forbidden": []
+}

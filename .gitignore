@@ -15,6 +15,7 @@ evals/reports/*
 !evals/reports/latest.md
 !evals/reports/latest-semantic.md
 !evals/reports/latest-semantic-defer.md
+!evals/reports/latest-extraction.md
 .coverage
 htmlcov/
 .idea/

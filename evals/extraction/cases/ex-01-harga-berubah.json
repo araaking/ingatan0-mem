@@ -1,0 +1,22 @@
+{
+  "id": "ex-01-harga-berubah",
+  "title": "Harga yang diubah di tengah percakapan: yang berlaku adalah yang terakhir disebut",
+  "episodes": [
+    {
+      "user": "Mulai Senin harga kopi susu naik dari Rp 15.000 jadi Rp 18.000 ya.",
+      "assistant": "Baik. Harga kopi susu Rp 18.000 berlaku mulai Senin."
+    }
+  ],
+  "expected": [
+    {
+      "name": "harga baru",
+      "all_of": [
+        "kopi susu"
+      ],
+      "values": [
+        "18.000"
+      ]
+    }
+  ],
+  "forbidden": []
+}

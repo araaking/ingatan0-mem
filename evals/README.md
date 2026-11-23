@@ -35,6 +35,30 @@ This is the check that enabling a model does not break anything the word index g
 
 `--defer` (with `--embeddings local`) runs every scenario the way `[embeddings] defer = true` does: each fact is saved without a vector and filled in afterwards. A server does that in a background thread; the harness does it right after each `remember`, so the next step sees what a user would see a moment later. It writes `evals/reports/latest-semantic-defer.md`. The scenario that needs a model must still pass: a conflict found late is still found.
 
+## The extraction eval
+
+`uv run python -m evals.extraction` measures the optional fact extraction (`ingatan extract`). It needs the model configured under `[llm]`, so CI does not run it, and it writes `evals/reports/latest-extraction.md`. During the run a connection may go only to the host and port of `[llm] api_base` (or the provider's default); any other attempt is refused and fails the run.
+
+A case (`evals/extraction/cases/<id>.json`) is a few captured exchanges, the facts a careful reader would take from them, and what must not come out:
+
+```json
+{
+  "id": "ex-01-harga-berubah",
+  "title": "short description",
+  "episodes": [{"user": "...", "assistant": "..."}],
+  "expected": [{"name": "harga baru", "all_of": ["kopi susu"], "values": ["18.000"]}],
+  "forbidden": ["20.000", "kata sandi"]
+}
+```
+
+Each case runs in its own throwaway data folder: its episodes are recorded, extraction reads them, and what reached the proposal queue (after Ingatan's own checks, which is what a user would be asked to approve) is judged without a model:
+
+- **correct**: an extracted fact that contains every word of `all_of` and every value of `values` of one expected fact. Numbers are compared without their separators.
+- **invented**: an extracted fact that matches no expected fact, or contains a `forbidden` word or value. A case whose `expected` is empty says the right answer is nothing.
+- **found**: an expected fact that at least one extracted fact matches.
+
+The report gives the three as shares, plus how many items Ingatan dropped before the queue (a number that is not in the episode, a malformed item, more than eight per episode) and how many episodes the model could not be read for. `tests/evals/test_extraction_metrics.py` covers the judging and one run with a stand-in model.
+
 ## Scenario format
 
 One JSON file per scenario, named `<id>.json`, under `evals/scenarios/` (sub-folders are read too, see `scenarios/incidents/`).

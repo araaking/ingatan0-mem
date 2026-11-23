@@ -23,7 +23,7 @@ this roadmap most:
 | 1 | [Easier installation](#9-easier-installation) | Built; only the release to PyPI is left, and that is the owner's to do |
 | 2 | [Deferred embedding](#2-deferred-embedding-on-write) | Built; the timing still has to be measured on a machine that has the model |
 | 3 | [Shared model process](#1-shared-model-process) | Built; the saving still has to be measured on a machine that has the model |
-| 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | The largest item; needs design decisions first |
+| 6 | [LLM fact extraction](#7-llm-fact-extraction-optional) | Built; the share of correct and invented facts still has to be measured with a real model |
 | 7 | [Light knowledge graph](#8-light-knowledge-graph-optional) | Reuses the extraction pass |
 | 8 | [Tombstones](#5-tombstones-for-wrong-values) | Needs a design that cannot collide with `forget` |
 | 9 | [Static embedding model](#6-static-embedding-model) | Only if 275 MB is still too much after items 2 and 3 |
@@ -101,25 +101,16 @@ the current model's.
 
 ## 7. LLM fact extraction (optional)
 
-**Problem.** Ingatan remembers only what an agent chooses to pass to `remember`. A long
-conversation or a document holds facts nobody wrote down.
+**Status.** Built: `ingatan extract`, off by default, switched on under `[llm]` (see the
+changelog). The two open decisions were settled like this: an extracted fact is always a
+proposal, whatever `require_approval` says, and no model is prescribed (an Ollama model or
+any OpenAI-compatible endpoint, named by the user).
 
-**Idea.** An optional extra (`ingatan[llm]`, off by default) that reads episodes and
-ingested documents and proposes facts from them. This is the server-side digest already
-foreseen as FR-57 in [PRD.md](PRD.md).
-
-**Constraints.**
-- The provider is configurable and can be local: an Ollama model or any
-  OpenAI-compatible endpoint, the same choice the embedding providers offer. Nothing is
-  sent anywhere unless the user configured an endpoint.
-- A model can invent things. Extracted facts carry a source that marks them as extracted,
-  and by default they go to the proposal queue instead of becoming valid facts.
-- It runs as its own command or background step, never inside `remember` and never inside
-  a write transaction.
-- Redaction applies before any text is sent to a model.
-
-**Open decisions.** Whether extracted facts may ever be written directly (reversible with
-`ingatan undo`) or always need approval, and which model sizes are worth supporting.
+**What is left.** The done-when is a number, and it needs a real model:
+`python -m evals.extraction` with each model worth naming, the report committed as
+`evals/reports/latest-extraction.md`, and the README stating the figures with the model
+names. This section goes when they are in. After that, with numbers in hand, decide whether
+an extracted fact may ever be written directly.
 
 **Done when.** An eval measures how many extracted facts are correct and how many are
 invented, on scenarios with a known answer, and the README states that number.
