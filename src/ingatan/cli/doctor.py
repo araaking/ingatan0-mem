@@ -17,11 +17,13 @@ from ingatan import db, timeutil, tokens
 from ingatan.errors import ConfigError, IngatanError
 from ingatan.scope import (
     GLOBAL_NAME,
+    HOME_CONFIG_NAME,
     EmbeddingConfig,
     Scope,
     data_home,
     db_path,
     find_config,
+    load_home_config,
     resolve_scope,
     validate_business,
     visible_sql,
@@ -90,15 +92,35 @@ def _sources(
             config = _read_config(path)
         except ConfigError as exc:
             notes.append(f"config file problem: {exc.message}")
-    for key, env_name in (("business", "INGATAN_BUSINESS"), ("agent", "INGATAN_AGENT")):
+    home = data_home(env)
+    home_path = home / HOME_CONFIG_NAME
+    home_cfg: dict[str, object] = {}
+    if home_path.is_file():
+        try:
+            home_cfg = load_home_config(home)
+        except ConfigError as exc:
+            notes.append(f"home config problem: {exc.message}")
+    for key, env_name, home_keys in (
+        ("business", "INGATAN_BUSINESS", ()),
+        ("agent", "INGATAN_AGENT", ("default_agent", "agent")),
+    ):
         from_env = (env.get(env_name) or "").strip()
         from_file = config.get(key)
+        from_home: str | None = None
+        for hk in home_keys:
+            raw = home_cfg.get(hk)
+            if isinstance(raw, str) and raw.strip():
+                from_home = raw.strip()
+                break
         if from_env:
             values[key] = from_env
             notes.append(f"{key}: {from_env} (from environment variable {env_name})")
         elif isinstance(from_file, str) and from_file.strip():
             values[key] = from_file.strip()
             notes.append(f"{key}: {from_file.strip()} (from {path})")
+        elif from_home is not None:
+            values[key] = from_home
+            notes.append(f"{key}: {from_home} (from {home_path})")
         else:
             values[key] = None
             notes.append(f"{key}: not set (set {env_name} or put it in .ingatan.toml)")
@@ -138,20 +160,20 @@ def _check_config(env: dict[str, str]) -> tuple[Check, str | None, Scope | None]
         if emb.defer:
             notes.append("defer: on (remember saves first, the server embeds afterwards)")
         if emb.shared and emb.provider == "local":
-            notes.append(f"shared model process: {_shared_process_note()}")
+            notes.append(f"shared model process: {_shared_process_note(scope.home)}")
     notes.append(f"data folder: {scope.home}")
     detail = f"business {scope.business}, agent {scope.agent}"
     return Check("config", "pass", detail, notes), scope.business, scope
 
 
-def _shared_process_note() -> str:
+def _shared_process_note(home: Path) -> str:
     """Whether the one process that holds the model for this data folder answers."""
     from ingatan.search import shared
 
-    running = shared.status()
+    running = shared.status(home)
     if running is not None:
         return f"running (pid {running.pid}, port {running.port} on 127.0.0.1)"
-    leftover = shared.state_file()
+    leftover = shared.state_file(home)
     if leftover.is_file():
         return (
             f"does not answer ({leftover} is left over from an earlier one; "

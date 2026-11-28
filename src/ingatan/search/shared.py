@@ -111,13 +111,14 @@ class _State:
 # ---- the state file -------------------------------------------------------------------------
 
 
-def state_file() -> Path:
+def state_file(home: Path | None = None) -> Path:
     """Where the process of this data folder records its pid, port and token."""
-    return data_home() / STATE_DIR / STATE_NAME
+    base = data_home() if home is None else home
+    return base / STATE_DIR / STATE_NAME
 
 
-def _state_path() -> Path:
-    return state_file()
+def _state_path(home: Path | None = None) -> Path:
+    return state_file(home)
 
 
 def _state_text() -> str:
@@ -140,9 +141,10 @@ def _parse_state(text: str) -> _State | None:
     return _State(pid=pid, port=port, token=token)
 
 
-def _read_state() -> _State | None:
+def _read_state(home: Path | None = None) -> _State | None:
     try:
-        return _parse_state(_state_text())
+        text = _state_text() if home is None else _state_path(home).read_text(encoding="utf-8")
+        return _parse_state(text)
     except (OSError, ValueError):  # ValueError: bytes that are not UTF-8 (a corrupt file)
         return None
 
@@ -432,9 +434,9 @@ def embed(
     return vectors
 
 
-def status() -> SharedStatus | None:
+def status(home: Path | None = None) -> SharedStatus | None:
     """The process that answers for this data folder, or None when none does."""
-    state = _read_state()
+    state = _read_state(home)
     if state is None:
         return None
     try:

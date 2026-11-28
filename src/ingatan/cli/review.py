@@ -15,10 +15,11 @@ from ingatan.scope import Context, find_fact
 __all__ = ["ANSWERS", "MENU", "Answer", "describe", "parse_answer", "parse_side"]
 
 # The letters that resolve a pair, and the action of `facts.review.ACTIONS` each stands for.
-ANSWERS = {"k": "keep_both", "n": "keep_newer", "o": "keep_older"}
+ANSWERS = {"k": "keep_both", "d": "dismiss", "n": "keep_newer", "o": "keep_older"}
 MENU = (
-    "[k]eep both and link them, [n]ewer replaces older, [o]lder replaces newer, "
-    "[f]orget one, [s]kip, [q]uit. A capital K, N or O answers for every pair that remains."
+    "[k]eep both and link them, [d]ismiss (unrelated, no link), [n]ewer replaces older, "
+    "[o]lder replaces newer, [f]orget one, [s]kip, [q]uit. "
+    "A capital K, D, N or O answers for every pair that remains."
 )
 
 

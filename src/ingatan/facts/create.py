@@ -406,6 +406,7 @@ def remember(
             # standing: what it calls "related" is still checked, and shown to the approver.
             linked_ids=[] if resolved_source.get("extracted_by") else link_targets,
             query_vec=new_vec or [],
+            kind=resolved_kind,
         )
         if check_conflicts
         else []

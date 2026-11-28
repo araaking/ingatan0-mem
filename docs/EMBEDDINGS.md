@@ -156,7 +156,10 @@ Two facts about different things score as high as an update of one fact (0.92 to
 against 0.94 to 0.98, seven pairs each). Only the entities the agent supplies say
 whether two facts are about one thing, so a semantic conflict needs a shared specific
 entity. Two facts that name different external resources (two sheet ids, two URLs) are
-never a conflict unless their wording is nearly identical.
+never a conflict unless their wording is nearly identical. Two `volatile` periodic snapshots
+(daily logs, updates, worklogs) with distinct calendar dates or weeks are likewise not flagged
+as conflicts, while standing effective-date updates (`mulai ...`, `berlaku ...`) and same-date
+updates still are.
 
 ### Tuning and other models
 
@@ -208,7 +211,9 @@ The rest of what is worth knowing:
 - A fact the server finds with no vector at all for any other reason (saved while the
   provider was `none`, imported) is embedded as well, so `ingatan reindex` is no longer
   needed after switching `defer` on. Those facts get no conflict scan; that is still
-  `ingatan conflicts scan`.
+  `ingatan conflicts scan` (which reuses stored vectors from `fact_embeddings` and writes
+  `conflict` audit log entries). Legacy false-positive open conflicts can be dismissed without
+  linking via `ingatan conflicts prune [--dry-run]` or `ingatan conflicts review` (`d`/`dismiss`).
 - A fact that holds a vector of another model is left as it is. After a change of model
   nothing is embedded again unasked (with a paid provider that would be a bill): `ingatan
   reindex` replaces those vectors when you decide to, and `ingatan doctor` counts them.

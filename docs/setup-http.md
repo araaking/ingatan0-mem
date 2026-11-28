@@ -53,7 +53,9 @@ ingatan serve --http --host 0.0.0.0 --port 9000   # all interfaces
 - HTTP mode does not read `.ingatan.toml`, `INGATAN_BUSINESS` or `INGATAN_AGENT`. The scope of
   each request comes from its token, while shared defaults (`[brief].token_budget`,
   `require_approval`, `[embeddings]`) are inherited from `<INGATAN_HOME>/config.toml` and
-  reloaded automatically when that file changes. `INGATAN_HOME` still selects the data folder.
+  reloaded automatically when that file changes. `INGATAN_REQUIRE_APPROVAL` from the environment
+  overrides `require_approval` in `config.toml` (matching stdio and CLI precedence), and
+  `INGATAN_HOME` still selects the data folder.
 - **Shared embedding model (low RAM):** when the optional local embedding provider is
   enabled, all businesses and agents served by one HTTP process share a single loaded
   model (automatically unloaded after `idle_unload_seconds`, default 300s), instead of

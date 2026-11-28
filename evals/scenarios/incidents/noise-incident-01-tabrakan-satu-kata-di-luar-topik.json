@@ -1,0 +1,101 @@
+{
+  "id": "noise-incident-01-tabrakan-satu-kata-di-luar-topik",
+  "title": "Pertanyaan di luar topik tidak mengembalikan fakta acak meski satu kata cocok di indeks kata",
+  "category": "noise",
+  "source": "incident",
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "umum_1",
+      "text": "Server cadangan diperiksa setiap hari Senin pukul sembilan pagi.",
+      "keywords": ["server", "cadangan", "pemeriksaan"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "umum_2",
+      "text": "Tarif paket tahunan mendapat potongan dua bulan gratis.",
+      "keywords": ["tarif", "paket", "tahunan"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "umum_3",
+      "text": "Jadwal rapat evaluasi tim diadakan setiap hari Jumat sore.",
+      "keywords": ["rapat", "evaluasi", "tim"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "umum_4",
+      "text": "Pencatatan tagihan vendor disimpan di folder keuangan bulanan.",
+      "keywords": ["tagihan", "vendor", "keuangan"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "umum_5",
+      "text": "Halaman bantuan pelanggan diperbarui setiap rilis versi baru.",
+      "keywords": ["halaman", "bantuan", "rilis"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "umum_6",
+      "text": "Panduan desain memakai warna hijau tua sebagai aksen utama.",
+      "keywords": ["panduan", "desain", "warna"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "resep_1",
+      "text": "Resep template video animasi standar memakai durasi tiga puluh detik.",
+      "keywords": ["resep", "template", "video", "animasi"],
+      "entities": ["video"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "resep_2",
+      "text": "Resep opening pendek tiga detik dipakai untuk semua klip media sosial.",
+      "keywords": ["resep", "opening", "klip"],
+      "entities": ["klip"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "resep_3",
+      "text": "Resep transisi cepat membuat retensi penonton video pendek lebih stabil.",
+      "keywords": ["resep", "transisi", "retensi"],
+      "entities": ["video"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "recall",
+      "query": "resep rendang padang",
+      "expect_none": true
+    },
+    {
+      "op": "recall",
+      "query": "resep template video",
+      "expect_top5": [
+        "resep_1"
+      ]
+    }
+  ]
+}

@@ -16,8 +16,10 @@ from ingatan.search import stem_id
 __all__ = [
     "CONFLICT_NOISE_WORDS",
     "STOPWORDS",
+    "distinct_dated_snapshots",
     "extract_auto_keywords",
     "extract_content_tokens",
+    "extract_date_markers",
     "extract_identifier_phrases",
     "extract_resource_ids",
 ]
@@ -31,6 +33,105 @@ _SHEET_OR_DRIVE_ID = re.compile(
 )
 _URL = re.compile(r"https?://[^\s)\]>\"']+", re.IGNORECASE)
 
+_MONTHS: dict[str, int] = {
+    "jan": 1,
+    "januari": 1,
+    "january": 1,
+    "feb": 2,
+    "februari": 2,
+    "february": 2,
+    "mar": 3,
+    "maret": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "mei": 5,
+    "may": 5,
+    "jun": 6,
+    "juni": 6,
+    "june": 6,
+    "jul": 7,
+    "juli": 7,
+    "july": 7,
+    "agu": 8,
+    "agust": 8,
+    "agustus": 8,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "okt": 10,
+    "oktober": 10,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "des": 12,
+    "desember": 12,
+    "dec": 12,
+    "december": 12,
+}
+_MONTH_ALT = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_ISO_DATE = re.compile(r"\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b")
+_DAY_MONTH = re.compile(
+    rf"\b(\d{{1,2}}(?:\s*[-–]\s*\d{{1,2}})?)\s+({_MONTH_ALT})\b(?:\s+(20\d{{2}}))?",
+    re.IGNORECASE,
+)
+_MONTH_DAY = re.compile(
+    rf"\b({_MONTH_ALT})\s+(\d{{1,2}}(?:\s*[-–]\s*\d{{1,2}})?)\b(?:,?\s+(20\d{{2}}))?",
+    re.IGNORECASE,
+)
+_WEEK_MARKER = re.compile(r"\b(?:w(\d{1,2})|minggu\s+(?:ke[- ]?)?(\d{1,2}))\b", re.IGNORECASE)
+
+_SNAPSHOT_CUES: frozenset[str] = frozenset(
+    {
+        "analisa",
+        "analisis",
+        "audit",
+        "bulanan",
+        "cuaca",
+        "daily",
+        "harian",
+        "jadwal",
+        "laporan",
+        "log",
+        "metrik",
+        "metrics",
+        "mingguan",
+        "monthly",
+        "performa",
+        "prakiraan",
+        "progres",
+        "progress",
+        "recap",
+        "rekap",
+        "report",
+        "ringkasan",
+        "runrate",
+        "snapshot",
+        "summary",
+        "tarikan",
+        "transaksi",
+        "update",
+        "weekly",
+        "worklog",
+    }
+)
+_EFFECTIVE_CHANGE_CUES: tuple[str, ...] = (
+    "mulai",
+    "berlaku",
+    "sejak",
+    "effective",
+    "starting",
+    "naik jadi",
+    "turun jadi",
+    "diubah menjadi",
+    "berubah menjadi",
+    "ganti jadi",
+    "diganti menjadi",
+)
+
 # Common Indonesian & English function words (never carry topic identity on their own).
 STOPWORDS: frozenset[str] = frozenset(
     {
@@ -39,13 +140,17 @@ STOPWORDS: frozenset[str] = frozenset(
         "adalah",
         "agar",
         "akan",
+        "apa",
+        "apakah",
         "atau",
+        "bagaimana",
         "bagi",
         "bahwa",
         "banyak",
         "baru",
         "beberapa",
         "belum",
+        "berapa",
         "bersama",
         "bisa",
         "boleh",
@@ -61,6 +166,7 @@ STOPWORDS: frozenset[str] = frozenset(
         "di",
         "dia",
         "dibuat",
+        "dimana",
         "dipakai",
         "ditambah",
         "dulu",
@@ -75,8 +181,10 @@ STOPWORDS: frozenset[str] = frozenset(
         "juga",
         "kalau",
         "kami",
+        "kapan",
         "karena",
         "ke",
+        "kenapa",
         "ketika",
         "kita",
         "lagi",
@@ -84,9 +192,11 @@ STOPWORDS: frozenset[str] = frozenset(
         "lalu",
         "lebih",
         "lewat",
+        "mana",
         "masih",
         "mau",
         "memang",
+        "mengapa",
         "mereka",
         "mulai",
         "namun",
@@ -329,6 +439,66 @@ def extract_resource_ids(text: str) -> set[str]:
     for sid in _SHEET_OR_DRIVE_ID.findall(text):
         ids.add(sid)
     return ids
+
+
+def _norm_day_span(raw: str) -> str:
+    parts = [str(int(p)) for p in re.split(r"\s*[-–]\s*", raw.strip()) if p.isdigit()]
+    return "-".join(parts)
+
+
+def extract_date_markers(text: str) -> set[str]:
+    """Explicit calendar dates, date ranges, or week numbers mentioned in `text`."""
+    markers: set[str] = set()
+    for y, m, d in _ISO_DATE.findall(text):
+        markers.add(f"{int(d)}/{int(m)}/{y}")
+        markers.add(f"{int(d)}/{int(m)}")
+    for day_raw, mon_raw, year in _DAY_MONTH.findall(text):
+        span = _norm_day_span(day_raw)
+        mon = _MONTHS[mon_raw.casefold()]
+        if span:
+            markers.add(f"{span}/{mon}/{year}" if year else f"{span}/{mon}")
+    for mon_raw, day_raw, year in _MONTH_DAY.findall(text):
+        span = _norm_day_span(day_raw)
+        mon = _MONTHS[mon_raw.casefold()]
+        if span:
+            markers.add(f"{span}/{mon}/{year}" if year else f"{span}/{mon}")
+    for w1, w2 in _WEEK_MARKER.findall(text):
+        num = int(w1 or w2)
+        if 1 <= num <= 53:
+            markers.add(f"w{num}")
+    return markers
+
+
+def _has_effective_change_cue(lowered: str) -> bool:
+    for cue in _EFFECTIVE_CHANGE_CUES:
+        if re.search(rf"(?<!\w){re.escape(cue)}(?!\w)", lowered):
+            return True
+    return False
+
+
+def _has_snapshot_cue(text: str) -> bool:
+    return any(w.casefold() in _SNAPSHOT_CUES for w in _WORD.findall(text))
+
+
+def distinct_dated_snapshots(text_a: str, text_b: str) -> bool:
+    """True when two texts describe periodic snapshots/logs for different dates or weeks.
+
+    Standing updates that use effective-date phrasing ("mulai 10 Nov", "berlaku sejak ...")
+    return False so real rule or price updates still trigger conflict detection.
+    """
+    dates_a = extract_date_markers(text_a)
+    dates_b = extract_date_markers(text_b)
+    if not dates_a or not dates_b or not dates_a.isdisjoint(dates_b):
+        return False
+    low_a, low_b = text_a.casefold(), text_b.casefold()
+    if _has_effective_change_cue(low_a) or _has_effective_change_cue(low_b):
+        return False
+    if _has_snapshot_cue(text_a) or _has_snapshot_cue(text_b):
+        return True
+    # Week markers (W46 vs W47) or explicit date ranges (1-8 Nov vs 9-15 Nov) are periodic.
+    periodic_a = any(m.startswith("w") or "-" in m for m in dates_a)
+    periodic_b = any(m.startswith("w") or "-" in m for m in dates_b)
+    return periodic_a and periodic_b
 
 
 def extract_auto_keywords(

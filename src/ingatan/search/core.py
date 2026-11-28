@@ -19,6 +19,7 @@ from ingatan.search.aliases import expand_query_with_aliases
 from ingatan.search.stopwords import (
     CONFLICT_NOISE_WORDS,
     STOPWORDS,
+    distinct_dated_snapshots,
     extract_content_tokens,
     extract_identifier_phrases,
     extract_resource_ids,
@@ -30,6 +31,7 @@ __all__ = [
     "NoteHit",
     "RecallResult",
     "is_valid_sql",
+    "open_conflict_ids",
     "recall",
     "similar_facts",
     "status_of",
@@ -91,6 +93,12 @@ PHRASE_WEIGHT = 1.0
 ALIAS_WEIGHT = 0.85
 # Semantic embedding similarity weight in RRF (strong enough to surface synonym-only matches).
 SEMANTIC_WEIGHT = 1.5
+# Query-term coverage weight in RRF scale: ensures a fact matching most specific query tokens
+# outranks older facts that only match one or two common words plus generic signals.
+COVERAGE_WEIGHT = 1.5
+# Gentle discount for volatile facts whose `review_after` has passed (`check first`) when
+# competing against fresh valid facts. Never hides an overdue fact when it is the best match.
+OVERDUE_FACTOR = 0.94
 # Gentle tie-breaking boost for pinned facts, rules, and procedures.
 ROLE_BOOST = 0.25 / (RRF_K + 1)
 # Default maximum number of document excerpts and 1-hop related facts returned alongside hits.
@@ -305,12 +313,14 @@ def _bm25_scores(
     return scores
 
 
-def _entity_count(entities: list[str], query: str) -> int:
+def _entity_count(entities: list[str], query: str, *, exclude: frozenset[str] = frozenset()) -> int:
     lowered = query.casefold()
     count = 0
     for entity in entities:
         name = entity.casefold().strip()
-        if name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", lowered):
+        if not name or name in exclude:
+            continue
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", lowered):
             count += 1
     return count
 
@@ -437,31 +447,46 @@ def _open_conflict_ids(ctx: Context) -> set[str]:
     return {fact_id for pair in pairs if live.issuperset(pair) for fact_id in pair}
 
 
+open_conflict_ids = _open_conflict_ids
+
+
 def _row_blob(row: sqlite3.Row) -> str:
     ents = " ".join(_json_list(row["entities"]))
     kws = " ".join(_json_list(row["keywords"]))
     return f"{row['text']} {ents} {kws}".casefold()
 
 
-def _matched_term_count(blob: str, terms: Sequence[str], extra: Sequence[str]) -> int:
-    """Count distinct query tokens matched in `blob` (exact word or trigram/root substring)."""
+def _term_coverage(
+    blob: str, terms: Sequence[str], extra: Sequence[str]
+) -> tuple[int, int, set[int]]:
+    """Return `(exact_hits, root_only_hits, matched_indices)` for `terms` against `blob`."""
     words = {w.casefold() for w in _WORD.findall(blob)}
-    hits = 0
-    for tok in terms:
+    exact_hits = 0
+    root_hits = 0
+    matched: set[int] = set()
+    for idx, tok in enumerate(terms):
         low = tok.casefold()
         if low in words or (len(low) >= MIN_TRIGRAM_LENGTH and low in blob):
-            hits += 1
+            exact_hits += 1
+            matched.add(idx)
             continue
         for root in stem_id.candidates(low):
             if root in words or (len(root) >= MIN_TRIGRAM_LENGTH and root in blob):
-                hits += 1
+                root_hits += 1
+                matched.add(idx)
                 break
-    if hits == 0 and extra:
+    if exact_hits == 0 and root_hits == 0 and extra:
         for root in extra:
             if root in words or (len(root) >= MIN_TRIGRAM_LENGTH and root in blob):
-                hits += 1
+                root_hits += 1
                 break
-    return hits
+    return exact_hits, root_hits, matched
+
+
+def _matched_term_count(blob: str, terms: Sequence[str], extra: Sequence[str]) -> int:
+    """Count distinct query tokens matched in `blob` (exact word or trigram/root substring)."""
+    exact_hits, root_hits, _ = _term_coverage(blob, terms, extra)
+    return exact_hits + root_hits
 
 
 def _neighbor_ids(ctx: Context, fact_id: str) -> list[str]:
@@ -636,26 +661,46 @@ def recall(
         for fact_id, rank in _competition_ranks(sem_scores).items():
             scores[fact_id] += SEMANTIC_WEIGHT / (RRF_K + rank)
 
-    # A signal adds nothing for a fact it did not match, so an entity match lifts a fact
-    # above an otherwise equal one.
+    # A signal adds nothing for a fact it did not match, so a specific entity match lifts a
+    # fact above an otherwise equal one. Scope/generic entities (business name, agent name,
+    # or entities appearing in >= 35% of facts) are excluded so old facts carrying the business
+    # name do not outrank newer exact matches that omit it.
+    total_valid = _valid_fact_count(ctx) if pool else 0
+    generic_ents = (
+        frozenset(_generic_entities(ctx, total_valid, time_param)) if pool else frozenset()
+    )
     expanded_query = f"{query} {' '.join(alias_phrases)}" if alias_phrases else query
     entity_counts: dict[str, float] = {}
     for fact_id, cand in pool.items():
-        count = _entity_count(_json_list(cand.row["entities"]), expanded_query)
+        count = _entity_count(
+            _json_list(cand.row["entities"]), expanded_query, exclude=generic_ents
+        )
         if count:
             entity_counts[fact_id] = float(count)
     for fact_id, rank in _competition_ranks(entity_counts).items():
         scores[fact_id] += 1.0 / (RRF_K + rank)
 
+    # Precompute query-term coverage against every candidate once (used for ranking & noise gate).
+    target_terms = non_noise or tokens
+    blobs: dict[str, str] = {}
+    specific_counts: dict[str, int] = {}
+    matched_indices_by_fact: dict[str, set[int]] = {}
+    for fact_id, cand in pool.items():
+        blob = _row_blob(cand.row)
+        blobs[fact_id] = blob
+        exact_spec, root_spec, matched_idx = _term_coverage(blob, target_terms, extra)
+        specific_counts[fact_id] = exact_spec + root_spec
+        matched_indices_by_fact[fact_id] = matched_idx
+        if target_terms:
+            cov = (exact_spec + EXPANDED_WEIGHT * root_spec) / len(target_terms)
+            scores[fact_id] += COVERAGE_WEIGHT * cov / (RRF_K + 1)
+
     # Filter out noise-only hits on multi-term queries (preserving semantic & alias hits).
     if pool and len(tokens) >= 3 and non_noise:
         kept: dict[str, _Candidate] = {}
-        term_hits: dict[str, int] = {}
         for fact_id, cand in pool.items():
-            blob = _row_blob(cand.row)
-            specific_hits = _matched_term_count(blob, non_noise, extra)
-            all_hits = _matched_term_count(blob, tokens, extra)
-            term_hits[fact_id] = specific_hits
+            specific_hits = specific_counts[fact_id]
+            all_hits = _matched_term_count(blobs[fact_id], tokens, extra)
             if (
                 specific_hits >= 1
                 or all_hits >= 2
@@ -667,14 +712,32 @@ def recall(
             ):
                 kept[fact_id] = cand
         pool = kept
+        # Off-topic collision gate on non-trivial stores: if a 3+ specific-word query only
+        # matched ONE single token anywhere in the entire store (e.g. "resep rendang padang"
+        # colliding only on "resep") with no entity, phrase, alias, or semantic match, drop it.
+        if pool and len(non_noise) >= 3 and total_valid >= 8:
+            has_strong_signal = any(
+                fid in entity_counts
+                or fid in phrase_bm
+                or fid in sem_scores
+                or fid in alias_word_bm
+                or fid in alias_tri_bm
+                for fid in pool
+            )
+            if not has_strong_signal:
+                all_matched: set[int] = set()
+                for fid in pool:
+                    all_matched.update(matched_indices_by_fact.get(fid, ()))
+                if len(all_matched) <= 1:
+                    pool = {}
         # When the store is non-trivial, drop weak single-term tail hits: those far below
         # the best hit of their own index and file, with nothing else speaking for them.
-        if len(pool) > 1 and _valid_fact_count(ctx) >= 8:
+        if len(pool) > 1 and total_valid >= 8:
             pool = {
                 fid: cand
                 for fid, cand in pool.items()
                 if (
-                    term_hits.get(fid, 0) >= 2
+                    specific_counts.get(fid, 0) >= 2
                     or fid in entity_counts
                     or fid in phrase_bm
                     or fid in sem_scores
@@ -700,10 +763,18 @@ def recall(
         if is_pinned or cat in ("rule", "procedure"):
             scores[fact_id] += ROLE_BOOST
 
-    # Freshness: a bounded boost from the age of a volatile fact (see RECENCY_BOOST).
+    # Freshness: a bounded boost from the age of a volatile fact (see RECENCY_BOOST), plus a
+    # gentle discount when a volatile fact is past its review date (`check first`).
     reference = timeutil.parse(time_param)
     for fact_id, cand in pool.items():
         scores[fact_id] *= _freshness_factor(cand.row, reference)
+        if (
+            resolved_as_of is None
+            and cand.row["kind"] == "volatile"
+            and cand.row["review_after"] is not None
+            and cand.row["review_after"] < time_param
+        ):
+            scores[fact_id] *= OVERDUE_FACTOR
 
     # Usage: a bounded boost for what was recalled often and recently (see USAGE_BOOST). Not
     # for a look into the past, where today's usage says nothing, and not for a fact whose
@@ -805,17 +876,30 @@ def _notes(
 
     # Drop noise-only notes on multi-term queries and weak tail notes on non-trivial note stores.
     kept_ids = list(rows)
+    note_total = int(conn.execute("SELECT count(*) FROM notes").fetchone()[0])
     if len(tokens) >= 3 and non_noise:
-        kept_ids = [
-            nid
-            for nid in kept_ids
-            if nid in sem_note_ids
-            or _matched_term_count(
+        note_matched: dict[int, set[int]] = {}
+        filtered: list[int] = []
+        for nid in kept_ids:
+            exact_n, root_n, idx_n = _term_coverage(
                 f"{rows[nid]['heading']} {rows[nid]['text']}".casefold(), non_noise, extra
             )
-            >= 1
-        ]
-    note_total = int(conn.execute("SELECT count(*) FROM notes").fetchone()[0])
+            note_matched[nid] = idx_n
+            if nid in sem_note_ids or (exact_n + root_n) >= 1:
+                filtered.append(nid)
+        kept_ids = filtered
+        if (
+            kept_ids
+            and len(non_noise) >= 3
+            and note_total >= 4
+            and not alias_tokens
+            and not any(nid in sem_note_ids for nid in kept_ids)
+        ):
+            covered: set[int] = set()
+            for nid in kept_ids:
+                covered.update(note_matched.get(nid, ()))
+            if len(covered) <= 1:
+                kept_ids = []
     if len(kept_ids) > 1 and note_total >= 4 and strength:
         kept_ids = [
             nid
@@ -933,6 +1017,7 @@ def similar_facts(
     exclude_id: str | None = None,
     linked_ids: Sequence[str] = (),
     query_vec: Sequence[float] | None = None,
+    kind: str = "volatile",
     limit: int = 3,
 ) -> list[FactHit]:
     """Valid visible facts that share an entity (or strong semantic meaning) and overlap in topic.
@@ -1030,6 +1115,16 @@ def similar_facts(
             and cand_res_ids
             and new_res_ids.isdisjoint(cand_res_ids)
             and ratio_all < 0.75
+        ):
+            continue
+
+        # Guard: two volatile snapshots/logs explicitly dated to different calendar dates or
+        # weeks (e.g. "Update 28 Nov" vs "Update 12 Nov", "Worklog W47" vs "W46") are separate
+        # time-series observations, not contradictions.
+        if (
+            kind == "volatile"
+            and row["kind"] == "volatile"
+            and distinct_dated_snapshots(text, str(row["text"]))
         ):
             continue
 

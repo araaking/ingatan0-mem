@@ -1,7 +1,7 @@
 # Ingatan eval report
 
-Date: 2026-11-23  
-Result: 49 scenarios: 48 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
+Date: 2026-11-28  
+Result: 53 scenarios: 52 pass, 0 fail, 0 xfail, 0 xpass, 1 skipped  
 Embeddings: none (FTS5 only)  
 Network attempts during the run: 0
 
@@ -9,10 +9,10 @@ Network attempts during the run: 0
 
 | Metric | Value | Target |
 |---|---|---|
-| recall@5 | 100.0% (55 checks) | over 80% |
-| stale rate | 0.0% (77 recall checks) | under 5% |
-| leak rate | 0.0% (0 of 104 results) | 0 |
-| tokens per brief | mean 64, max 256 (20 briefs) | about 1,000 |
+| recall@5 | 100.0% (58 checks) | over 80% |
+| stale rate | 0.0% (81 recall checks) | under 5% |
+| leak rate | 0.0% (0 of 117 results) | 0 |
+| tokens per brief | mean 68, max 256 (21 briefs) | about 1,000 |
 
 Definitions are in `evals/README.md`.
 
@@ -25,10 +25,12 @@ Definitions are in `evals/README.md`.
 | brief-03-anggaran-token-dan-pemangkasan | brief | pattern | PASS |  |
 | brief-04-urutan-bagian-global-bisnis-agen | brief | pattern | PASS |  |
 | brief-incident-01-fakta-stabil-prioritas-cold-start | brief | incident | PASS |  |
+| brief-incident-02-check-first-tidak-menggusur-fakta-inti | brief | incident | PASS |  |
 | conflict-01-fakta-mirip-ditandai | conflict | pattern | PASS |  |
 | conflict-02-confirm-dengan-id-menyelesaikan | conflict | pattern | PASS |  |
 | conflict-03-nilai-berubah-tetap-tersimpan | conflict | pattern | PASS |  |
 | conflict-incident-01-entitas-umum-tidak-konflik | conflict | incident | PASS |  |
+| conflict-incident-02-snapshot-beda-tanggal-tidak-konflik | conflict | incident | PASS |  |
 | forget-01-fakta-agen-sendiri | forget | pattern | PASS |  |
 | forget-02-fakta-bisnis-tidak-bisa-dihapus-agen | forget | pattern | PASS |  |
 | forget-03-fakta-bisnis-dihapus-oleh-user | forget | pattern | PASS |  |
@@ -50,6 +52,7 @@ Definitions are in `evals/README.md`.
 | leak-business-03-brief-dan-hitungan-proposal-bisnis-lain | leak-business | pattern | PASS |  |
 | leak-business-04-nama-agen-sama-di-bisnis-berbeda | leak-business | pattern | PASS |  |
 | noise-01-pertanyaan-di-luar-topik-tanpa-hasil | noise | pattern | PASS |  |
+| noise-incident-01-tabrakan-satu-kata-di-luar-topik | noise | incident | PASS |  |
 | partial-01-langgan | partial-word | pattern | PASS |  |
 | partial-02-blokir | partial-word | pattern | PASS |  |
 | partial-03-ekspedi | partial-word | pattern | PASS |  |
@@ -69,6 +72,7 @@ Definitions are in `evals/README.md`.
 | supersede-03-riwayat-dengan-include-closed | supersede | pattern | PASS |  |
 | usage-01-fakta-populer-yang-salah | usage | pattern | PASS |  |
 | usage-02-pemakaian-memecah-seri | usage | pattern | PASS |  |
+| usage-incident-01-fakta-baru-kalah-ranking-entitas-umum | usage | incident | PASS |  |
 
 ## Expected failures (xfail)
 
@@ -83,6 +87,7 @@ None.
 | brief-03-anggaran-token-dan-pemangkasan | tokoku/asisten | 256 | 300 |
 | brief-04-urutan-bagian-global-bisnis-agen | tokoku/seo-agent | 99 | 1000 |
 | brief-incident-01-fakta-stabil-prioritas-cold-start | proyekku/asisten | 75 | 120 |
+| brief-incident-02-check-first-tidak-menggusur-fakta-inti | proyekku/asisten | 147 | 250 |
 | forget-01-fakta-agen-sendiri | tokoku/asisten | 19 | 1000 |
 | forget-03-fakta-bisnis-dihapus-oleh-user | tokoku/seo-agent | 20 | 1000 |
 | leak-agent-02-brief-tidak-memuat-catatan-agen-lain | tokoku/seo-agent | 48 | 1000 |

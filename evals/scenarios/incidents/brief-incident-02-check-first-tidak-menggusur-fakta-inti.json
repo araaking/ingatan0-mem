@@ -1,0 +1,125 @@
+{
+  "id": "brief-incident-02-check-first-tidak-menggusur-fakta-inti",
+  "title": "Tumpukan item check first yang basi tidak menggusur fakta bisnis inti dari brief",
+  "category": "brief",
+  "source": "incident",
+  "token_budget": 250,
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "harga_inti",
+      "text": "Harga langganan paket utama adalah Rp 49.000 per bulan untuk semua pelanggan.",
+      "keywords": ["harga", "langganan", "paket"],
+      "tier": "business",
+      "kind": "stable"
+    },
+    {
+      "op": "remember",
+      "key": "basi_01",
+      "text": "Log harian iklan nomor 01 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_02",
+      "text": "Log harian iklan nomor 02 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_03",
+      "text": "Log harian iklan nomor 03 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_04",
+      "text": "Log harian iklan nomor 04 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_05",
+      "text": "Log harian iklan nomor 05 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_06",
+      "text": "Log harian iklan nomor 06 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_07",
+      "text": "Log harian iklan nomor 07 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_08",
+      "text": "Log harian iklan nomor 08 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_09",
+      "text": "Log harian iklan nomor 09 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "remember",
+      "key": "basi_10",
+      "text": "Log harian iklan nomor 10 dengan catatan angka performa sementara yang panjang.",
+      "keywords": ["log", "iklan"],
+      "tier": "business",
+      "kind": "volatile",
+      "review_in_days": 1
+    },
+    {
+      "op": "advance_days",
+      "days": 10
+    },
+    {
+      "op": "brief",
+      "expect_in_section": {
+        "business": [
+          "harga_inti"
+        ]
+      }
+    }
+  ]
+}

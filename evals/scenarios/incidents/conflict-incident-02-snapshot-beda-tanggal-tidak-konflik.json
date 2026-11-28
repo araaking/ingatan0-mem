@@ -1,0 +1,48 @@
+{
+  "id": "conflict-incident-02-snapshot-beda-tanggal-tidak-konflik",
+  "title": "Dua snapshot performa volatile dengan tanggal kalender berbeda tidak ditandai konflik",
+  "category": "conflict",
+  "source": "incident",
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "snap_okt",
+      "text": "Update performa iklan 22 Okt: belanja Rp 400.000, prospek 9, biaya per hasil Rp 44.000.",
+      "keywords": ["update", "performa", "iklan", "belanja"],
+      "entities": ["Iklan"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "advance_days",
+      "days": 15
+    },
+    {
+      "op": "remember",
+      "key": "snap_nov",
+      "text": "Update performa iklan 28 Nov: belanja Rp 520.000, prospek 14, biaya per hasil Rp 37.000.",
+      "keywords": ["update", "performa", "iklan", "belanja"],
+      "entities": ["Iklan"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "recall",
+      "query": "update performa iklan",
+      "expect_top5": [
+        "snap_nov",
+        "snap_okt"
+      ],
+      "expect_status": {
+        "snap_nov": "valid",
+        "snap_okt": "valid"
+      }
+    }
+  ]
+}

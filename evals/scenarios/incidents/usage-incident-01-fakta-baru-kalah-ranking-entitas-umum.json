@@ -1,0 +1,89 @@
+{
+  "id": "usage-incident-01-fakta-baru-kalah-ranking-entitas-umum",
+  "title": "Fakta terbaru yang cocok banyak kata kueri menang atas fakta lama berentitas nama bisnis",
+  "category": "usage",
+  "source": "incident",
+  "actors": {
+    "asisten": {
+      "business": "proyekku",
+      "agent": "asisten"
+    }
+  },
+  "steps": [
+    {
+      "op": "remember",
+      "key": "lama_1",
+      "text": "Jadwal konten proyekku 7 Nov tentang tips menulis dan format laporan.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "lama_2",
+      "text": "Jadwal konten proyekku 8 Nov tentang tips menulis dan evaluasi draf.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "lama_3",
+      "text": "Jadwal konten proyekku 9 Nov tentang tips menulis dan daftar pustaka.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "lama_4",
+      "text": "Jadwal konten proyekku 10 Nov tentang tips menulis dan kerangka bab.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "lama_5",
+      "text": "Jadwal konten proyekku 11 Nov tentang tips menulis dan metode survei.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "remember",
+      "key": "lama_6",
+      "text": "Jadwal konten proyekku 12 Nov tentang tips menulis dan ringkasan hasil.",
+      "keywords": ["jadwal", "konten", "menulis", "Nov", "proyekku"],
+      "entities": ["proyekku", "jadwal", "menulis"],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "advance_days",
+      "days": 14
+    },
+    {
+      "op": "remember",
+      "key": "jadwal_baru",
+      "text": "Konten 28 Nov terjadwal: video rumus sampel, buku tebal, pembimbing beda pendapat.",
+      "keywords": ["28 Nov", "terjadwal", "rumus sampel", "buku tebal", "pembimbing"],
+      "entities": [],
+      "tier": "business",
+      "kind": "volatile"
+    },
+    {
+      "op": "recall",
+      "query": "proyekku 28 Nov terjadwal rumus sampel buku tebal pembimbing",
+      "expect_first": "jadwal_baru",
+      "expect_top5": [
+        "jadwal_baru"
+      ]
+    }
+  ]
+}

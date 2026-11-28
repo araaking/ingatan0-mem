@@ -1,6 +1,6 @@
-# Incident scenarios (still wanted)
+# Incident scenarios
 
-The eval set needs about ten scenarios taken from **real incidents** that only the project owner can supply: a time an agent used an outdated fact, mixed up two businesses, showed a private note to the wrong agent, missed a fact because of an Indonesian word form, and so on (NFR-7, risk R-13). The scenarios in the parent folder are all `"source": "pattern"`. Ten incident scenarios are still wanted, and none have been written: they must not be invented.
+The eval set collects scenarios taken from **real incidents** observed in actual agent sessions: a time an agent used an outdated fact, mixed up two businesses, showed a private note to the wrong agent, hit a ranking inversion, triggered a false-positive conflict, or missed a fact because of an Indonesian word form (NFR-7, risk R-13). The scenarios in the parent folder are all `"source": "pattern"`. Seven anonymized incident scenarios are currently in this folder against an initial target of about ten; additional real incidents are still welcome, and they must never be invented.
 
 ## What to send
 

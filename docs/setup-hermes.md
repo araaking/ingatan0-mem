@@ -5,7 +5,7 @@ and the MCP server (the seven tools). Hermes allows one external memory provider
 Ingatan takes that slot. The built-in `MEMORY.md` / `USER.md` memory stays on. The MCP server
 does not use the slot, so Ingatan keeps working through MCP alone if you ever switch provider.
 
-**Read the list at the end first: nothing here has run against a real Hermes yet.**
+**Read the list at the end first: the memory-provider plugin has not yet run against a real Hermes install (the MCP stdio server has been used in real sessions).**
 
 ## 1. Install Ingatan where Hermes can import it
 
@@ -43,11 +43,11 @@ memory:
 or `hermes config set memory.provider ingatan`, or `hermes memory setup`. Check with
 `hermes memory status`.
 
-The plugin reads the scope from the environment of the Hermes process:
+The plugin reads the scope from the environment of the Hermes process (falling back to `.ingatan.toml` and `<INGATAN_HOME>/config.toml`):
 
 ```
-INGATAN_BUSINESS=tokoku        # required
-INGATAN_AGENT=hermes           # optional, default "hermes"
+INGATAN_BUSINESS=tokoku        # required (or business in .ingatan.toml)
+INGATAN_AGENT=hermes           # optional; falls back to .ingatan.toml agent, config.toml default_agent, then "hermes"
 INGATAN_HOME=...               # optional, default ~/.ingatan
 ```
 

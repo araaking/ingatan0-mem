@@ -20,17 +20,26 @@ from typing import Annotated, Any, TypeVar
 
 import typer
 
-from ingatan import __version__, audit, facts, proposals, search
+from ingatan import __version__, audit, facts, proposals, search, timeutil
 from ingatan import extract as extraction
 from ingatan import tokens as token_store
 from ingatan.cli import doctor as doctor_checks
 from ingatan.cli import review as review_ui
 from ingatan.cli import setup as setup_steps
-from ingatan.cli.conflicts import compute_report, open_conflicts, render_report, scan_conflicts
+from ingatan.cli.conflicts import (
+    compute_report,
+    open_conflicts,
+    prune_conflicts,
+    render_report,
+    scan_conflicts,
+)
 from ingatan.cli.render import log_line, render_diff, shorten
+from ingatan.db import fact_text_key, normalize_fact_text
 from ingatan.errors import ConfigError, IngatanError, NotFoundError, ValidationError
 from ingatan.facts import review as review_logic
-from ingatan.facts._util import fact_dict
+from ingatan.facts._util import clean_list, fact_dict, is_closed, loads_list, now_iso
+from ingatan.facts.create import KINDS, TIERS
+from ingatan.redact import redact
 from ingatan.scope import (
     CONFIG_NAME,
     Context,
@@ -605,14 +614,35 @@ def proposals_approve(
 @proposals_app.command("reject")
 @cli_command
 def proposals_reject(
-    proposal_id: Annotated[str, typer.Argument(help="Proposal id.")],
+    proposal_ids: Annotated[
+        list[str] | None, typer.Argument(help="One or more proposal ids (omit with --all).")
+    ] = None,
+    reject_all_flag: Annotated[
+        bool, typer.Option("--all", help="Reject every pending proposal in order.")
+    ] = False,
     business: BusinessOption = None,
     agent: AgentOption = None,
 ) -> None:
-    """Reject a proposal: no fact is created."""
+    """Reject one, several, or all pending proposals: no fact is created."""
+    ids = list(proposal_ids or [])
+    if reject_all_flag and ids:
+        raise ValidationError("Pass either proposal ids or --all, not both.")
+    if not reject_all_flag and not ids:
+        raise ValidationError("Pass at least one proposal id, or use --all.")
     with _open(agent, business) as ctx:
-        proposals.reject(ctx, proposal_id)
-    typer.echo(f"Rejected {proposal_id}. No fact was created.")
+        if reject_all_flag:
+            pending_items = proposals.pending(ctx)
+            if not pending_items:
+                typer.echo("No pending proposals.")
+                return
+            total = len(pending_items)
+            for idx, p in enumerate(pending_items, start=1):
+                proposals.reject(ctx, p.id)
+                typer.echo(f"[{idx}/{total}] Rejected {p.id}. No fact was created.")
+            return
+        for pid in ids:
+            proposals.reject(ctx, pid)
+            typer.echo(f"Rejected {pid}. No fact was created.")
 
 
 @app.command()
@@ -785,6 +815,10 @@ def import_facts(
         bool,
         typer.Option("--check-conflicts/--no-check-conflicts", help="Check conflicts per item."),
     ] = True,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Validate records and preview counts without writing."),
+    ] = False,
     business: BusinessOption = None,
     agent: AgentOption = None,
 ) -> None:
@@ -796,13 +830,95 @@ def import_facts(
         typer.echo("No records to import.")
         return
     with _open(agent, business) as ctx:
-        imported = 0
+        if dry_run:
+            now = now_iso()
+            would_create = would_refresh = would_propose = 0
+            for idx, rec in enumerate(records, start=1):
+                raw_text = str(rec.get("text") or "").strip()
+                if not raw_text:
+                    raise ValidationError(f"Record #{idx} has empty `text`.")
+                clean_text = redact(raw_text).strip()
+                if not clean_text:
+                    raise ValidationError(f"Record #{idx} has empty `text`.")
+                tier = str(rec.get("tier") or default_tier)
+                if tier not in TIERS:
+                    raise ValidationError(f"Record #{idx}: unknown tier '{tier}'.")
+                kind = rec.get("kind")
+                if kind is not None and kind not in KINDS:
+                    raise ValidationError(f"Record #{idx}: unknown kind '{kind}'.")
+                category = str(rec.get("category") or "fact")
+                if category not in search.CATEGORIES:
+                    raise ValidationError(f"Record #{idx}: unknown category '{category}'.")
+                src = rec.get("source")
+                source_dict: dict[str, Any] = (
+                    dict(src)
+                    if isinstance(src, dict)
+                    else ({"document": src} if isinstance(src, str) and src else {})
+                )
+                raw_date = rec.get("date") or source_dict.get("date")
+                if isinstance(raw_date, str) and raw_date.strip():
+                    timeutil.parse(raw_date.strip())
+                if rec.get("valid_from"):
+                    timeutil.normalize(str(rec["valid_from"]))
+                if rec.get("review_after"):
+                    timeutil.normalize(str(rec["review_after"]))
+                if tier != "agent" and ctx.scope.require_approval:
+                    would_propose += 1
+                    continue
+                valid_from = rec.get("valid_from") or (
+                    raw_date if isinstance(raw_date, str) and raw_date.strip() else None
+                )
+                dedup_flag = bool(rec.get("dedup", True))
+                is_dup = False
+                if dedup_flag and valid_from is None:
+                    conn = ctx.conn_for_tier(tier)
+                    raw_ents = rec.get("entities")
+                    ent_list = clean_list([raw_ents] if isinstance(raw_ents, str) else raw_ents)
+                    ent_set = {e.casefold() for e in ent_list}
+                    norm = normalize_fact_text(clean_text)
+                    where = (
+                        f"text_key = :key AND tier = :tier AND category = :cat "
+                        f"AND {search.is_valid_sql()} AND {ctx.visible_sql(conn)}"
+                    )
+                    if tier == "agent":
+                        where += " AND agent = :agent"
+                    for existing in conn.execute(
+                        f"SELECT text, entities FROM facts WHERE {where}",
+                        {
+                            "key": fact_text_key(clean_text),
+                            "tier": tier,
+                            "cat": category,
+                            "now": now,
+                            **ctx.params,
+                        },
+                    ):
+                        existing_ents = {
+                            e.casefold() for e in loads_list(str(existing["entities"]))
+                        }
+                        if (
+                            normalize_fact_text(str(existing["text"])) == norm
+                            and existing_ents == ent_set
+                        ):
+                            is_dup = True
+                            break
+                if is_dup:
+                    would_refresh += 1
+                else:
+                    would_create += 1
+            typer.echo(
+                f"Dry run ({ctx.scope.business}): {len(records)} record(s) valid — "
+                f"{would_create} new, {would_refresh} exact duplicate(s) to refresh, "
+                f"{would_propose} proposal(s)."
+            )
+            return
+
+        imported = refreshed = proposed = 0
         for idx, rec in enumerate(records, start=1):
             text = str(rec.get("text") or "").strip()
             if not text:
                 raise ValidationError(f"Record #{idx} has empty `text`.")
             src = rec.get("source")
-            source_dict: dict[str, Any] = (
+            source_dict = (
                 dict(src)
                 if isinstance(src, dict)
                 else ({"document": src} if isinstance(src, str) and src else {})
@@ -813,7 +929,7 @@ def import_facts(
             valid_from = rec.get("valid_from") or (
                 raw_date if isinstance(raw_date, str) and raw_date.strip() else None
             )
-            facts.remember(
+            res = facts.remember(
                 ctx,
                 text,
                 keywords=rec.get("keywords"),
@@ -829,13 +945,26 @@ def import_facts(
                 related_to=rec.get("related_to"),
                 dedup=bool(rec.get("dedup", True)),
             )
-            imported += 1
-        typer.echo(f"Imported {imported} fact(s) into {ctx.scope.business}.")
+            if res.proposal_id is not None:
+                proposed += 1
+            elif "(refreshed)" in res.message:
+                refreshed += 1
+            else:
+                imported += 1
+        summary = f"Imported {imported + refreshed + proposed} fact(s) into {ctx.scope.business}."
+        details: list[str] = []
+        if refreshed:
+            details.append(f"{refreshed} refreshed")
+        if proposed:
+            details.append(f"{proposed} queued as proposal(s)")
+        if details:
+            summary += f" ({', '.join(details)})"
+        typer.echo(summary)
         if scan:
-            res = scan_conflicts(ctx)
+            res_scan = scan_conflicts(ctx)
             typer.echo(
-                f"Conflict scan: scanned {res.facts_scanned} fact(s), "
-                f"recorded {res.pairs_recorded} new conflict pair(s)."
+                f"Conflict scan: scanned {res_scan.facts_scanned} fact(s), "
+                f"recorded {res_scan.pairs_recorded} new conflict pair(s)."
             )
 
 
@@ -862,6 +991,10 @@ def move(
         row = found[1]
         if row["tier"] == "global":
             raise ValidationError("Global facts are already shared across all businesses.")
+        if is_closed(row):
+            raise ValidationError(
+                f"Fact {fact_id} is closed (superseded or expired) and cannot be moved."
+            )
         data = fact_dict(row)
         dest_tier = tier or str(data["tier"])
         if not yes:
@@ -954,6 +1087,34 @@ def conflicts_scan(
             )
         for a, b in res.pairs:
             typer.echo(f"  {a} <-> {b}")
+
+
+@conflicts_app.command("prune")
+@cli_command
+def conflicts_prune(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report legacy false positives without closing them."),
+    ] = False,
+    agent: AgentOption = None,
+    business: BusinessOption = None,
+) -> None:
+    """Re-evaluate open conflicts with current rules and dismiss false positives without linking."""
+    with _open(agent, business) as ctx:
+        res = prune_conflicts(ctx, dry_run=dry_run)
+    remaining = res.pairs_checked - res.false_positives
+    if dry_run:
+        typer.echo(
+            f"Checked {res.pairs_checked} open pair(s): {res.false_positives} false positive(s) "
+            f"would be dismissed, {remaining} would remain open (dry run)."
+        )
+        for pair_id, newer_id, older_id in res.pairs:
+            typer.echo(f"  #{pair_id}  {newer_id} <-> {older_id}")
+        return
+    typer.echo(
+        f"Checked {res.pairs_checked} open pair(s): dismissed {res.pairs_pruned} false positive(s) "
+        f"(not linked), {remaining} still open."
+    )
 
 
 def _review_forget(ctx: Context, pair: review_logic.OpenConflict) -> None:

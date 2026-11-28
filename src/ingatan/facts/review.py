@@ -27,7 +27,7 @@ from ingatan.search import is_valid_sql
 
 __all__ = ["ACTIONS", "OpenConflict", "ReviewOutcome", "open_pairs", "resolve_pair"]
 
-ACTIONS = ("keep_both", "keep_newer", "keep_older")
+ACTIONS = ("keep_both", "keep_newer", "keep_older", "dismiss")
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,15 @@ def resolve_pair(ctx: Context, pair: OpenConflict, action: str) -> ReviewOutcome
         return ReviewOutcome(
             f"Skipped pair #{pair.id}: it was resolved, or one of its facts was closed, "
             "since it was listed."
+        )
+    if action == "dismiss":
+        confirm(
+            ctx,
+            pair.newer_id,
+            f"Dismissed conflict with {pair.older_id}: unrelated facts, kept separate.",
+        )
+        return ReviewOutcome(
+            f"Dismissed conflict between {pair.newer_id} and {pair.older_id} (not linked)."
         )
     if action == "keep_both":
         confirm(

@@ -235,11 +235,15 @@ class TokenStore:
                 raw_b = brief_section["token_budget"]  # pyright: ignore[reportUnknownVariableType]
                 if not isinstance(raw_b, bool) and isinstance(raw_b, int) and raw_b > 0:
                     budget = raw_b
-            require_approval = False
-            if "require_approval" in home_cfg:
+            raw_approval_env = (os.environ.get("INGATAN_REQUIRE_APPROVAL") or "").strip()
+            if raw_approval_env:
+                require_approval = parse_bool(raw_approval_env, label="INGATAN_REQUIRE_APPROVAL")
+            elif "require_approval" in home_cfg:
                 require_approval = parse_bool(
                     home_cfg["require_approval"], label="require_approval"
                 )
+            else:
+                require_approval = False
             embeddings = parse_embeddings(os.environ, {}, home_cfg)
             return Scope(
                 business=validate_business(match.business),

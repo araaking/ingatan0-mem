@@ -14,19 +14,23 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from ingatan import timeutil
+from ingatan import audit, timeutil
 from ingatan.audit import LogEntry
+from ingatan.db import transaction
 from ingatan.facts._util import loads_list, record_conflicts
-from ingatan.facts.review import OpenConflict, open_pairs
-from ingatan.scope import Context
+from ingatan.facts.review import OpenConflict, open_pairs, resolve_pair
+from ingatan.scope import Context, find_fact
+from ingatan.search import embed as embed_store
 from ingatan.search import is_valid_sql, similar_facts
 
 __all__ = [
     "ConflictReport",
     "OpenConflict",
+    "PruneResult",
     "ScanResult",
     "compute_report",
     "open_conflicts",
+    "prune_conflicts",
     "render_report",
     "scan_conflicts",
 ]
@@ -135,44 +139,154 @@ class ScanResult:
     pairs: list[tuple[str, str]]
 
 
+@dataclass(frozen=True)
+class PruneResult:
+    pairs_checked: int
+    false_positives: int
+    pairs_pruned: int
+    pairs: list[tuple[int, str, str]]
+
+
+def _stored_vectors(ctx: Context) -> dict[str, list[float]]:
+    """Unpack stored vectors for the active model so scans reuse them without re-embedding."""
+    cfg = ctx.scope.embeddings
+    if not embed_store.is_enabled(cfg):
+        return {}
+    model = embed_store.effective_model(cfg)
+    if not model:
+        return {}
+    vectors: dict[str, list[float]] = {}
+    for conn in ctx.connections():
+        for row in conn.execute(
+            "SELECT fact_id, dims, vec FROM fact_embeddings WHERE model = ?", (model,)
+        ):
+            vec = embed_store.unpack_vector(bytes(row["vec"]), int(row["dims"]))
+            if vec:
+                vectors[str(row["fact_id"])] = vec
+    return vectors
+
+
 def scan_conflicts(ctx: Context, *, dry_run: bool = False) -> ScanResult:
     """Scan all valid visible facts for unrecorded similar pairs (useful after bulk imports)."""
     now = timeutil.iso(timeutil.now())
-    valid_rows: list[Any] = []
+    valid_rows: list[tuple[Any, Any]] = []
     for conn in ctx.connections():
-        valid_rows.extend(
-            conn.execute(
-                f"SELECT * FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)} "
-                "ORDER BY valid_from ASC, id ASC",
-                {"now": now, **ctx.params},
-            ).fetchall()
-        )
+        for row in conn.execute(
+            f"SELECT * FROM facts WHERE {is_valid_sql()} AND {ctx.visible_sql(conn)} "
+            "ORDER BY valid_from ASC, id ASC",
+            {"now": now, **ctx.params},
+        ).fetchall():
+            valid_rows.append((conn, row))
     existing: set[frozenset[str]] = set()
     for r in ctx.business.execute("SELECT fact_a, fact_b FROM conflicts"):
         existing.add(frozenset((str(r["fact_a"]), str(r["fact_b"]))))
 
+    cfg = ctx.scope.embeddings
+    sem_enabled = embed_store.is_enabled(cfg)
+    entity_free = sem_enabled and embed_store.similarity_profile(cfg).conflict_strict is not None
+    stored_vecs = _stored_vectors(ctx)
+
     discovered: list[tuple[str, str]] = []
     seen_new: set[frozenset[str]] = set()
     recorded = 0
-    for row in valid_rows:
+    for conn, row in valid_rows:
         fid = str(row["id"])
         ents = loads_list(str(row["entities"]))
-        if not ents:
+        if not ents and not entity_free:
             continue
         kws = loads_list(str(row["keywords"]))
-        hits = similar_facts(ctx, str(row["text"]), ents, kws, exclude_id=fid)
+        hits = similar_facts(
+            ctx,
+            str(row["text"]),
+            ents,
+            kws,
+            exclude_id=fid,
+            query_vec=stored_vecs.get(fid),
+            kind=str(row["kind"]),
+        )
+        new_targets: list[str] = []
         for hit in hits:
             pair = frozenset((fid, hit.id))
             if pair in existing or pair in seen_new:
                 continue
             seen_new.add(pair)
             discovered.append((fid, hit.id))
-            if not dry_run:
-                added = record_conflicts(ctx, fid, [hit.id])
-                recorded += len(added)
+            new_targets.append(hit.id)
+        if not dry_run and new_targets:
+            with transaction(ctx.business), transaction(conn):
+                added = record_conflicts(ctx, fid, new_targets)
+                if added:
+                    recorded += len(added)
+                    audit.write(
+                        conn,
+                        agent=ctx.scope.agent,
+                        op="conflict",
+                        fact_id=fid,
+                        tier=str(row["tier"]),
+                        owner=str(row["agent"]),
+                        before={"conflicts_with": []},
+                        after={"conflicts_with": added, "found": "conflicts scan"},
+                    )
     return ScanResult(
         facts_scanned=len(valid_rows),
         pairs_found=len(discovered),
         pairs_recorded=recorded,
         pairs=discovered,
+    )
+
+
+def prune_conflicts(ctx: Context, *, dry_run: bool = False) -> PruneResult:
+    """Re-evaluate open pairs under current `similar_facts` rules and dismiss false positives.
+
+    Unlike `keep_both`, pruning uses `dismiss` so unrelated legacy pairs are closed cleanly
+    without creating bogus `related_to` edges. Every closure is logged and undoable.
+    """
+    pairs = open_pairs(ctx)
+    if not pairs:
+        return PruneResult(0, 0, 0, [])
+
+    stored_vecs = _stored_vectors(ctx)
+    match_cache: dict[str, set[str]] = {}
+
+    def matches_of(fact_id: str) -> set[str]:
+        cached = match_cache.get(fact_id)
+        if cached is not None:
+            return cached
+        found = find_fact(ctx, fact_id)
+        if found is None:
+            match_cache[fact_id] = set()
+            return set()
+        row = found[1]
+        hits = similar_facts(
+            ctx,
+            str(row["text"]),
+            loads_list(str(row["entities"])),
+            loads_list(str(row["keywords"])),
+            exclude_id=fact_id,
+            query_vec=stored_vecs.get(fact_id),
+            kind=str(row["kind"]),
+            limit=50,
+        )
+        ids = {h.id for h in hits}
+        match_cache[fact_id] = ids
+        return ids
+
+    false_pos: list[tuple[int, str, str]] = []
+    pruned = 0
+    for pair in pairs:
+        still_similar = pair.older_id in matches_of(pair.newer_id) or pair.newer_id in matches_of(
+            pair.older_id
+        )
+        if still_similar:
+            continue
+        false_pos.append((pair.id, pair.newer_id, pair.older_id))
+        if not dry_run:
+            outcome = resolve_pair(ctx, pair, "dismiss")
+            if not outcome.message.startswith("Skipped"):
+                pruned += 1
+    return PruneResult(
+        pairs_checked=len(pairs),
+        false_positives=len(false_pos),
+        pairs_pruned=pruned,
+        pairs=false_pos,
     )

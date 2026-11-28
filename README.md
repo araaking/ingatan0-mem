@@ -25,8 +25,8 @@ Server MCP lokal di atas berkas SQLite biasa. Pencarian teks penuh langsung jala
 </div>
 
 > [!WARNING]
-> **Pre-release.** Ingatan is not on PyPI yet and has not been used in a real agent session. Read [Status](#en-status) before you rely on it.<br>
-> **Pra-rilis.** Ingatan belum ada di PyPI dan belum pernah dipakai di sesi agen sungguhan. Baca [Status](#id-status) sebelum mengandalkannya.
+> **Pre-release.** Ingatan is not on PyPI yet. Core MCP stdio usage has been exercised in real sessions, while Claude Code hooks, the Hermes memory-provider plugin, and HTTP mode are not yet verified end to end. Read [Status](#en-status) before you rely on it.<br>
+> **Pra-rilis.** Ingatan belum ada di PyPI. Pemakaian inti MCP stdio sudah dijalankan di sesi nyata, sedangkan hook Claude Code, plugin memory-provider Hermes, dan mode HTTP belum diverifikasi ujung-ke-ujung. Baca [Status](#id-status) sebelum mengandalkannya.
 
 ## Architecture · Arsitektur
 
@@ -233,7 +233,7 @@ token_budget = 1000
 | Tool | Fungsi |
 |---|---|
 | `brief()` | Ringkasan awal sesi dalam anggaran token (bawaan 1.000): fakta "check first", lalu fakta global, bisnis, dan agen, jumlah proposal yang menunggu, dan paling banyak tiga episode untuk dicerna. |
-| `recall(query)` | Fakta valid yang cocok (leksikal + alias + semantik opsional), mendukung `as_of` (time-travel), filter `category`, `include_related` (fakta tertaut, sampai dua tautan jauhnya), `include_closed`, dan `compact`. |
+| `recall(query)` | Fakta valid yang cocok (leksikal + alias + semantik opsional), mendukung `as_of` (time-travel), filter `category`, `include_related` (fakta tertaut, sampai dua tautan jauhnya), `include_closed`, dan `compact` (menyetel `notes=0` secara bawaan). |
 | `remember(text, ...)` | Menyimpan fakta (`keywords` opsional, `category`, `pinned`, `related_to`). Teks yang sama persis hanya menyegarkan fakta yang sudah ada (`dedup=true`); teks yang sekadar mirip selalu disimpan. Mengembalikan fakta serupa yang berpotensi konflik. |
 | `supersede(old, new)` | Menutup fakta lama dan menautkannya ke yang baru (langsung berlaku secara bawaan, atau jadi proposal jika `require_approval = true`). |
 | `confirm(id, reason)` | Menyatakan fakta yang diragukan masih benar dan memajukan tanggal tinjaunya. Alasan wajib dan dicatat. |
@@ -264,7 +264,7 @@ ingatan proposals reject p_0123456789ab --business tokoku
 ### Status fakta
 
 - **check first**: fakta `volatile` yang sudah lewat tanggal tinjaunya, atau ada proposal yang menunggu untuk menggantikannya. Brief menaruhnya di bagian tersendiri dan meminta agen tidak bertindak sebelum memeriksa. `confirm` atau `supersede` menghapus tanda ini.
-- **possible conflict**: saat `remember` menemukan fakta serupa, pasangan itu dicatat sebagai konflik terbuka. Kedua fakta membawa tanda ini sampai agen menyelesaikannya dengan `supersede`, atau dengan `confirm` yang menyebut id fakta satunya di alasan. Pencocokannya leksikal, jadi bisa melewatkan konflik nyata dan bisa menandai dua fakta yang sebenarnya sejalan.
+- **possible conflict**: saat `remember` menemukan fakta serupa, pasangan itu dicatat sebagai konflik terbuka. Kedua fakta membawa tanda ini sampai agen menyelesaikannya dengan `supersede`, atau dengan `confirm` yang menyebut id fakta satunya di alasan (atau lewat `ingatan conflicts review` / `ingatan conflicts prune` di CLI). Pencocokan memadukan aturan leksikal (dengan pelindung ID sumber eksternal dan snapshot berkala beda tanggal) dan kemiripan semantik opsional, namun tetap bisa menandai pasangan yang sebenarnya sejalan.
 
 `ingatan conflicts` melaporkan dari log audit berapa kandidat konflik yang diselesaikan.
 
@@ -302,14 +302,14 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 | `ingatan log [--limit N] [--fact ID] [--business NAMA] [--agent NAMA]` | Daftar entri log, terbaru dulu |
 | `ingatan diff <log_id> [--business NAMA]` | Sebelum dan sesudah satu entri log |
 | `ingatan undo <log_id> [--business NAMA]` | Membatalkan create, supersede, confirm, atau approve (bukan forget) |
-| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Meninjau dan menyetujui proposal (satuan atau massal) |
+| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id...> \| --all` | Meninjau, menyetujui, atau menolak proposal (satuan atau massal) |
 | `ingatan forget <fact_id> [--yes] [--business NAMA]` | Melupakan fakta dari tier mana pun |
 | `ingatan ingest <path> [--business NAMA]` | Membaca berkas Markdown menjadi catatan yang bisa dicari (melewati `.git`/`.venv`/`node_modules`) |
 | `ingatan extract [--limit N] [--dry-run] [--documents] [--retry-failed] [--business NAMA] [--agent NAMA]` | Opsional: model yang kamu atur di `[llm]` membaca episode yang tertunda (atau, dengan `--documents`, catatan hasil ingest yang belum dibaca) dan mengusulkan fakta. Semuanya masuk antrean proposal dengan tanda `extracted by`; tidak ada yang menjadi fakta sebelum kamu setujui. Teks yang tiga kali gagal dibaca model dilewati sampai kamu memakai `--retry-failed`, dan usulan yang sudah kamu tolak tidak diusulkan lagi |
-| `ingatan import <file.jsonl\|json> [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli |
-| `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta antar database bisnis |
-| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, dan pindai ulang fakta |
-| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older --all]` | Menyelesaikan pasangan konflik terbuka satu per satu tanpa mengetik id: simpan keduanya (ditautkan), yang baru atau yang lama menggantikan yang lain, lupakan salah satu, atau lewati. Semuanya tercatat dan bisa di-undo, kecuali lupa |
+| `ingatan import <file.jsonl\|json> [--dry-run] [--business NAMA] [--scan-conflicts]` | Impor massal fakta dengan tanggal asli (mendukung `--dry-run`) |
+| `ingatan move <fact_id> --to <business> [--business NAMA]` | Memindahkan fakta aktif antar database bisnis |
+| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]`, `conflicts prune [--dry-run]` | Laporan audit konflik, daftar konflik terbuka, pindai ulang fakta, dan bersihkan false positive lama tanpa menautkan |
+| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older\|dismiss --all]` | Menyelesaikan pasangan konflik terbuka satu per satu tanpa mengetik id: simpan keduanya (ditautkan), abaikan/dismiss tanpa menautkan, yang baru atau yang lama menggantikan yang lain, lupakan salah satu, atau lewati. Semuanya tercatat dan bisa di-undo, kecuali lupa |
 | `ingatan reindex [--force] [--business NAMA]` | Menghitung/memperbarui vektor embedding untuk fakta & catatan yang sudah ada |
 | `ingatan embeddings enable [--model NAMA] [--global] [--no-reindex]` | Menyalakan pencarian semantik dalam satu langkah: unduh model bila belum ada, tulis `provider = "local"`, embed fakta yang sudah ada |
 | `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Menjalankan atau menghentikan proses model bersama (`[embeddings] shared`); server menyalakannya sendiri saat dibutuhkan |
@@ -334,21 +334,21 @@ Perintah bertindak sebagai kamu untuk bisnis dan agen yang dikonfigurasi. Gunaka
 
 ### Angka terukur
 
-Sumber: [evals/reports/latest.md](evals/reports/latest.md) dan [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (dijalankan 2026-11-23, tanpa LLM, tanpa jaringan), [docs/RAM.md](docs/RAM.md), dan [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
+Sumber: [evals/reports/latest.md](evals/reports/latest.md) (dijalankan 2026-11-28, tanpa LLM, tanpa jaringan) dan [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (dijalankan 2026-11-23), [docs/RAM.md](docs/RAM.md), dan [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-Eval berisi 49 skenario berbahasa Indonesia (46 berbasis pola + 3 skenario insiden teranonimisasi). Satu di antaranya butuh model embedding dan dilewati pada run bawaan. Kolom model lokal berasal dari run sebelum skenario `usage` dan `graph` ditambahkan; jalankan ulang `python -m evals --embeddings local` di mesin yang punya modelnya. Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
+Eval berisi 53 skenario berbahasa Indonesia (46 berbasis pola + 7 skenario insiden teranonimisasi). Satu di antaranya butuh model embedding dan dilewati pada run bawaan. Kolom model lokal berasal dari run sebelum skenario `usage`, `graph`, dan insiden terbaru ditambahkan; jalankan ulang `python -m evals --embeddings local` di mesin yang punya modelnya. Angka ini adalah **baseline regresi**, dan kontribusi skenario insiden tambahan tetap sangat terbuka — lihat [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), dan [CHANGELOG.md](CHANGELOG.md).
 
 | Metrik | Bawaan (FTS5 saja) | Dengan model lokal | Target tebakan awal |
 |---|---|---|---|
-| Skenario | 49: 48 lulus, 1 dilewati | 46: 46 lulus | tidak ada |
-| recall@5 | 100,0% dari 55 pemeriksaan | 100,0% dari 53 pemeriksaan | di atas 80% |
-| Stale rate | 0,0% dari 77 pemeriksaan recall | 0,0% dari 74 pemeriksaan recall | di bawah 5% |
-| Leak rate | 0,0% (0 dari 104 hasil) | 0,0% (0 dari 111 hasil) | 0 |
-| Token per brief | rata-rata 64, maksimum 256 dari 20 brief | rata-rata 65, maksimum 260 dari 20 brief | sekitar 1.000 |
+| Skenario | 53: 52 lulus, 1 dilewati | 46: 46 lulus | tidak ada |
+| recall@5 | 100,0% dari 58 pemeriksaan | 100,0% dari 53 pemeriksaan | di atas 80% |
+| Stale rate | 0,0% dari 81 pemeriksaan recall | 0,0% dari 74 pemeriksaan recall | di bawah 5% |
+| Leak rate | 0,0% (0 dari 117 hasil) | 0,0% (0 dari 111 hasil) | 0 |
+| Token per brief | rata-rata 68, maksimum 256 dari 21 brief | rata-rata 65, maksimum 260 dari 20 brief | sekitar 1.000 |
 
 Ekstraksi fakta opsional (`ingatan extract`) **belum diukur**: `python -m evals.extraction` menghitung berapa bagian dari fakta hasil ekstraksi yang benar, berapa yang salah, dan berapa yang tidak ada di daftar jawaban (bisa benar, bisa karangan: penilainya tidak bisa membedakan), pada 7 kasus dengan jawaban yang sudah diketahui, tetapi butuh model yang kamu atur di `[llm]`. Sampai ada laporan di `evals/reports/latest-extraction.md`, README ini tidak menyebut angka apa pun untuknya.
 
-Semua skenario yang dijalankan lulus di kedua mode (kolom model lokal belum mencakup tiga skenario `usage` dan `graph` yang ditambahkan belakangan), jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
+Semua skenario yang dijalankan lulus di kedua mode (kolom model lokal belum mencakup tujuh skenario `usage`, `graph`, dan insiden terbaru yang ditambahkan belakangan), jadi angka ini menjaga dari regresi, bukan mengukur seberapa banyak model menambah recall. Ukuran itu ada di [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): dari 13 pertanyaan yang tidak berbagi satu kata pun dengan faktanya, model lokal menempatkan fakta yang benar di urutan pertama untuk 5.
 
 Memori satu proses server stdio setelah 500 fakta, di satu laptop Windows 11 (Python 3.14.3, mcp 2.3.0): 79,5 MB tanpa model, 275,0 MB dengan model lokal bawaan termuat (puncak 324,1 MB). Model dilepas setelah lima menit diam.
 
@@ -364,7 +364,7 @@ Yang **belum** diverifikasi:
 - Plugin Hermes belum pernah dimuat oleh Hermes sungguhan. Plugin ditulis dari dokumentasi upstream dan plugin pihak ketiga.
 - Belum ada di PyPI. Workflow rilis baru berfungsi setelah trusted publisher PyPI dikonfigurasi.
 - CI (test, lint, type check, eval, dan instalasi wheel di Windows, macOS, Linux) sudah ditulis tetapi belum pernah berjalan di GitHub.
-- Set eval belum memuat insiden nyata. Sekitar sepuluh masih dibutuhkan; lihat [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
+- Set eval sudah memuat 7 skenario insiden nyata teranonimisasi (target awal sekitar sepuluh); skenario insiden tambahan masih sangat dibutuhkan — lihat [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
 - Porsi kandidat konflik yang benar-benar diselesaikan agen belum diukur dari pemakaian nyata.
 - RAM di VPS Linux, dan di sistem selain laptop Windows di atas.
 - Ambang kemiripan model embedding opsional dikalibrasi pada 33 fakta sintetis di satu mesin x86-64. Model selain `multilingual-e5-small` belum diukur.
@@ -387,10 +387,11 @@ src/ingatan/
   episodes/      tangkapan percakapan dan tawaran digest
   brief/         penyusun brief
   ingest/        ingest Markdown
+  extract/       ekstraksi fakta opsional dari episode dan catatan
   mcp/           server MCP (stdio, dan HTTP di http.py)
   cli/           perintah untuk manusia
   integrations/  hook Claude Code dan plugin Hermes
-evals/           harness dan 49 skenario
+evals/           harness dan 53 skenario
 tests/           satu folder per modul
 docs/            desain, PRD, rencana, kontrak, embedding, RAM, panduan setup
 scripts/         pengukuran: RAM, kecepatan, kalibrasi embedding
@@ -612,7 +613,7 @@ token_budget = 1000
 | Tool | What it does |
 |---|---|
 | `brief()` | Session-start summary within a token budget (default 1,000): "check first" facts, then global, business and agent facts, the number of proposals waiting, and up to three captured episodes to digest. |
-| `recall(query)` | Valid facts matching the query (lexical + aliases + optional semantic), supporting `as_of` (time-travel), `category` filter, `include_related` (linked facts, up to two links away), `include_closed`, and `compact`. |
+| `recall(query)` | Valid facts matching the query (lexical + aliases + optional semantic), supporting `as_of` (time-travel), `category` filter, `include_related` (linked facts, up to two links away), `include_closed`, and `compact` (defaults `notes=0`). |
 | `remember(text, ...)` | Saves a fact (`keywords` optional, `category`, `pinned`, `related_to`). An exact repeat of a stored text only refreshes that fact (`dedup=true`); a text that is merely similar is always saved. Returns similar existing facts. |
 | `supersede(old, new)` | Closes the old fact and links it to the new one (applied immediately by default, or queued as a proposal when `require_approval = true`). |
 | `confirm(id, reason)` | Says a doubtful fact is still true and moves its review date forward. A reason is required and logged. |
@@ -643,7 +644,7 @@ ingatan proposals reject p_0123456789ab --business tokoku
 ### Fact status
 
 - **check first**: a `volatile` fact past its review date, or one that a proposal is waiting to replace. The brief lists these in their own section and tells the agent not to act on them before checking. `confirm` or `supersede` clears the mark.
-- **possible conflict**: when `remember` finds a similar fact, the pair is recorded as an open conflict. Both facts carry this tag until the agent resolves it with `supersede`, or with `confirm` naming the other fact id in the reason. The matching is lexical, so it can miss a real conflict and can flag two facts that agree.
+- **possible conflict**: when `remember` finds a similar fact, the pair is recorded as an open conflict. Both facts carry this tag until the agent resolves it with `supersede`, or with `confirm` naming the other fact id in the reason (or via `ingatan conflicts review` / `ingatan conflicts prune` in the CLI). Matching combines lexical rules (with external resource-ID and distinct dated-snapshot guards) and optional semantic similarity, though it can still flag pairs that agree.
 
 `ingatan conflicts` reports, from the audit log, how many conflict candidates were resolved.
 
@@ -681,14 +682,14 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 | `ingatan log [--limit N] [--fact ID] [--business NAME] [--agent NAME]` | List log entries, newest first |
 | `ingatan diff <log_id> [--business NAME]` | Before and after of one log entry |
 | `ingatan undo <log_id> [--business NAME]` | Reverse a create, supersede, confirm or approve (not a forget) |
-| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id>` | Review and approve proposals (single or bulk) |
+| `ingatan proposals list`, `approve <id...> \| --all`, `reject <id...> \| --all` | Review, approve, or reject proposals (single or bulk) |
 | `ingatan forget <fact_id> [--yes] [--business NAME]` | Forget a fact of any tier |
 | `ingatan ingest <path> [--business NAME]` | Read Markdown files into searchable notes (skips `.git`/`.venv`/`node_modules`) |
 | `ingatan extract [--limit N] [--dry-run] [--documents] [--retry-failed] [--business NAME] [--agent NAME]` | Optional: the model you set under `[llm]` reads pending episodes (or, with `--documents`, ingested notes it has not read yet) and proposes facts. Everything goes to the proposal queue marked `extracted by`; nothing is a fact until you approve it. A text the model failed on three times is left out until you pass `--retry-failed`, and what you rejected is not proposed again |
-| `ingatan import <file.jsonl\|json> [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates |
-| `ingatan move <fact_id> --to <business> [--business NAME]` | Move a fact between business databases |
-| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]` | Audit conflict report, list open conflicts, and scan existing facts |
-| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older --all]` | Settle the open conflict pairs one by one without typing an id: keep both (they are linked), let the newer or the older replace the other, forget one, or skip. Everything but forget is logged and can be undone |
+| `ingatan import <file.jsonl\|json> [--dry-run] [--business NAME] [--scan-conflicts]` | Bulk-import facts preserving original dates (supports `--dry-run`) |
+| `ingatan move <fact_id> --to <business> [--business NAME]` | Move an active fact between business databases |
+| `ingatan conflicts`, `conflicts list`, `conflicts scan [--dry-run]`, `conflicts prune [--dry-run]` | Audit conflict report, list open conflicts, scan existing facts, and dismiss legacy false positives without linking |
+| `ingatan conflicts review [--apply keep_both\|keep_newer\|keep_older\|dismiss --all]` | Settle the open conflict pairs one by one without typing an id: keep both (they are linked), dismiss without linking, let the newer or the older replace the other, forget one, or skip. Everything but forget is logged and can be undone |
 | `ingatan reindex [--force] [--business NAME]` | Compute or refresh semantic embeddings for existing facts and notes |
 | `ingatan embeddings enable [--model NAME] [--global] [--no-reindex]` | Switch semantic search on in one step: download the model if it is missing, write `provider = "local"`, embed the facts that already exist |
 | `ingatan embeddings serve [--idle-seconds N]`, `embeddings stop` | Run or stop the shared model process (`[embeddings] shared`); a server starts it by itself when it needs it |
@@ -713,21 +714,21 @@ Commands act as you for the configured business and agent. Pass `--business NAME
 
 ### Measured numbers
 
-Sources: [evals/reports/latest.md](evals/reports/latest.md) and [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (run on 2026-11-23, no LLM, no network), [docs/RAM.md](docs/RAM.md) and [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
+Sources: [evals/reports/latest.md](evals/reports/latest.md) (run on 2026-11-28, no LLM, no network) and [evals/reports/latest-semantic.md](evals/reports/latest-semantic.md) (run on 2026-11-23), [docs/RAM.md](docs/RAM.md) and [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md).
 
-The eval contains 49 scenarios in Indonesian (46 pattern-based + 3 anonymized incident scenarios). One of them needs an embedding model and is skipped in the default run. The local-model column is from a run made before the `usage` and `graph` scenarios were added; run `python -m evals --embeddings local` again on a machine that has the model. These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
+The eval contains 53 scenarios in Indonesian (46 pattern-based + 7 anonymized incident scenarios). One of them needs an embedding model and is skipped in the default run. The local-model column is from a run made before the `usage`, `graph`, and recent incident scenarios were added; run `python -m evals --embeddings local` again on a machine that has the model. These numbers serve as a **regression baseline**; open-source contributions and additional anonymized incident scenarios are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and [CHANGELOG.md](CHANGELOG.md).
 
 | Metric | Default (FTS5 only) | With the local model | First-guess target |
 |---|---|---|---|
-| Scenarios | 49: 48 pass, 1 skipped | 46: 46 pass | none |
-| recall@5 | 100.0% over 55 checks | 100.0% over 53 checks | over 80% |
-| Stale rate | 0.0% over 77 recall checks | 0.0% over 74 recall checks | under 5% |
-| Leak rate | 0.0% (0 of 104 results) | 0.0% (0 of 111 results) | 0 |
-| Tokens per brief | mean 64, max 256 over 20 briefs | mean 65, max 260 over 20 briefs | about 1,000 |
+| Scenarios | 53: 52 pass, 1 skipped | 46: 46 pass | none |
+| recall@5 | 100.0% over 58 checks | 100.0% over 53 checks | over 80% |
+| Stale rate | 0.0% over 81 recall checks | 0.0% over 74 recall checks | under 5% |
+| Leak rate | 0.0% (0 of 117 results) | 0.0% (0 of 111 results) | 0 |
+| Tokens per brief | mean 68, max 256 over 21 briefs | mean 65, max 260 over 20 briefs | about 1,000 |
 
 The optional fact extraction (`ingatan extract`) is **not measured yet**: `python -m evals.extraction` counts how much of what a model extracts is correct, how much is wrong, and how much is not on the list of answers (true or invented: the judge cannot tell), on 7 cases with a known answer, but it needs the model you configure under `[llm]`. Until there is a report in `evals/reports/latest-extraction.md`, this README states no figure for it.
 
-Every scenario that was run passes in both modes (the local-model column does not yet include the three `usage` and `graph` scenarios added since), so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
+Every scenario that was run passes in both modes (the local-model column does not yet include the seven `usage`, `graph`, and recent incident scenarios added since), so these numbers guard against regressions; they do not measure how much recall the model adds. That measurement is in [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md): of 13 questions that share no word with their fact, the local model ranks the right fact first for 5.
 
 Memory of one stdio server process after 500 facts, on one Windows 11 laptop (Python 3.14.3, mcp 2.3.0): 79.5 MB without a model, 275.0 MB with the default local model loaded (peak 324.1 MB). The model is unloaded after five idle minutes.
 
@@ -743,7 +744,7 @@ What is **not** verified yet:
 - The Hermes plugin has never been loaded by a real Hermes. It is written from upstream docs and third-party plugins.
 - Not on PyPI. The release workflow only works after a PyPI trusted publisher is configured.
 - CI (tests, lint, type check, evals, and a wheel install on Windows, macOS and Linux) is written but has not run on GitHub yet.
-- The eval set has no real incidents. About ten are still wanted; see [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
+- The eval set currently has 7 anonymized real-incident scenarios (against an initial target of about ten); additional real incidents are still wanted — see [evals/scenarios/incidents/README.md](evals/scenarios/incidents/README.md).
 - The share of conflict candidates that agents actually resolve has not been measured from real use.
 - RAM on a Linux VPS, and on any system other than the Windows laptop above.
 - The similarity cut-offs of the optional embedding model were calibrated on 33 synthetic facts on one x86-64 machine. No model other than `multilingual-e5-small` has been measured.
@@ -766,10 +767,11 @@ src/ingatan/
   episodes/      captured turns and the digest offer
   brief/         brief builder
   ingest/        Markdown ingest
+  extract/       optional LLM fact extraction from episodes and notes
   mcp/           MCP server (stdio, and HTTP in http.py)
   cli/           commands for humans
   integrations/  Claude Code hooks and the Hermes plugin
-evals/           harness and 49 scenarios
+evals/           harness and 53 scenarios
 tests/           one folder per module
 docs/            design, PRD, plan, contract, embeddings, RAM, setup guides
 scripts/         measurements: RAM, speed, embedding calibration

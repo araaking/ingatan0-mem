@@ -50,14 +50,24 @@ class IngatanProvider(_Base):
         return "ingatan"
 
     def _scope(self) -> Any:
-        """The scope from the environment, or None. Imported lazily; never raises."""
+        """The scope from the environment/config, or None. Imported lazily; never raises.
+
+        Honours `INGATAN_AGENT`, `.ingatan.toml`, and `<INGATAN_HOME>/config.toml`
+        (`default_agent`) before falling back to `DEFAULT_AGENT` ("hermes"), so episodes
+        captured by the plugin match the agent name used by the MCP server.
+        """
         try:
+            from ingatan.errors import ConfigError
             from ingatan.scope import resolve_scope
 
             env = dict(os.environ)
-            if not env.get("INGATAN_AGENT", "").strip():
+            try:
+                return resolve_scope(None, env)
+            except ConfigError:
+                if env.get("INGATAN_AGENT", "").strip():
+                    return None
                 env["INGATAN_AGENT"] = DEFAULT_AGENT
-            return resolve_scope(None, env)
+                return resolve_scope(None, env)
         except Exception:
             return None
 

@@ -27,6 +27,7 @@ __all__ = [
     "pending",
     "pending_count",
     "reject",
+    "reject_all",
     "skipped_links",
 ]
 
@@ -126,6 +127,7 @@ def approve(ctx: Context, proposal_id: str) -> str:
             list(proposal.payload.get("entities") or []),
             list(proposal.payload.get("keywords") or []),
             query_vec=vector or [],
+            kind=str(proposal.payload.get("kind") or "volatile"),
         )
     ]
     merged_similar = [
@@ -288,6 +290,15 @@ def approve_all(ctx: Context) -> list[tuple[str, str]]:
     done: list[tuple[str, str]] = []
     for p in pending(ctx):
         done.append((p.id, approve(ctx, p.id)))
+    return done
+
+
+def reject_all(ctx: Context) -> list[str]:
+    """Reject every pending proposal in creation order. Returns rejected proposal ids."""
+    done: list[str] = []
+    for p in pending(ctx):
+        reject(ctx, p.id)
+        done.append(p.id)
     return done
 
 

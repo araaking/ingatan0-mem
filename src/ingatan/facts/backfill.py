@@ -131,6 +131,7 @@ def _late_conflicts(
         loads_list(str(row["keywords"])),
         exclude_id=fact_id,
         query_vec=vector,
+        kind=str(row["kind"]),
     )
     if not hits:
         return 0

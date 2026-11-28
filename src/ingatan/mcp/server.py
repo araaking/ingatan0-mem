@@ -55,58 +55,63 @@ BRIEF_DOC = (
 )
 
 RECALL_DOC = (
-    "Recall and search memory for facts. Call before answering about the user, business, "
-    "past decisions, prices, names, or preferences. Search matches words (not embeddings), "
-    "so include synonyms, root words, and Indonesian + English terms (e.g. 'harga price "
-    "biaya kopi'). Returns each fact with id, text, status, tier, date, and source (or set "
-    "`compact=true` for one short line per fact). 'valid' is usable; 'check first' may be "
-    "out of date (`confirm` or `supersede`); 'possible conflict' means a similar fact exists. "
-    "Imported document excerpts appear in a separate block as reference only; set `notes=0` "
-    "to hide them and save tokens. Set `include_closed=true` to see superseded/expired facts."
+    "Recall(query, ...): search memory for facts. Call before answering about the user, business, "
+    "past decisions, prices, names, or preferences. Search matches words first (plus optional "
+    "semantic embeddings when enabled), so include synonyms, root words, and Indonesian + English "
+    "terms (e.g. 'harga price biaya kopi'). Returns each fact with id, text, status, tier, date, "
+    "and source (or set `compact=true` for one short line per fact; `compact=true` defaults "
+    "`notes=0`). 'valid' is usable; 'check first' may be out of date (`confirm` or `supersede`); "
+    "'possible conflict' means a similar fact exists. Imported document excerpts appear in a "
+    "separate block as reference only; set `notes=0` to hide them and save tokens. Set "
+    "`include_closed=true` to see superseded/expired facts."
 )
 
 REMEMBER_DOC = (
-    "Remember and save one fact so you and future sessions can find it later. Write one "
-    "self-contained statement (who, what, when). Pass `keywords` with synonyms, aliases "
-    "(including nicknames the user uses for sheets/docs), root words, and Indonesian "
-    "inflections (if omitted, basic keywords are auto-extracted from the text). Pass "
-    "`entities` for the people, products, or places the fact is about (consistent spelling). "
-    "`tier` is 'agent' (private to you), 'business' (shared across agents in this project), "
-    "or 'global' (shared across all projects). Facts save immediately by default (auditable "
-    "and undoable); if approval mode is enabled in config, business/global facts wait in the "
-    "proposal queue. `kind` is 'stable' (rarely changes) or 'volatile' (default; flagged "
-    "'check first' after `review_after`, default 30 days). Never store passwords, tokens, or "
-    "keys. Set `check_conflicts=false` for append-only daily logs. If similar facts are "
-    "returned: call `supersede(old, new)` if one is outdated, or `confirm(id, reason)` naming "
-    "the other fact id if both are true. Pass `episode` when digesting an offered episode."
+    "Remember(text, ...): save one fact (required parameter is `text`, not `content`) so you and "
+    "future sessions can find it later. Write one self-contained statement (who, what, when). "
+    "Pass `keywords` with synonyms, aliases (including nicknames the user uses for sheets/docs), "
+    "root words, and Indonesian inflections (if omitted, basic keywords are auto-extracted from "
+    "the text). Pass `entities` for the people, products, or places the fact is about (consistent "
+    "spelling). `tier` is 'agent' (private to you), 'business' (shared across agents in this "
+    "project), or 'global' (shared across all projects — use for user preferences and shared "
+    "cross-project tooling/conventions). Facts save immediately by default (auditable and "
+    "undoable); if approval mode is enabled in config, business/global facts wait in the proposal "
+    "queue. `kind` is 'stable' (rarely changes) or 'volatile' (default; flagged 'check first' "
+    "after `review_after`, default 30 days — pass a short `review_after` like 1-2 days for daily "
+    "schedules). Never store passwords, tokens, or keys. Set `check_conflicts=false` for "
+    "append-only daily logs. If similar facts are returned: call `supersede(old, new)` if one is "
+    "outdated, or `confirm(id, reason)` naming the other fact id if both are true. Pass `episode` "
+    "when digesting an offered episode."
 )
 
 SUPERSEDE_DOC = (
-    "Supersede (replace) an outdated fact with a newer one. Call when a new fact (saved with "
-    "`remember`) makes `old` untrue, e.g. after a 'possible conflict' or user correction. "
-    "`old` is the id of the outdated fact; `new` is the id of the replacement fact. The old "
-    "fact stops appearing in `recall` but remains in `history` and can be undone in the CLI. "
-    "If approval mode is enabled, changes to business/global facts queue as proposals and "
-    "`old` shows 'check first' until approved."
+    "Supersede(old, new): replace an outdated fact `old` with a newer fact `new` (parameters are "
+    "`old` and `new`, not `old_id`/`new_id`). Call when a new fact (saved with `remember`) makes "
+    "`old` untrue, e.g. after a 'possible conflict' or user correction. The old fact stops "
+    "appearing in `recall` but remains in `history` and can be undone in the CLI. If approval "
+    "mode is enabled, changes to business/global facts queue as proposals and `old` shows 'check "
+    "first' until approved."
 )
 
 CONFIRM_DOC = (
-    "Confirm that a fact is still true. Call after checking a 'check first' fact (pushes "
-    "`review_after` forward), or to resolve a 'possible conflict' when both facts are true: "
-    "write a `reason` that names the other fact id (e.g. 'both true: f_abc123 is retail, this "
-    "is wholesale'). The reason is required and logged. Use `supersede` if it is outdated."
+    "Confirm(id, reason): confirm that a fact is still true. Call after checking a 'check first' "
+    "fact (pushes `review_after` forward), or to resolve a 'possible conflict' when both facts "
+    "are true: write a `reason` that names the other fact id (e.g. 'both true: f_abc123 is "
+    "retail, this is wholesale'). The reason is required and logged. Use `supersede` if it is "
+    "outdated."
 )
 
 FORGET_DOC = (
-    "Forget (permanently delete) a fact you saved yourself, text included; only a "
+    "Forget(id): permanently delete a fact you saved yourself, text included; only a "
     "content-free log entry remains. This cannot be undone. Use only when the user asks you "
     "to forget something or a fact was saved by mistake (e.g. contains a secret). For "
     "outdated facts use `supersede`. Business and global facts can only be forgotten in CLI."
 )
 
 HISTORY_DOC = (
-    "History: show the change log of one fact (pass its id, e.g. f_0123abcd4567) or every "
-    "fact about an entity (e.g. 'Bu Sari'), oldest first, including superseded/expired facts."
+    "History(id_or_entity): show the change log of one fact (pass `id_or_entity` as a fact id, "
+    "e.g. f_0123abcd4567) or every fact about an entity (e.g. 'Bu Sari'), oldest first, "
+    "including superseded/expired facts."
 )
 
 
@@ -235,13 +240,16 @@ def build_server(ctx: Context) -> MCPServer:
         ],
         limit: Annotated[int, Field(description="Maximum number of facts.", ge=1, le=50)] = 5,
         notes: Annotated[
-            int,
+            int | None,
             Field(
-                description="Maximum document excerpts to include (0 disables excerpts).",
+                description=(
+                    "Maximum document excerpts to include (0 disables excerpts; defaults to 0 "
+                    "when compact=true, else 2)."
+                ),
                 ge=0,
                 le=10,
             ),
-        ] = 2,
+        ] = None,
         compact: Annotated[
             bool,
             Field(description="If true, return one compact line per fact (id, text, status)."),
@@ -266,12 +274,13 @@ def build_server(ctx: Context) -> MCPServer:
             Field(description="Include related facts, up to two links away."),
         ] = True,
     ) -> str:
+        effective_notes = notes if notes is not None else (0 if compact else 2)
         try:
             result = search.recall(
                 ctx,
                 query,
                 limit=limit,
-                notes_limit=notes,
+                notes_limit=effective_notes,
                 include_closed=include_closed,
                 as_of=as_of,
                 category=category,
@@ -475,13 +484,16 @@ def build_multi_server(
         ],
         limit: Annotated[int, Field(description="Maximum number of facts.", ge=1, le=50)] = 5,
         notes: Annotated[
-            int,
+            int | None,
             Field(
-                description="Maximum document excerpts to include (0 disables excerpts).",
+                description=(
+                    "Maximum document excerpts to include (0 disables excerpts; defaults to 0 "
+                    "when compact=true, else 2)."
+                ),
                 ge=0,
                 le=10,
             ),
-        ] = 2,
+        ] = None,
         compact: Annotated[
             bool,
             Field(description="If true, return one compact line per fact (id, text, status)."),
@@ -506,12 +518,13 @@ def build_multi_server(
             Field(description="Include related facts, up to two links away."),
         ] = True,
     ) -> str:
+        effective_notes = notes if notes is not None else (0 if compact else 2)
         try:
             result = search.recall(
                 get_ctx(business),
                 query,
                 limit=limit,
-                notes_limit=notes,
+                notes_limit=effective_notes,
                 include_closed=include_closed,
                 as_of=as_of,
                 category=category,

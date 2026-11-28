@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from ingatan import episodes, proposals, timeutil
 from ingatan.scope import Context
-from ingatan.search import is_valid_sql, status_of
+from ingatan.search import is_valid_sql, open_conflict_ids
 
 __all__ = ["build", "estimate_tokens"]
 
@@ -23,6 +23,10 @@ CHARS_PER_TOKEN = 4
 TARGET_CHARS_PER_TOKEN = 3.5
 # Below this many spare characters an episode is not worth showing, even cut short.
 MIN_EPISODE_CHARS = 120
+# When a brief overflows its budget and normal facts exist, cap `## Check first` so stale
+# review items never crowd out pinned rules, global facts, and core business context.
+CHECK_FIRST_MAX_ITEMS = 5
+MIN_TIERS_SHARE = 0.40
 
 _CHECK_INTRO = (
     "Do not act on these facts before checking them. Check only those relevant to the "
@@ -86,6 +90,7 @@ def _item(row: sqlite3.Row, tags: list[str]) -> _Item:
 def _facts(ctx: Context) -> tuple[list[_Item], dict[str, list[_Item]]]:
     """Valid, visible facts: (check-first items, items per tier), most used first."""
     now = timeutil.iso(timeutil.now())
+    doubted = open_conflict_ids(ctx)
     check: list[_Item] = []
     tiers: dict[str, list[_Item]] = {name: [] for name, _ in _SECTIONS}
     for conn in ctx.connections():
@@ -94,16 +99,21 @@ def _facts(ctx: Context) -> tuple[list[_Item], dict[str, list[_Item]]]:
             {"now": now, **ctx.params},
         ).fetchall()
         for row in rows:
-            status = status_of(ctx, row)
+            overdue = (
+                row["kind"] == "volatile"
+                and row["review_after"] is not None
+                and row["review_after"] < now
+            )
+            has_pending = bool(row["pending_proposal"])
+            needs_check = overdue or has_pending
             tags: list[str] = []
-            if "check first" in status:
-                if row["kind"] == "volatile" and row["review_after"] and row["review_after"] < now:
-                    tags.append(f"review was due {row['review_after'][:10]}")
-                if row["pending_proposal"]:
-                    tags.append("a change is waiting for the user's approval")
-            if "possible conflict" in status:
+            if overdue:
+                tags.append(f"review was due {row['review_after'][:10]}")
+            if has_pending:
+                tags.append("a change is waiting for the user's approval")
+            if str(row["id"]) in doubted:
                 tags.append("possible conflict")
-            target = check if "check first" in status else tiers[row["tier"]]
+            target = check if needs_check else tiers[row["tier"]]
             target.append(_item(row, tags))
     check.sort(key=lambda i: i.rank, reverse=True)
     for items in tiers.values():
@@ -134,6 +144,22 @@ def _char_limit(budget: int) -> int:
 def _fit_core(header: str, check: list[_Item], tiers: dict[str, list[_Item]], budget: int) -> str:
     limit = _char_limit(budget)
     tiers = {name: list(items) for name, items in tiers.items()}
+    has_normal = any(tiers.values())
+
+    # Reserve room for normal facts (pinned rules, global, business, agent) so a backlog of
+    # overdue `check first` items can never starve the rest of the brief.
+    shown_check = list(check)
+    if has_normal and shown_check:
+        if len(shown_check) > CHECK_FIRST_MAX_ITEMS:
+            shown_check = shown_check[:CHECK_FIRST_MAX_ITEMS]
+        empty_tiers: dict[str, list[_Item]] = {name: [] for name in tiers}
+        check_limit = int(limit * (1.0 - MIN_TIERS_SHARE))
+        while shown_check:
+            omitted_now = len(check) - len(shown_check)
+            if len(_core(header, shown_check, omitted_now, empty_tiers)) <= check_limit:
+                break
+            shown_check.pop()
+    omitted_check = len(check) - len(shown_check)
 
     # Drop the least used facts across the three sections. First a coarse cut: whatever lies
     # past `limit` characters of lines can never fit, which keeps this fast for huge stores.
@@ -153,7 +179,7 @@ def _fit_core(header: str, check: list[_Item], tiers: dict[str, list[_Item]], bu
         if position not in kept:
             tiers[name].remove(item)
     while True:
-        text = _core(header, check, 0, tiers)
+        text = _core(header, shown_check, omitted_check, tiers)
         if len(text) <= limit:
             return text
         victims = [(items[-1], name) for name, items in tiers.items() if items]
@@ -163,7 +189,7 @@ def _fit_core(header: str, check: list[_Item], tiers: dict[str, list[_Item]], bu
         tiers[name].pop()
 
     # Header and "check first" alone are too big: trim that list from the least used.
-    shown = list(check)
+    shown = list(shown_check)
     used = len(header) + len(_CHECK_INTRO) + 80
     cut = 0
     for position, item in enumerate(shown):
